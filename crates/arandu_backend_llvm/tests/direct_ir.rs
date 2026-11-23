@@ -1267,3 +1267,78 @@ func main(): int {
     let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
     assert_eq!(unsafe { main() }, 0);
 }
+
+#[test]
+fn option_none_branch_does_not_drop_uninitialized_payload() {
+    let source = r#"
+struct Resource {
+    closed: int
+}
+@Destructor
+func Resource.close(own self): void {
+    // If called on an uninitialized payload, this would trap or access garbage
+}
+
+func testNone(): int {
+    let opt: Option<Resource> = Option.None
+    if opt is Option.Some(s) {
+        return 1
+    } else {
+        return 0
+    }
+}
+func main(): int {
+    return testNone()
+}
+"#;
+    let ir = emit(source);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli failed on None branch:\n{ir}");
+    }
+    let (amir, tc) = compile_src(source);
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}
+
+#[test]
+fn mut_ref_pattern_binding_in_if_is_compiles_and_runs() {
+    let source = r#"
+struct Node {
+    value: int
+}
+
+func update(node: mut ref Node): int {
+    let opt: Option<mut ref Node> = Option.Some(node)
+    if opt is Option.Some(r) {
+        r.value = 42
+        return r.value
+    }
+    return 0
+}
+
+func main(): int {
+    let mut n = Node { value: 10 }
+    if update(mut ref n) != 42 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let ir = emit(source);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli failed on mut ref pattern binding:\n{ir}");
+    }
+    let (amir, tc) = compile_src(source);
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}

@@ -141,6 +141,18 @@ impl LowerCtx<'_> {
                 ));
             }
 
+            let all_trivial = !bind
+                && payload.iter().all(|&pat_id| {
+                    matches!(
+                        self.hir.pool.pattern(pat_id),
+                        crate::hir::HirPattern::Bind { .. }
+                            | crate::hir::HirPattern::Wildcard { .. }
+                    )
+                });
+            if all_trivial {
+                return Ok(AmirOperand::Copy(tag_matches));
+            }
+
             let mut current_matches = AmirOperand::Copy(tag_matches);
 
             for (i, &pat_id) in payload.iter().enumerate() {

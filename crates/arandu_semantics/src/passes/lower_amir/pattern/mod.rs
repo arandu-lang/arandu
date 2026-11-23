@@ -4,7 +4,7 @@ mod match_mode;
 
 use super::LowerCtx;
 use crate::amir::{AmirOperand, BlockId};
-use crate::diagnostics::{DiagCode, Diagnostic};
+use crate::diagnostics::Diagnostic;
 use crate::hir::{HirCondition, HirPattern};
 use crate::passes::type_checker::types::ArType;
 use crate::{SymbolId, SymbolTable};
@@ -42,48 +42,6 @@ impl LowerCtx<'_> {
         (scrutinee, ty)
     }
 
-    pub(crate) fn lower_condition(
-        &mut self,
-        cond: &HirCondition,
-        symbols: &SymbolTable,
-    ) -> Result<AmirOperand, Diagnostic> {
-        match cond {
-            HirCondition::Expr(expr_id) => self.lower_expr(*expr_id, None, symbols),
-            HirCondition::Is { expr, pattern } => {
-                let scrutinee = self.lower_expr(*expr, None, symbols)?;
-                let pat = self.hir.pool.pattern(*pattern);
-                if let crate::hir::HirPattern::Bind { symbol, span, .. } = pat
-                    && let crate::passes::type_checker::types::ArType::Nullable(inner) =
-                        self.resolve_ty(self.hir.pool.expr(*expr).ty)
-                {
-                    let is_non_null =
-                        self.new_temp(crate::passes::type_checker::types::ArType::Primitive(
-                            crate::passes::type_checker::types::Primitive::Bool,
-                        ));
-                    self.emit_assign_temp(
-                        is_non_null,
-                        crate::amir::AmirRvalue::Binary {
-                            op: crate::ops::BinaryOp::NotEqual,
-                            left: scrutinee,
-                            right: AmirOperand::Constant(crate::amir::AmirConstant::Nil),
-                        },
-                    );
-                    let local_id = self.new_local_id(inner, *symbol, *span);
-                    let unwrapped = self.new_temp_id(inner);
-                    self.emit_assign_temp(unwrapped, crate::amir::AmirRvalue::Use(scrutinee));
-                    self.write_variable_source(local_id, AmirOperand::Copy(unwrapped))?;
-                    return Ok(AmirOperand::Copy(is_non_null));
-                }
-                self.lower_pattern_match(scrutinee, pat, symbols)
-            }
-            HirCondition::And(_) => Err(Diagnostic::ice(
-                DiagCode::ICEGEN001,
-                "compound condition reached scalar AMIR lowering",
-                self.diag_span(self.current_span),
-            )),
-        }
-    }
-
     /// Lowers a condition directly into short-circuit CFG edges.
     pub(crate) fn lower_condition_branch(
         &mut self,
@@ -106,18 +64,71 @@ impl LowerCtx<'_> {
             return self.lower_condition_branch(last, if_true, if_false, symbols);
         }
 
-        let start_owned = self.owned_string_temps.clone();
-        let condition = self.lower_condition(cond, symbols)?;
-        // A plain `bool` condition cannot alias string temporaries built for
-        // it (e.g. `if "${x}" != y`); free them before the branch. `is`
-        // patterns may bind into the scrutinee and keep their temporaries.
-        if matches!(cond, HirCondition::Expr(_)) {
-            self.free_new_owned_string_temps(&start_owned, None);
+        match cond {
+            HirCondition::Expr(expr_id) => {
+                let start_owned = self.owned_string_temps.clone();
+                let condition = self.lower_expr(*expr_id, None, symbols)?;
+                self.free_new_owned_string_temps(&start_owned, None);
+                if self.builder.current_block.is_some() {
+                    self.set_bool_branch(condition, if_true, if_false);
+                }
+                Ok(())
+            }
+            HirCondition::Is { expr, pattern } => {
+                let scrutinee = self.lower_expr(*expr, None, symbols)?;
+                let pat = self.hir.pool.pattern(*pattern);
+                if let crate::hir::HirPattern::Bind { symbol, span, .. } = pat
+                    && let crate::passes::type_checker::types::ArType::Nullable(inner) =
+                        self.resolve_ty(self.hir.pool.expr(*expr).ty)
+                {
+                    let is_non_null =
+                        self.new_temp(crate::passes::type_checker::types::ArType::Primitive(
+                            crate::passes::type_checker::types::Primitive::Bool,
+                        ));
+                    self.emit_assign_temp(
+                        is_non_null,
+                        crate::amir::AmirRvalue::Binary {
+                            op: crate::ops::BinaryOp::NotEqual,
+                            left: scrutinee,
+                            right: AmirOperand::Constant(crate::amir::AmirConstant::Nil),
+                        },
+                    );
+                    let bb_bind = self.new_block();
+                    if self.builder.current_block.is_some() {
+                        self.set_bool_branch(AmirOperand::Copy(is_non_null), bb_bind, if_false);
+                    }
+                    self.seal_block(bb_bind);
+                    self.builder.current_block = Some(bb_bind);
+                    let local_id = self.new_local_id(inner, *symbol, *span);
+                    let unwrapped = self.new_temp_id(inner);
+                    self.emit_assign_temp(unwrapped, crate::amir::AmirRvalue::Use(scrutinee));
+                    self.write_variable_source(local_id, AmirOperand::Copy(unwrapped))?;
+                    self.emit_goto(if_true);
+                    return Ok(());
+                }
+
+                let has_bindings = self.pattern_has_bindings(pat);
+                if !has_bindings {
+                    let condition = self.lower_pattern_test(scrutinee, pat, symbols)?;
+                    if self.builder.current_block.is_some() {
+                        self.set_bool_branch(condition, if_true, if_false);
+                    }
+                    return Ok(());
+                }
+
+                let condition = self.lower_pattern_test(scrutinee, pat, symbols)?;
+                let bb_bind = self.new_block();
+                if self.builder.current_block.is_some() {
+                    self.set_bool_branch(condition, bb_bind, if_false);
+                }
+                self.seal_block(bb_bind);
+                self.builder.current_block = Some(bb_bind);
+                let _ = self.lower_pattern_match(scrutinee, pat, symbols)?;
+                self.emit_goto(if_true);
+                Ok(())
+            }
+            HirCondition::And(_) => unreachable!(),
         }
-        if self.builder.current_block.is_some() {
-            self.set_bool_branch(condition, if_true, if_false);
-        }
-        Ok(())
     }
 
     pub(crate) fn lower_pattern_match(

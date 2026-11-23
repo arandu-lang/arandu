@@ -11,7 +11,7 @@ Func testBind(x: int) -> int
     s2: int // y
 
   bb0:
-    branch true => bb1, else bb2
+    branch true => bb4, else bb2
   bb1:
     goto bb3(_1)
   bb2:
@@ -19,3 +19,5 @@ Func testBind(x: int) -> int
   bb3(_4: int /* from: "res" */):
     _0 = _4
     return
+  bb4:
+    goto bb1

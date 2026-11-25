@@ -1,5 +1,6 @@
 //! Multi-backend differential testing oracles and execution triangulators.
 
+use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -471,21 +472,55 @@ fn lower_validated_source(
     }
 }
 
+struct ReusableLoweringHost {
+    host: AnalysisHost,
+    stdlib_registered: bool,
+}
+
+thread_local! {
+    static LOWERING_HOST: RefCell<Option<ReusableLoweringHost>> = const { RefCell::new(None) };
+}
+
 fn lower_validated_source_inner(
     source: &str,
 ) -> Result<arandu_query::db::HashEq<arandu_query::LowerAmirArtifacts>, Failure> {
-    let mut host = AnalysisHost::new();
-    if source.contains("import std") {
-        register_fuzz_stdlib(&mut host).map_err(|error| {
-            Failure::new(
-                "stdlib-setup-failed",
-                format!("failed to register fuzz stdlib dependencies: {error}"),
-                false,
-            )
-        })?;
-    }
-    let file = host.new_file("smith/generated.aru".into(), source.to_owned());
-    lower_validated_file(&host, file)
+    LOWERING_HOST.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let needs_stdlib = source.contains("import std");
+        // The stdlib must be registered before the entry file: adding its
+        // inputs later leaves module resolution with a stale entry-file view.
+        let recreate = match slot.as_ref() {
+            None => true,
+            Some(entry) => needs_stdlib && !entry.stdlib_registered,
+        };
+        if recreate {
+            let mut host = AnalysisHost::new();
+            let mut stdlib_registered = false;
+            if needs_stdlib {
+                register_fuzz_stdlib(&mut host).map_err(|error| {
+                    Failure::new(
+                        "stdlib-setup-failed",
+                        format!("failed to register fuzz stdlib dependencies: {error}"),
+                        false,
+                    )
+                })?;
+                stdlib_registered = true;
+            }
+            *slot = Some(ReusableLoweringHost {
+                host,
+                stdlib_registered,
+            });
+        }
+        let entry = slot.as_mut().expect("lowering host was just initialized");
+        // A fresh `SourceFile` per source keeps symbol identities disjoint:
+        // reusing a FileId across unrelated generated programs leaves stale
+        // symbol tables in imported units. The DB and stdlib survive, so the
+        // expensive declaration context is still shared.
+        let file = entry
+            .host
+            .new_file("smith/generated.aru".into(), source.to_owned());
+        lower_validated_file(&entry.host, file)
+    })
 }
 
 pub(crate) fn lower_validated_file(

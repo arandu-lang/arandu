@@ -387,3 +387,66 @@ fs.writeFileSync(process.env.ARANDU_SMITH_RESULT_PATH,JSON.stringify({result:ins
     assert_eq!(result["args"], serde_json::json!(SYNTHESIZED_PROGRAM_ARGS));
     std::fs::remove_dir_all(directory).expect("remove owned replay fixture");
 }
+
+#[test]
+fn reused_lowering_host_matches_fresh_hosts_across_sources() {
+    fn lower_in_fresh_host(
+        source: &str,
+    ) -> arandu_query::db::HashEq<arandu_query::LowerAmirArtifacts> {
+        let mut host = AnalysisHost::new();
+        if source.contains("import std") {
+            register_fuzz_stdlib(&mut host).expect("register stdlib");
+        }
+        let file = host.new_file("smith/generated.aru".into(), source.to_owned());
+        lower_validated_file(&host, file).expect("lower source")
+    }
+
+    let with_std =
+        "import std.env as env\nimport io\nfunc main(): int { io.println(\"hello\")\nif env.argsLen() < 0 { return 1 }\nreturn 42 }\n";
+    let with_std_vec =
+        "import std.alloc.vec as vec\nfunc main(): int { let mut v = vec.Vec<int>.new()\nv.push(10)\nif v.len() != 1 as usize { return 1 }\nreturn 42 }\n";
+    let plain = "func main(): int { return 7 }\n";
+    fn observe(
+        source: &str,
+        artifacts: &arandu_query::db::HashEq<arandu_query::LowerAmirArtifacts>,
+    ) -> BackendObservation {
+        execute_cranelift_isolated(
+            source,
+            &artifacts.amir,
+            &artifacts.type_check.symbols,
+            &artifacts.type_check.type_info,
+            arandu_mir::OptLevel::O2,
+            false,
+        )
+        .expect("execute lowered program")
+        .0
+    }
+
+    let fresh_with_std = lower_in_fresh_host(with_std);
+    let fresh_with_std_vec = lower_in_fresh_host(with_std_vec);
+    let fresh_plain = lower_in_fresh_host(plain);
+    // Exercise the plain -> stdlib transition on the same thread-local host:
+    // registering stdlib inputs after the entry file used to leave a stale view.
+    let reused_plain = lower_validated_source(plain).expect("lower plain");
+    let reused_with_std = lower_validated_source(with_std).expect("lower with std");
+    let reused_with_std_vec = lower_validated_source(with_std_vec).expect("lower with std vec");
+    let again_plain = lower_validated_source(plain).expect("lower plain again");
+    let again_with_std = lower_validated_source(with_std).expect("lower with std again");
+
+    assert_eq!(observe(plain, &fresh_plain), observe(plain, &reused_plain));
+    assert_eq!(
+        observe(with_std, &fresh_with_std),
+        observe(with_std, &reused_with_std)
+    );
+    assert_eq!(
+        observe(with_std_vec, &fresh_with_std_vec),
+        observe(with_std_vec, &reused_with_std_vec)
+    );
+    // Each source gets a fresh `SourceFile`, so hashes legitimately differ by
+    // FileId; compare observable behavior instead.
+    assert_eq!(observe(plain, &fresh_plain), observe(plain, &again_plain));
+    assert_eq!(
+        observe(with_std, &fresh_with_std),
+        observe(with_std, &again_with_std)
+    );
+}

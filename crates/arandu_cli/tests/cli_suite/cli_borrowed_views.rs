@@ -43,7 +43,7 @@ import std.fs as fs
 func main(): int {
     match fs.readDir(".") {
         Ok(listing) => {
-            if listing.count() < 2 { return 1 }
+            if listing.len() < 2 { return 1 }
             let first = listing.nameStr(0)
             let second = listing.nameStr(1)
             if *first == *second { return 2 }
@@ -648,7 +648,7 @@ func main(): int {
     match fs.readDir(".") {
         Ok(mut listing) => {
             let name = listing.nameStr(0)
-            listing.close()
+            let _, _ = listing.close()
             io.println(*name)
         }
         Err(_) => {}
@@ -674,10 +674,11 @@ fn jit_appends_utf8_and_reads_string_view() {
         "run",
         r#"module tests.borrowed_views.string_run
 import std.alloc.string as strings
+import std.core.result as core_result
 
 func main(): int {
     let mut value = strings.String.new()
-    if !value.pushStr("olá") {
+    if !value.pushStr("olá").isOk() {
         return 1
     }
     let view = value.asStr()

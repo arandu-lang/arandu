@@ -18,7 +18,7 @@ func withSuffix(n: int, f: (int) -> int): int {
 func mutatesItsOwnCapture(): int {
     let mut text = strings.String.from("owned")
     let total = callTwice(move || {
-        text.pushStr("!")
+        let _, _ = text.pushStr("!")
         return text.asStr().len() as int
     })
     if total != 13 { return 1 }

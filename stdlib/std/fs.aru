@@ -143,14 +143,38 @@ public func File.write(self: ref File, buf: ptr[u8], count: usize): int {
     }
 }
 
-/// Closes this file descriptor.
-public func File.close(self: mut ref File): void {
-    if self.fd >= 0 {
+/// Writes all bytes of `bytes` to this file.
+///
+/// Returns the number of bytes written, or the first `io.IoError` reported by
+/// the host write bridge. A short write is retried until the slice is drained.
+public func File.writeAll(self: ref File, bytes: []u8): Result<usize, io.IoError> {
+    let total = bytes.len
+    let mut written: usize = 0
+    while written < total {
         unsafe {
+            let p = mem.ptrOffset<u8>(bytes.asPtr(), written as isize)
+            let n = self.write(p, total - written)
+            if n <= 0 {
+                return Result.Err(io.IoError.fromPlatform(n))
+            }
+            written = written + (n as usize)
+        }
+    }
+    return Result.Ok(written)
+}
+
+/// Closes this file descriptor.
+public func File.close(self: mut ref File): Result<void, io.IoError> {
+    if self.fd >= 0 {
+        let code = unsafe {
             ar_fs_close(self.fd)
         }
         self.fd = -1
+        if code != 0 {
+            return Result.Err(io.IoError.fromPlatform(code))
+        }
     }
+    return nil
 }
 
 /// Destroys the file descriptor on scope exit if not already closed.
@@ -320,13 +344,8 @@ func readU32At(base: ptr[u8], byteOff: usize): u32 {
 
 /// Returns the number of entries in the listing.
 ///
-/// The count reflects the snapshot taken by `readDir`, not later changes to
-/// the directory. This operation takes O(1) time and does not allocate.
-public func DirListing.count(self: ref DirListing): usize {
-    return self.count
-}
-
-/// Returns the number of entries in the listing.
+/// Returns the number of entries in the snapshot taken by `readDir`, not later
+/// changes to the directory. This operation takes O(1) time and does not allocate.
 public func DirListing.len(self: ref DirListing): usize {
     return self.count
 }
@@ -387,8 +406,9 @@ public func DirListing.nameStr(self: ref DirListing, index: usize): ref str {
 }
 
 /// Idempotently closes and releases the directory listing snapshot.
-public func DirListing.close(self: mut ref DirListing): void {
+public func DirListing.close(self: mut ref DirListing): Result<void, io.IoError> {
     destroyListing(self)
+    return nil
 }
 
 /// Automatic destructor invoked when an owned `DirListing` leaves scope.
@@ -592,21 +612,9 @@ public func Dir.writeBytes(self: ref Dir, subpath: str, bytes: []u8): Result<usi
     let .Ok(mut file) = self.openFile(subpath, OpenOptions.writeOnly()) else {
         return Result.Err(io.IoError.new(io.IoErrorKind.PermissionDenied, -1))
     }
-    let total = bytes.len
-    let mut written: usize = 0
-    while written < total {
-        unsafe {
-            let p = mem.ptrOffset<u8>(bytes.asPtr(), written as isize)
-            let n = file.write(p, total - written)
-            if n <= 0 {
-                file.close()
-                return Result.Err(io.IoError.new(io.IoErrorKind.Other, n))
-            }
-            written = written + (n as usize)
-        }
-    }
-    file.close()
-    return Result.Ok(written)
+    let result = file.writeAll(bytes)
+    let _, _ = file.close()
+    return result
 }
 
 /// Writes all bytes of `content` to `subpath` relative to this directory descriptor,
@@ -622,7 +630,7 @@ public func writeBytes(path: str, bytes: []u8): Result<usize, io.IoError> {
         return Result.Err(io.IoError.new(io.IoErrorKind.PermissionDenied, -1))
     }
     let res = dir.writeBytes(path, bytes)
-    dir.close()
+    let _, _ = dir.close()
     return res
 }
 
@@ -633,13 +641,17 @@ public func write(path: str, content: str): Result<usize, io.IoError> {
 }
 
 /// Closes this directory capability handle.
-public func Dir.close(self: mut ref Dir): void {
+public func Dir.close(self: mut ref Dir): Result<void, io.IoError> {
     if self.fd >= 0 {
-        unsafe {
+        let code = unsafe {
             ar_fs_close(self.fd)
         }
         self.fd = -1
+        if code != 0 {
+            return Result.Err(io.IoError.fromPlatform(code))
+        }
     }
+    return nil
 }
 
 /// Automatic destructor ensuring the directory descriptor is closed on scope exit.

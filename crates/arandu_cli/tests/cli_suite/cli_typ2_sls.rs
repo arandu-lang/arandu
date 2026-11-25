@@ -601,16 +601,17 @@ fn run_vec_and_string_try_reserve_try_push() {
 module tests.cli.vec_try_push
 import std.alloc.vec as vec
 import std.alloc.string as string
+import std.core.result as core_result
 
 func main(): int {
     let mut v = vec.Vec<int>.new()
-    if !v.tryReserve(16) {
+    if !v.tryReserve(16).isOk() {
         return 1
     }
-    if !v.tryPush(42) {
+    if !v.tryPush(42).isOk() {
         return 2
     }
-    if !v.tryPush(84) {
+    if !v.tryPush(84).isOk() {
         return 3
     }
     if v.len() != 2 {
@@ -618,10 +619,10 @@ func main(): int {
     }
 
     let mut s = string.String.new()
-    if !s.tryReserve(32) {
+    if !s.tryReserve(32).isOk() {
         return 5
     }
-    if !s.pushStr("hello") {
+    if !s.pushStr("hello").isOk() {
         return 6
     }
     if s.len() != 5 {

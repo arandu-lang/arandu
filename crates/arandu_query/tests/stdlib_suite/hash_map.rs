@@ -30,7 +30,6 @@ fn stdlib_hash_map_parses_and_exports_expected_symbols() {
         "HashMap.isEmpty",
         "HashMap.capacity",
         "HashMap.clear",
-        "HashMap.insert",
         "HashMap.put",
         "HashMap.contains",
         "HashMap.get",

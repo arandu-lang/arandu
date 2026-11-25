@@ -144,7 +144,7 @@ public func exercise(): int {
     let _r_mut = res.asMut()
 
     let mut map = hash_map.HashMap<Key, int>.new()
-    map.insert(Key { id: 1 }, 100)
+    map.put(Key { id: 1 }, 100)
     match map.getMut(Key { id: 1 }) {
         option.Option.Some(v) => { *v = 200 }
         option.Option.None => {}

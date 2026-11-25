@@ -1,13 +1,14 @@
 import std.alloc.vec as vec
+import std.core.result as core_result
 
 func main(): int {
     let mut values = vec.Vec<int>.new()
-    if !values.tryReserve(9 as usize) {
+    if !values.tryReserve(9 as usize).isOk() {
         return -1
     }
     let mut next: int = 0
     while next < 9 {
-        if !values.tryPush(next) {
+        if !values.tryPush(next).isOk() {
             return -2
         }
         next = next + 1

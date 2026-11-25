@@ -350,14 +350,14 @@ fn emits_atomic_intrinsics() {
 module std.core.atomicTest
 
 extern "arandu-intrinsic" {
-    func atomicFetchAdd32(value: mut ref u32, operand: u32): u32
+    func atomicFetchAdd32(value: ref u32, operand: u32): u32
     func atomicLoad32(value: ref u32): u32
-    func atomicCompareExchange32(value: mut ref u32, expected: u32, desired: u32): u32
+    func atomicCompareExchange32(value: ref u32, expected: u32, desired: u32): u32
 }
 
 public func increment(counter: ptr[u32]): u32 {
     unsafe {
-        return atomicFetchAdd32(mut ref *counter, 1 as u32)
+        return atomicFetchAdd32(ref *counter, 1 as u32)
     }
 }
 
@@ -380,7 +380,7 @@ module std.core.atomicOrderingTest
 extern "arandu-intrinsic" {
     func atomicLoadRelaxed32(value: ref u32): u32
     func atomicStoreRelease32(value: ref u32, replacement: u32): void
-    func atomicFetchAddAcqRel32(value: mut ref u32, operand: u32): u32
+    func atomicFetchAddAcqRel32(value: ref u32, operand: u32): u32
     func atomicFenceAcquire(): void
 }
 
@@ -389,7 +389,7 @@ public func test_orders(p: ptr[u32]): u32 {
         let v = atomicLoadRelaxed32(ref *p)
         atomicStoreRelease32(ref *p, v + 1 as u32)
         atomicFenceAcquire()
-        return atomicFetchAddAcqRel32(mut ref *p, 2 as u32)
+        return atomicFetchAddAcqRel32(ref *p, 2 as u32)
     }
 }
 

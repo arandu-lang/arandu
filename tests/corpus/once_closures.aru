@@ -42,7 +42,7 @@ func spender(id: int): own once () -> int {
 func greeter(name: strings.String): own once (int) -> strings.String {
     return (extra) => {
         let mut owned = name
-        if extra > 0 { owned.pushStr("!") }
+        if extra > 0 { let _, _ = owned.pushStr("!") }
         return owned
     }
 }

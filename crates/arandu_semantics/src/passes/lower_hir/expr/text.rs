@@ -368,10 +368,11 @@ pub(crate) fn push_str(
         value
     };
     let interner = &type_check.type_info.type_interner;
-    let str_ty = interner.intern(ArType::Primitive(Primitive::Str));
-    let bool_ty = interner.intern(ArType::Primitive(Primitive::Bool));
     let mut_string = interner.intern(ArType::RefMut(string_ty));
-    let push_ty = interner.intern(ArType::func(&[mut_string, str_ty], bool_ty, interner));
+    let push_ty = *type_check.type_info.decl_types.get(&push)?;
+    let ArType::Func(_, result_ty) = interner.resolve(push_ty) else {
+        return None;
+    };
     let borrowed = hir_pool.alloc_expr(HirExpr {
         kind: HirExprKind::Unary {
             op: arandu_middle::ops::UnaryOp::RefMut,
@@ -385,7 +386,7 @@ pub(crate) fn push_str(
         push,
         push_ty,
         &[borrowed, value],
-        bool_ty,
+        result_ty,
         span,
     ))
 }

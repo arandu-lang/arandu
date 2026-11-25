@@ -21,8 +21,10 @@
 //! clear, or drop can invalidate that view.
 //!
 //! ## Allocations
-//! `Vec.new` does not allocate. `tryPush` and `tryReserve` return `false` on
-//! allocation failure; `push` and `reserve` may abort on failure.
+//! `Vec.new` does not allocate. `tryPush` and `tryReserve` return
+//! `Result<void, AllocError>`: `nil` on success, `InvalidLayout` on capacity
+//! overflow and `OutOfMemory` on allocation failure; `push` and `reserve` may
+//! abort on failure.
 //!
 //! ## Platform
 //! `native` · `wasm32`
@@ -37,6 +39,8 @@ module std.alloc.vec
 ///
 /// Growth: geometric factor 2, minimum capacity 8 (amortised O(1) append).
 
+import std.alloc.allocator_api as alloc
+import std.core.result as core_result
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 import std.core.marker as marker
@@ -163,15 +167,15 @@ public func Vec.withCapacity<T>(cap: usize): Vec<T> {
 
 /// Attempts to ensure absolute capacity ≥ `minCap`.
 ///
-/// Returns `true` on success. On failure (such as capacity overflow or
-/// allocation failure), returns `false` and leaves `v` completely unmodified.
-func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): bool {
+/// Returns `nil` on success. Capacity overflow yields `InvalidLayout` and
+/// allocation failure yields `OutOfMemory`; both leave `v` unmodified.
+func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): Result<void, alloc.AllocError> {
     if v.capacity >= minCap {
-        return true
+        return nil
     }
     let maxCap: usize = 2147483647 as usize
     if minCap > maxCap {
-        return false
+        return Result.Err(alloc.AllocError.InvalidLayout)
     }
     let mut newCap: usize = v.capacity
     if newCap == 0 {
@@ -186,7 +190,7 @@ func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): bool {
     }
     let elem = mem.sizeOf<T>()
     if elem > 0 && newCap > (maxCap / elem) {
-        return false
+        return Result.Err(alloc.AllocError.InvalidLayout)
     }
     let oldBytes = v.capacity * elem
     let newBytes = newCap * elem
@@ -196,7 +200,7 @@ func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): bool {
         let nullp: ptr[u8] = nil
         let p = ar_rt_alloc_aligned(allocSize, align)
         if p == nullp {
-            return false
+            return Result.Err(alloc.AllocError.OutOfMemory)
         }
         let mut index: usize = 0
         while index < v.len {
@@ -212,44 +216,45 @@ func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): bool {
         v.data = p as ptr[T]
         v.capacity = newCap
     }
-    return true
+    return nil
 }
 
 /// Ensure absolute capacity ≥ `minCap`. Aborts if reallocation fails.
 func Vec.ensureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): void {
-    if !Vec.tryEnsureCapacityImpl<T>(v, minCap) {
+    if !Vec.tryEnsureCapacityImpl<T>(v, minCap).isOk() {
         unsafe {
             intrinsics.abort()
         }
     }
 }
 
-func Vec.tryReserveImpl<T>(v: mut ref Vec<T>, additional: usize): bool {
+func Vec.tryReserveImpl<T>(v: mut ref Vec<T>, additional: usize): Result<void, alloc.AllocError> {
     let maxCap: usize = 2147483647 as usize
     if additional > maxCap - v.len {
-        return false
+        return Result.Err(alloc.AllocError.InvalidLayout)
     }
     let need = v.len + additional
     return Vec.tryEnsureCapacityImpl<T>(v, need)
 }
 
 func Vec.reserveImpl<T>(v: mut ref Vec<T>, additional: usize): void {
-    if !Vec.tryReserveImpl<T>(v, additional) {
+    if !Vec.tryReserveImpl<T>(v, additional).isOk() {
         unsafe {
             intrinsics.abort()
         }
     }
 }
 
-func Vec.tryPushImpl<T>(v: mut ref Vec<T>, value: T): bool {
+func Vec.tryPushImpl<T>(v: mut ref Vec<T>, value: T): Result<void, alloc.AllocError> {
     let maxCap: usize = 2147483647 as usize
     if v.len >= maxCap {
-        return false
+        return Result.Err(alloc.AllocError.InvalidLayout)
     }
     let need = v.len + 1
     if v.capacity < need {
-        if !Vec.tryEnsureCapacityImpl<T>(v, need) {
-            return false
+        let grown = Vec.tryEnsureCapacityImpl<T>(v, need)
+        if !grown.isOk() {
+            return grown
         }
     }
     unsafe {
@@ -257,11 +262,11 @@ func Vec.tryPushImpl<T>(v: mut ref Vec<T>, value: T): bool {
         mem.ptrWrite<T>(dest, value)
     }
     v.len = v.len + 1
-    return true
+    return nil
 }
 
 func Vec.pushImpl<T>(v: mut ref Vec<T>, value: T): void {
-    if !Vec.tryPushImpl<T>(v, value) {
+    if !Vec.tryPushImpl<T>(v, value).isOk() {
         unsafe {
             intrinsics.abort()
         }
@@ -470,16 +475,17 @@ public func Vec.reserve<T>(self: mut ref Vec<T>, additional: usize): void {
 
 /// Attempts to reserve room for `additional` elements beyond the length.
 ///
-/// Returns `false` on allocation failure or capacity overflow, leaving
-/// existing contents intact.
-public func Vec.tryReserve<T>(self: mut ref Vec<T>, additional: usize): bool {
+/// Returns `nil` on success. `InvalidLayout` reports capacity overflow and
+/// `OutOfMemory` reports allocation failure; existing contents stay intact.
+public func Vec.tryReserve<T>(self: mut ref Vec<T>, additional: usize): Result<void, alloc.AllocError> {
     return Vec.tryReserveImpl(self, additional)
 }
 
 /// Attempts to append one element without aborting on allocation failure.
 ///
-/// Returns `false` and leaves the vector intact if growth fails.
-public func Vec.tryPush<T>(self: mut ref Vec<T>, value: T): bool {
+/// Returns `nil` on success. `InvalidLayout` reports capacity overflow and
+/// `OutOfMemory` reports allocation failure; the vector stays intact.
+public func Vec.tryPush<T>(self: mut ref Vec<T>, value: T): Result<void, alloc.AllocError> {
     return Vec.tryPushImpl(self, value)
 }
 

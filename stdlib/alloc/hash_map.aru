@@ -442,20 +442,13 @@ func insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Optio
     return insertEntry(self, key, val, h)
 }
 
-/// Inserts a key-value pair into the map.
+/// Associates `key` with `val` in the map, returning the previous value if present.
 ///
-/// If the map did not have this key present, `Option.None` is returned.
-/// If the map did have this key present, the value is updated and the old value is returned.
 /// The key is hashed with `hashKey`; insertion may allocate when the map
 /// crosses its load threshold. Equal keys must have equal hashes.
 ///
 /// # Complexity
 /// Time: O(1) amortized | Space: O(1) amortized
-public func HashMap.insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
-    return insert(self, key, val)
-}
-
-/// Associates `key` with `val` in the map, returning the previous value if present.
 public func HashMap.put<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
     return insert(self, key, val)
 }

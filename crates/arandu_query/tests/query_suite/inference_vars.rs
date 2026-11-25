@@ -123,7 +123,7 @@ fn an_assignment_binds_a_generic_result() {
 }
 
 #[test]
-fn a_map_learns_key_and_value_from_insert() {
+fn a_map_learns_key_and_value_from_put() {
     let codes = errors(
         r#"
             import std.alloc.hash_map as maps
@@ -133,7 +133,7 @@ fn a_map_learns_key_and_value_from_insert() {
             public func Key.hash<H: hash.Hasher>(self: ref Key, state: mut ref H): void {}
             func main(): int {
                 let mut m = maps.HashMap.new()
-                m.insert(Key { id: 1 }, true)
+                m.put(Key { id: 1 }, true)
                 return 0
             }
         "#,
@@ -201,7 +201,7 @@ fn bounds_are_checked_once_the_variable_is_bound() {
             struct Key { id: int }
             func main(): int {
                 let mut m = maps.HashMap.new()
-                m.insert(Key { id: 1 }, 2)
+                m.put(Key { id: 1 }, 2)
                 return 0
             }
         "#,

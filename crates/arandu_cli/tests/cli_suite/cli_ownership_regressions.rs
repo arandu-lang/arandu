@@ -245,7 +245,7 @@ func main(): int {
     let mut owner = strings.String.from("before")
     let view: str = owner.asStr()
     io.println(view)
-    owner.pushStr("-after-last-use")
+    let _, _ = owner.pushStr("-after-last-use")
     return 0
 }
 "#,

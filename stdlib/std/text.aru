@@ -172,7 +172,7 @@ public func repeat(s: str, count: usize): string.String {
     let mut res = string.String.withCapacity(total)
     let mut i: usize = 0
     while i < count {
-        let _ = res.pushStr(s)
+        let _, _ = res.pushStr(s)
         i = i + 1
     }
     return res
@@ -191,7 +191,7 @@ public func padLeft(s: str, width: usize, fill: char): string.String {
         res.pushScalar(fill)
         i = i + 1
     }
-    let _ = res.pushStr(s)
+    let _, _ = res.pushStr(s)
     return res
 }
 
@@ -203,7 +203,7 @@ public func padRight(s: str, width: usize, fill: char): string.String {
     }
     let pad = width - slen
     let mut res = string.String.withCapacity(width)
-    let _ = res.pushStr(s)
+    let _, _ = res.pushStr(s)
     let mut i: usize = 0
     while i < pad {
         res.pushScalar(fill)
@@ -227,7 +227,7 @@ public func center(s: str, width: usize, fill: char): string.String {
         res.pushScalar(fill)
         i = i + 1
     }
-    let _ = res.pushStr(s)
+    let _, _ = res.pushStr(s)
     let mut j: usize = 0
     while j < rightPad {
         res.pushScalar(fill)
@@ -267,7 +267,7 @@ public func StringBuilder.isEmpty(self: ref StringBuilder): bool {
 
 /// Appends string slice `s` to the builder.
 public func StringBuilder.append(self: mut ref StringBuilder, s: str): void {
-    let _ = self.buf.pushStr(s)
+    let _, _ = self.buf.pushStr(s)
 }
 
 /// Appends string slice `s` followed by a newline `\n` to the builder.

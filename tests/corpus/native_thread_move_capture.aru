@@ -10,7 +10,7 @@ func consumeOneCaptureThenReadAnother(): int {
     let text = strings.String.from("owned")
     let started = thread.spawn(move || {
         let mut local = text
-        local.pushStr(" child")
+        let _, _ = local.pushStr(" child")
         if local.asStr() != "owned child" { return 0 - 1 }
         return base + 1
     })

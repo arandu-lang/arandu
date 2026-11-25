@@ -1506,6 +1506,7 @@ fn c_output_normalization_removes_crlf_translation_only() {
 fn generic_owned_value_can_be_returned_and_used_by_every_backend() {
     let source = r#"
 import std.alloc.vec as vec
+import std.core.result as core_result
 
 func transfer<T>(own value: T): T {
     return value
@@ -1513,7 +1514,7 @@ func transfer<T>(own value: T): T {
 
 func main(): int {
     let mut values = transfer<vec.Vec<int>>(vec.Vec<int>.new())
-    if !values.tryPush(42) {
+    if !values.tryPush(42).isOk() {
         return -1
     }
     let length = values.len() as int
@@ -1778,7 +1779,7 @@ fn synthesis_exercises_array_aggregate_enum_and_control_flow() {
     assert!(source.contains("func make_vec<T>(): vec.Vec<T>"));
     assert!(source.contains("vec.Vec<uint>"));
     assert!(source.contains("relay<vec.Vec<uint>>(make_vec<uint>())"));
-    assert!(source.contains("unsigned_values.tryPush(uint_result)"));
+    assert!(source.contains("unsigned_values.tryPush(uint_result).isOk()"));
     assert!(source.contains("vec.Vec<core_result.Result<int, bool>>"));
     assert!(source.contains("relay<vec.Vec<core_result.Result<int, bool>>>("));
     assert!(source.contains("Result.Err(sample.enabled)"));
@@ -1817,28 +1818,28 @@ fn synthesis_exercises_array_aggregate_enum_and_control_flow() {
     assert!(source.contains("io.println(\"result-odd\")"));
     assert!(source.contains("io.eprint(\"result-even\")"));
     assert!(source.contains("io.eprint(\"result-odd\")"));
-    assert!(source.contains("dynamic.tryReserve(1 as usize)"));
+    assert!(source.contains("dynamic.tryReserve(1 as usize).isOk()"));
     assert!(source.contains("slice.len<int>(dynamic.asSlice())"));
     assert!(source.contains("dynamic.getCopy(dynamic_len as usize)"));
     assert!(source.contains("while dynamic_count < 9"));
-    assert!(source.contains("dynamic.tryPush(sample.left + dynamic_count)"));
+    assert!(source.contains("dynamic.tryPush(sample.left + dynamic_count).isOk()"));
     assert!(source.contains("transfer<vec.Vec<bool>>(make_vec<bool>())"));
-    assert!(source.contains("flags.tryPush(sample.enabled)"));
+    assert!(source.contains("flags.tryPush(sample.enabled).isOk()"));
     assert!(source.contains("slice.len<bool>(flags.asSlice())"));
     assert!(source.contains("transfer<vec.Vec<Choice>>(make_vec<Choice>())"));
-    assert!(source.contains("choices.tryPush(Choice.Flag(sample.enabled))"));
+    assert!(source.contains("choices.tryPush(Choice.Flag(sample.enabled)).isOk()"));
     assert!(source.contains("choices.pop()"));
     assert!(source.contains("Some(Choice.Flag(value)) => value"));
     assert!(source.contains("Choice.Letter(sample.character)"));
     assert!(source.contains("Some(Choice.Letter(value)) => value"));
     assert!(source.contains("recovered_character != sample.character"));
     assert!(source.contains("transfer<vec.Vec<char>>(make_vec<char>())"));
-    assert!(source.contains("characters.tryPush(sample.character)"));
+    assert!(source.contains("characters.tryPush(sample.character).isOk()"));
     assert!(source.contains("slice.len<char>(characters.asSlice())"));
     assert!(source.contains("characters.getCopy(0 as usize)"));
     assert!(source.contains("recovered_vector_character != sample.character"));
     assert!(source.contains("transfer<vec.Vec<float>>(make_vec<float>())"));
-    assert!(source.contains("floats.tryPush(float_result)"));
+    assert!(source.contains("floats.tryPush(float_result).isOk()"));
     assert!(source.contains("floats.getCopy(0 as usize)"));
     assert!(source.contains("recovered_vector_float != float_result"));
     assert!(source.contains("dynamic.getCopy(dynamic_index)"));
@@ -2406,7 +2407,7 @@ fn test_str_mem_across_all_backends() {
         "\n",
         "    // 4. Raw pointer operations\n",
         "    let mut v = vec.Vec<int>.new()\n",
-        "    if !v.tryPush(10) || !v.tryPush(20) {\n",
+        "    if !v.tryPush(10).isOk() || !v.tryPush(20).isOk() {\n",
         "        return -17\n",
         "    }\n",
         "    let v_slice = v.asSlice()\n",

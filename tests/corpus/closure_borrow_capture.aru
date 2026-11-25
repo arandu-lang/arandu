@@ -22,7 +22,7 @@ func twice(f: () -> void): void {
 // A `mut self` method call mutably borrows the capture.
 func mutatesThroughMethod(): int {
     let mut s = strings.String.from("a")
-    twice(() => s.pushStr("b"))
+    twice(() => { let _, _ = s.pushStr("b") })
     if s.asStr() != "abb" { return 1 }
     return 0
 }

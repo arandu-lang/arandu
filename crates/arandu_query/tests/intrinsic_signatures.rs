@@ -30,12 +30,12 @@ fn rejects_trusted_signature(declaration: &str) {
 #[test]
 fn trusted_atomic_intrinsics_reject_wrong_width_ownership_arity_result_and_pointer_arithmetic() {
     for declaration in [
-        "func atomicFetchAdd32(value: ref u32, operand: u32): u32",
+        "func atomicFetchAdd32(value: ref u32, operand: u32): u64",
         "func atomicLoad64(value: ref u32): u64",
-        "func atomicCompareExchange32(value: mut ref u32, expected: u32): u32",
-        "func atomicStoreUsize(value: mut ref usize, replacement: usize): usize",
+        "func atomicCompareExchange32(value: mut ref u32, expected: u32, desired: u32): u32",
+        "func atomicStoreUsize(value: mut ref usize, replacement: usize): void",
         "func atomicFence(order: int): void",
-        "func atomicFetchAddPtr(value: mut ref ptr[u8], operand: ptr[u8]): ptr[u8]",
+        "func atomicFetchAddPtr(value: ref ptr[u8], operand: ptr[u8]): ptr[u8]",
     ] {
         rejects_trusted_signature(declaration);
     }
@@ -87,6 +87,11 @@ fn trusted_well_formed_atomic_and_bit_intrinsics_are_admitted() {
         extern "arandu-intrinsic" {
             func atomicLoad32(value: ref u32): u32
             func atomicStore64(value: ref u64, replacement: u64): void
+            func atomicFetchAdd32(value: ref u32, operand: u32): u32
+            func atomicSwap64(value: ref u64, replacement: u64): u64
+            func atomicCompareExchangeUsize(value: ref usize, expected: usize, desired: usize): usize
+            func atomicSwapPtr(value: ref ptr[u8], replacement: ptr[u8]): ptr[u8]
+            func atomicCompareExchangePtr(value: ref ptr[u8], expected: ptr[u8], desired: ptr[u8]): ptr[u8]
             func atomicFence(): void
             func bitCountOnes32(value: u32): u32
             func bitReverse64(value: u64): u64

@@ -60,7 +60,7 @@ func main(): int {
                                 let msg = "hello"
                                 let b = intrinsics.strBytes(msg)
                                 let written = file.write(slice.asPtr<u8>(b), slice.len<u8>(b))
-                                file.close()
+                                let _, _ = file.close()
                                 if written != 5 { return 9 }
                             }
                             Result.Err(_) => { return 9 }
@@ -71,7 +71,7 @@ func main(): int {
                                 let mut buf: [16]u8 = [0 as u8; 16]
                                 let p = intrinsics.addressOf<u8>(mut ref buf[0])
                                 let n = file.read(p, 16 as usize)
-                                file.close()
+                                let _, _ = file.close()
                                 if n != 5 { return 16 }
                                 if buf[0] != (104 as u8) || buf[4] != (111 as u8) { return 17 }
                             }
@@ -83,7 +83,7 @@ func main(): int {
             if !dir.fileExists("made/file") { return 11 }
             match dir.removeFile("made/file") { Result.Ok(_) => {} Result.Err(_) => { return 12 } }
             match dir.removeDir("made") { Result.Ok(_) => {} Result.Err(_) => { return 13 } }
-            dir.close()
+            let _, _ = dir.close()
             if dir.fileExists("inside") { return 14 }
         }
         Result.Err(_) => { return 15 }

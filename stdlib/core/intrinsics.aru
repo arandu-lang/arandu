@@ -111,13 +111,13 @@ extern "arandu-intrinsic" {
     func atomicStore8(value: ref u8, replacement: u8): void
     func atomicStoreRelaxed8(value: ref u8, replacement: u8): void
     func atomicStoreRelease8(value: ref u8, replacement: u8): void
-    func atomicSwap8(value: mut ref u8, replacement: u8): u8
-    func atomicFetchAdd8(value: mut ref u8, operand: u8): u8
-    func atomicFetchSub8(value: mut ref u8, operand: u8): u8
-    func atomicFetchAnd8(value: mut ref u8, operand: u8): u8
-    func atomicFetchOr8(value: mut ref u8, operand: u8): u8
-    func atomicFetchXor8(value: mut ref u8, operand: u8): u8
-    func atomicCompareExchange8(value: mut ref u8, expected: u8, desired: u8): u8
+    func atomicSwap8(value: ref u8, replacement: u8): u8
+    func atomicFetchAdd8(value: ref u8, operand: u8): u8
+    func atomicFetchSub8(value: ref u8, operand: u8): u8
+    func atomicFetchAnd8(value: ref u8, operand: u8): u8
+    func atomicFetchOr8(value: ref u8, operand: u8): u8
+    func atomicFetchXor8(value: ref u8, operand: u8): u8
+    func atomicCompareExchange8(value: ref u8, expected: u8, desired: u8): u8
 
     func atomicLoad32(value: ref u32): u32
     func atomicLoadRelaxed32(value: ref u32): u32
@@ -125,13 +125,13 @@ extern "arandu-intrinsic" {
     func atomicStore32(value: ref u32, replacement: u32): void
     func atomicStoreRelaxed32(value: ref u32, replacement: u32): void
     func atomicStoreRelease32(value: ref u32, replacement: u32): void
-    func atomicSwap32(value: mut ref u32, replacement: u32): u32
-    func atomicFetchAdd32(value: mut ref u32, operand: u32): u32
-    func atomicFetchSub32(value: mut ref u32, operand: u32): u32
-    func atomicFetchAnd32(value: mut ref u32, operand: u32): u32
-    func atomicFetchOr32(value: mut ref u32, operand: u32): u32
-    func atomicFetchXor32(value: mut ref u32, operand: u32): u32
-    func atomicCompareExchange32(value: mut ref u32, expected: u32, desired: u32): u32
+    func atomicSwap32(value: ref u32, replacement: u32): u32
+    func atomicFetchAdd32(value: ref u32, operand: u32): u32
+    func atomicFetchSub32(value: ref u32, operand: u32): u32
+    func atomicFetchAnd32(value: ref u32, operand: u32): u32
+    func atomicFetchOr32(value: ref u32, operand: u32): u32
+    func atomicFetchXor32(value: ref u32, operand: u32): u32
+    func atomicCompareExchange32(value: ref u32, expected: u32, desired: u32): u32
 
     func atomicLoad64(value: ref u64): u64
     func atomicLoadRelaxed64(value: ref u64): u64
@@ -139,13 +139,13 @@ extern "arandu-intrinsic" {
     func atomicStore64(value: ref u64, replacement: u64): void
     func atomicStoreRelaxed64(value: ref u64, replacement: u64): void
     func atomicStoreRelease64(value: ref u64, replacement: u64): void
-    func atomicSwap64(value: mut ref u64, replacement: u64): u64
-    func atomicFetchAdd64(value: mut ref u64, operand: u64): u64
-    func atomicFetchSub64(value: mut ref u64, operand: u64): u64
-    func atomicFetchAnd64(value: mut ref u64, operand: u64): u64
-    func atomicFetchOr64(value: mut ref u64, operand: u64): u64
-    func atomicFetchXor64(value: mut ref u64, operand: u64): u64
-    func atomicCompareExchange64(value: mut ref u64, expected: u64, desired: u64): u64
+    func atomicSwap64(value: ref u64, replacement: u64): u64
+    func atomicFetchAdd64(value: ref u64, operand: u64): u64
+    func atomicFetchSub64(value: ref u64, operand: u64): u64
+    func atomicFetchAnd64(value: ref u64, operand: u64): u64
+    func atomicFetchOr64(value: ref u64, operand: u64): u64
+    func atomicFetchXor64(value: ref u64, operand: u64): u64
+    func atomicCompareExchange64(value: ref u64, expected: u64, desired: u64): u64
 
     func atomicLoadUsize(value: ref usize): usize
     func atomicLoadRelaxedUsize(value: ref usize): usize
@@ -153,13 +153,13 @@ extern "arandu-intrinsic" {
     func atomicStoreUsize(value: ref usize, replacement: usize): void
     func atomicStoreRelaxedUsize(value: ref usize, replacement: usize): void
     func atomicStoreReleaseUsize(value: ref usize, replacement: usize): void
-    func atomicSwapUsize(value: mut ref usize, replacement: usize): usize
-    func atomicFetchAddUsize(value: mut ref usize, operand: usize): usize
-    func atomicFetchSubUsize(value: mut ref usize, operand: usize): usize
-    func atomicFetchAndUsize(value: mut ref usize, operand: usize): usize
-    func atomicFetchOrUsize(value: mut ref usize, operand: usize): usize
-    func atomicFetchXorUsize(value: mut ref usize, operand: usize): usize
-    func atomicCompareExchangeUsize(value: mut ref usize, expected: usize, desired: usize): usize
+    func atomicSwapUsize(value: ref usize, replacement: usize): usize
+    func atomicFetchAddUsize(value: ref usize, operand: usize): usize
+    func atomicFetchSubUsize(value: ref usize, operand: usize): usize
+    func atomicFetchAndUsize(value: ref usize, operand: usize): usize
+    func atomicFetchOrUsize(value: ref usize, operand: usize): usize
+    func atomicFetchXorUsize(value: ref usize, operand: usize): usize
+    func atomicCompareExchangeUsize(value: ref usize, expected: usize, desired: usize): usize
 
     func atomicLoadPtr(value: ref ptr[u8]): ptr[u8]
     func atomicLoadRelaxedPtr(value: ref ptr[u8]): ptr[u8]
@@ -167,8 +167,8 @@ extern "arandu-intrinsic" {
     func atomicStorePtr(value: ref ptr[u8], replacement: ptr[u8]): void
     func atomicStoreRelaxedPtr(value: ref ptr[u8], replacement: ptr[u8]): void
     func atomicStoreReleasePtr(value: ref ptr[u8], replacement: ptr[u8]): void
-    func atomicSwapPtr(value: mut ref ptr[u8], replacement: ptr[u8]): ptr[u8]
-    func atomicCompareExchangePtr(value: mut ref ptr[u8], expected: ptr[u8], desired: ptr[u8]): ptr[u8]
+    func atomicSwapPtr(value: ref ptr[u8], replacement: ptr[u8]): ptr[u8]
+    func atomicCompareExchangePtr(value: ref ptr[u8], expected: ptr[u8], desired: ptr[u8]): ptr[u8]
 
     func atomicFence(): void
     func atomicFenceAcquire(): void

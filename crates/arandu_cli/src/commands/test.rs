@@ -205,7 +205,8 @@ pub fn cmd_project_test_list(
                 .unwrap_or(0);
             let temp_root = std::env::var_os("ARANDU_TEST_TEMP_ROOT").map(PathBuf::from);
             arandu_runtime::testing_runtime::init_test_context(exact, sequence, temp_root);
-            let result = run_exact_test(&mut db, &ctx, exact, data_layout);
+            let result =
+                run_exact_test(&mut db, &ctx, exact, data_layout, flags.warnings_as_errors);
             let outcome = arandu_runtime::testing_runtime::finish_test_context();
 
             let (status, failure) =
@@ -321,6 +322,7 @@ pub fn run_exact_test(
     ctx: &project::ProjectContext,
     exact: &str,
     data_layout: arandu_middle::layout::DataLayout,
+    warnings_as_errors: bool,
 ) -> CliResult {
     let function = exact.rsplit("::").next().unwrap_or_default();
     let sources = project_test_sources(ctx).map_err(|error| {
@@ -359,7 +361,7 @@ pub fn run_exact_test(
             );
             let doctest_key = format!("{}#{function}", filepath);
             let doctest_file = db.new_file(doctest_key, synthetic_source);
-            let artifacts = pipeline_lower_checked(db, doctest_file)
+            let artifacts = pipeline_lower_checked(db, doctest_file, warnings_as_errors)
                 .map_err(|diagnostics| CliFailure::diagnostics(diagnostics, Some(path.clone())))?
                 .artifacts;
             if snippet.no_run {
@@ -411,7 +413,7 @@ pub fn run_exact_test(
 
         // A harness child must report compilation failures through its terminal
         // event, not exit inside the pipeline before the IPC frame is written.
-        let artifacts = pipeline_lower_checked(db, file)
+        let artifacts = pipeline_lower_checked(db, file, warnings_as_errors)
             .map_err(|diagnostics| CliFailure::diagnostics(diagnostics, Some(path.clone())))?
             .artifacts;
         ensure_host_jit_layout(data_layout)?;

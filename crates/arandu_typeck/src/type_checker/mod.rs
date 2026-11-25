@@ -175,6 +175,9 @@ pub struct TypeChecker<'a> {
     /// Expressions whose `String` value may be viewed as a `str`: call
     /// arguments and `let` initializers, where the value outlives the view.
     pub(crate) text_view_sites: rustc_hash::FxHashSet<ExprId>,
+    /// Type annotation span for a direct literal initializer, used to attach a
+    /// structured quick fix to T038 without changing `synth_expr` signatures.
+    pub(crate) expected_type_span: Option<arandu_base::Span>,
 }
 
 /// Identity of the item that encloses a closure.
@@ -300,11 +303,27 @@ impl<'a> TypeChecker<'a> {
             generic_substitution: arandu_middle::types::GenericSubst::new(),
             infer: infer::InferState::default(),
             text_view_sites: rustc_hash::FxHashSet::default(),
+            expected_type_span: None,
         }
     }
 
     pub fn intern(&mut self, ty: ArType) -> TypeId {
         self.type_info.type_interner.intern(ty)
+    }
+
+    /// Runs `f` with the type annotation span that governs a direct literal.
+    /// Nested expressions clear it so a quick fix never rewrites an unrelated
+    /// annotation for a literal inside a call or an aggregate.
+    pub(crate) fn with_expected_type_span<T>(
+        &mut self,
+        span: Option<arandu_base::Span>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.expected_type_span;
+        self.expected_type_span = span;
+        let result = f(self);
+        self.expected_type_span = previous;
+        result
     }
 
     #[must_use]

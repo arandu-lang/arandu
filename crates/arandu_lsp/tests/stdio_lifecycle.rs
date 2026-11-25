@@ -3632,3 +3632,81 @@ fn stdio_typed_holes_inform_fill_and_clear() {
     );
     lsp.shutdown(4);
 }
+
+#[test]
+fn stdio_t038_quick_fix_replaces_only_the_type_annotation() {
+    let fixture = FixtureDir::new();
+    let document = fixture.path().join("t038-quick-fix.aru");
+    let uri = file_uri(&document);
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "arandu",
+                "version": 1,
+                "text": "module t;\nfunc main(): int { let a: int = 3_000_000_000; return a }\n"
+            }
+        }
+    }));
+
+    let published = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+            && message
+                .pointer("/params/diagnostics")
+                .and_then(Value::as_array)
+                .is_some_and(|diagnostics| {
+                    diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.get("code") == Some(&json!("T038")))
+                })
+    });
+    let diagnostic = published
+        .pointer("/params/diagnostics")
+        .and_then(Value::as_array)
+        .and_then(|diagnostics| {
+            diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.get("code") == Some(&json!("T038")))
+        })
+        .expect("T038 diagnostic")
+        .clone();
+    assert_eq!(
+        diagnostic
+            .pointer("/data/fixes/0/newText")
+            .and_then(Value::as_str),
+        Some("i64"),
+        "T038 must carry a structured replacement: {diagnostic}"
+    );
+
+    let mut action_diagnostic = diagnostic;
+    action_diagnostic["message"] = json!("localized presentation text");
+    let range = action_diagnostic["range"].clone();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/codeAction",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": range,
+            "context": { "diagnostics": [action_diagnostic], "only": ["quickfix"] }
+        }
+    }));
+    let actions = lsp.wait_for_response(2);
+    let edit = actions
+        .pointer("/result/0/edit/changes")
+        .and_then(Value::as_object)
+        .and_then(|changes| changes.values().next())
+        .and_then(Value::as_array)
+        .and_then(|edits| edits.first())
+        .expect("quick fix edit");
+    assert_eq!(edit.get("newText").and_then(Value::as_str), Some("i64"));
+    assert_eq!(edit.pointer("/range/start/line"), Some(&json!(1)));
+    assert_eq!(edit.pointer("/range/start/character"), Some(&json!(26)));
+    assert_eq!(edit.pointer("/range/end/character"), Some(&json!(29)));
+    lsp.shutdown(3);
+}

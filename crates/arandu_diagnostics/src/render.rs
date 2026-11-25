@@ -61,7 +61,7 @@ impl Diagnostic {
                     };
                 let _ = writeln!(
                     out,
-                    "  replacement: at {}:{}-{}:{} with {:?}",
+                    "  replacement: at {}:{}-{}:{} with '{}'",
                     r_start_line, r_start_col, r_end_line, r_end_col, rep.new_text
                 );
             }
@@ -131,6 +131,9 @@ impl miette::Diagnostic for Diagnostic {
             }
             for hint in &self.hints {
                 parts.push(hint.message.clone());
+                if let Some(rep) = &hint.replacement {
+                    parts.push(format!("quick fix: replace with '{}'", rep.new_text));
+                }
             }
             Some(Box::new(parts.join("\n")))
         }

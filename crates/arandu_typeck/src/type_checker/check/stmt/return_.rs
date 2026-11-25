@@ -45,7 +45,29 @@ pub(super) fn check_return_stmt(
         checker.intern(ArType::Void)
     } else if values.len() == 1 {
         // T2.2: return type is the expected context for `.Ok` / `.None` sugar.
-        super::super::super::synth::synth_expr_expected(checker, values[0], Some(current_ret_id))
+        let value_file_id = checker.pool.expr_span(values[0]).file_id;
+        let annotation_span = checker
+            .ctx
+            .current_return_decl_span()
+            .filter(|span| span.start != span.end && span.file_id == value_file_id);
+        let direct_literal = matches!(
+            checker.pool.expr(values[0]),
+            arandu_parser::ast_pool::ExprKind::Int { .. }
+        );
+        checker.with_expected_type_span(
+            if direct_literal {
+                annotation_span
+            } else {
+                None
+            },
+            |checker| {
+                super::super::super::synth::synth_expr_expected(
+                    checker,
+                    values[0],
+                    Some(current_ret_id),
+                )
+            },
+        )
     } else {
         let tys_vec: Vec<TypeId> = values
             .iter()

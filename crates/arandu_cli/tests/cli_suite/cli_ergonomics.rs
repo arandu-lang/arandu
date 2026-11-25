@@ -86,6 +86,94 @@ fn value_options_do_not_consume_the_next_flag_as_their_value() {
 }
 
 #[test]
+fn explain_prints_long_form_documentation_for_a_documented_code() {
+    for args in [
+        vec!["explain", "T018"],
+        vec!["--explain", "T018"],
+        vec!["--explain=T018"],
+    ] {
+        let output = common::cli_command()
+            .args(&args)
+            .output()
+            .expect("print diagnostic explanation");
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("# Error T018:"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+#[test]
+fn explain_rejects_unknown_and_undocumented_codes_with_actionable_errors() {
+    let typo = common::cli_command()
+        .args(["explain", "T01B"])
+        .output()
+        .expect("explain misspelled code");
+    assert_eq!(typo.status.code(), Some(2), "{typo:?}");
+    let stderr = String::from_utf8_lossy(&typo.stderr);
+    assert!(
+        stderr.contains("unknown diagnostic code 'T01B'"),
+        "{stderr}"
+    );
+    // T01B is equally close to several T01x codes: guessing one would be
+    // misleading, so no suggestion is offered.
+    assert!(!stderr.contains("Did you mean"), "{stderr}");
+
+    let unique = common::cli_command()
+        .args(["explain", "T033XX"])
+        .output()
+        .expect("explain unique typo");
+    assert_eq!(unique.status.code(), Some(2), "{unique:?}");
+    assert!(
+        String::from_utf8_lossy(&unique.stderr).contains("Did you mean 'T033'?"),
+        "{}",
+        String::from_utf8_lossy(&unique.stderr)
+    );
+
+    let missing = common::cli_command()
+        .arg("explain")
+        .output()
+        .expect("explain without code");
+    assert_eq!(missing.status.code(), Some(2), "{missing:?}");
+
+    let ice = common::cli_command()
+        .args(["explain", "ICE-T-001"])
+        .output()
+        .expect("explain ICE code");
+    assert_eq!(ice.status.code(), Some(2), "{ice:?}");
+    assert!(
+        String::from_utf8_lossy(&ice.stderr).contains("no long-form explanation"),
+        "{}",
+        String::from_utf8_lossy(&ice.stderr)
+    );
+}
+
+#[test]
+fn non_host_jit_layout_error_suggests_an_accepted_value() {
+    let root = common::temp_dir("arandu-cli-layout-hint").expect("create temp root");
+    let source = root.join("main.aru");
+    fs::write(&source, "func main(): int { return 0 }\n").expect("write source");
+    let path = source.to_string_lossy().into_owned();
+    let non_host = if cfg!(target_pointer_width = "64") {
+        "--layout=ptr4"
+    } else {
+        "--layout=ptr8"
+    };
+
+    let output = common::cli_command()
+        .args(["run", &path, non_host])
+        .output()
+        .expect("run with non-host layout");
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--layout=host"), "{stderr}");
+    assert!(!stderr.contains("--layout=by-host"), "{stderr}");
+}
+
+#[test]
 fn run_hides_incremental_query_counts_unless_verbose_is_requested() {
     let root = common::temp_dir("arandu-cli-run-status").expect("create temp root");
     let source = root.join("main.aru");
@@ -336,4 +424,144 @@ func main(): int {
         String::from_utf8_lossy(&output.stderr)
     );
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn warnings_as_errors_promote_w006_without_overriding_suppress() {
+    let root = common::temp_dir("arandu-cli-werror").expect("create temp root");
+    let source = root.join("main.aru");
+    fs::write(
+        &source,
+        r#"from std.core.result import { Result }
+func risky(): Result<int, int> { return Result.Ok(1) }
+func plain() {
+    let r = risky()
+}
+func main(): int { return 0 }
+"#,
+    )
+    .expect("write warning source");
+    let path = source.to_string_lossy().into_owned();
+
+    let warning = common::cli_command()
+        .args(["check", &path])
+        .output()
+        .expect("check warning source");
+    assert!(warning.status.success(), "{warning:?}");
+    assert!(
+        String::from_utf8_lossy(&warning.stderr).contains("W006"),
+        "{}",
+        String::from_utf8_lossy(&warning.stderr)
+    );
+
+    for alias in ["-Werror", "--warnings-as-errors"] {
+        let promoted = common::cli_command()
+            .args(["check", &path, alias])
+            .output()
+            .expect("check with warnings as errors");
+        assert_eq!(promoted.status.code(), Some(1), "{alias}: {promoted:?}");
+        let stderr = String::from_utf8_lossy(&promoted.stderr).to_ascii_lowercase();
+        assert!(stderr.contains("w006"), "{alias}: {stderr}");
+        assert!(stderr.contains("error"), "{alias}: {stderr}");
+        assert!(
+            !String::from_utf8_lossy(&promoted.stdout).contains("ok"),
+            "{alias}: {}",
+            String::from_utf8_lossy(&promoted.stdout)
+        );
+    }
+
+    let suppressed = root.join("suppressed.aru");
+    fs::write(
+        &suppressed,
+        r#"from std.core.result import { Result }
+func risky(): Result<int, int> { return Result.Ok(1) }
+@Suppress("W006")
+func quiet() {
+    let r = risky()
+}
+func main(): int { return 0 }
+"#,
+    )
+    .expect("write suppressed source");
+    let suppressed_path = suppressed.to_string_lossy().into_owned();
+    let suppressed = common::cli_command()
+        .args(["check", &suppressed_path, "-Werror"])
+        .output()
+        .expect("check suppressed source");
+    assert!(suppressed.status.success(), "{suppressed:?}");
+    assert!(
+        !String::from_utf8_lossy(&suppressed.stderr).contains("W006"),
+        "{}",
+        String::from_utf8_lossy(&suppressed.stderr)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn help_command_prints_global_and_command_help() {
+    let global = common::cli_command()
+        .arg("help")
+        .output()
+        .expect("run help command");
+    assert!(global.status.success(), "{global:?}");
+    assert!(
+        String::from_utf8_lossy(&global.stdout).contains("Commands:"),
+        "{}",
+        String::from_utf8_lossy(&global.stdout)
+    );
+
+    let check = common::cli_command()
+        .args(["help", "check"])
+        .output()
+        .expect("run help for check");
+    assert!(check.status.success(), "{check:?}");
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("--watch"),
+        "{}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let typo = common::cli_command()
+        .args(["help", "tset"])
+        .output()
+        .expect("run help for a misspelled command");
+    assert_eq!(typo.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&typo.stderr).contains("Did you mean 'test'?"));
+}
+
+#[test]
+fn unknown_options_name_the_flag_and_suggest_a_fix() {
+    let global = common::cli_command()
+        .arg("--whatever")
+        .output()
+        .expect("run unknown global option");
+    assert_eq!(global.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&global.stderr);
+    assert!(stderr.contains("unknown option '--whatever'"), "{stderr}");
+    assert!(stderr.contains("arandu --help"), "{stderr}");
+
+    let typo = common::cli_command()
+        .args(["check", "--layot", "missing.aru"])
+        .output()
+        .expect("run misspelled check option");
+    assert_eq!(typo.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&typo.stderr);
+    assert!(
+        stderr.contains("unknown option '--layot' for 'check'"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Did you mean '--layout'?"), "{stderr}");
+
+    let test_typo = common::cli_command()
+        .args(["test", "--fail-fas"])
+        .output()
+        .expect("run misspelled test option");
+    assert_eq!(test_typo.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&test_typo.stderr);
+    assert!(
+        stderr.contains("unknown option '--fail-fas' for 'test'"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Did you mean '--fail-fast'?"), "{stderr}");
 }

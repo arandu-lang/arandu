@@ -111,6 +111,7 @@ pub struct CliInvocation {
     pub ascii: bool,
     pub quiet: bool,
     pub watch: bool,
+    pub explain: Option<String>,
     pub args: Vec<String>,
     /// Arguments following `--`, forwarded verbatim to an executed program.
     pub program_args: Vec<String>,
@@ -132,6 +133,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
     let mut ascii = false;
     let mut quiet = false;
     let mut watch = false;
+    let mut explain = None;
     let mut no_daemon = false;
     let mut color = ColorChoice::Auto;
     let mut args = Vec::new();
@@ -313,7 +315,9 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
                 || s == "--locked"
                 || s == "--offline"
                 || s == "--frozen"
-                || s == "--accept" =>
+                || s == "--accept"
+                || s == "-Werror"
+                || s == "--warnings-as-errors" =>
             {
                 if s == "--target" {
                     raw_project_flags.push(arg.clone());
@@ -327,6 +331,22 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
                 } else {
                     raw_project_flags.push(arg.clone());
                 }
+            }
+            "--explain" => {
+                i += 1;
+                let value = raw_args_vec.get(i).filter(|value| !value.starts_with('-'));
+                explain = Some(
+                    value
+                        .unwrap_or_else(|| fail_usage("--explain requires a diagnostic code"))
+                        .clone(),
+                );
+            }
+            s if s.starts_with("--explain=") => {
+                let value = s.trim_start_matches("--explain=");
+                if value.is_empty() {
+                    fail_usage("--explain requires a diagnostic code");
+                }
+                explain = Some(value.to_owned());
             }
             _ => args.push(arg.clone()),
         }
@@ -375,6 +395,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
         ascii,
         quiet,
         watch,
+        explain,
         args,
         program_args,
         z_flags,
@@ -484,7 +505,8 @@ pub fn global_help() -> &'static str {
         "  fmt        Format one or more source files or directories\n",
         "  completions Generate shell completion definitions\n",
         "  doctor     Inspect compiler toolchain and environment\n",
-        "  cache      Inspect, prune, and verify compiler caches\n\n",
+        "  cache      Inspect, prune, and verify compiler caches\n",
+        "  explain    Print the long-form documentation for a diagnostic code\n\n",
         "Compiler Inspection (advanced):\n",
         "  lex, parse, hir, amir, graph, emit-c, emit-llvm, emit-wasm, emit-component\n",
         "  hash-file  Compute a BLAKE3 checksum for packaging\n",
@@ -504,6 +526,8 @@ pub fn global_help() -> &'static str {
         "  -v, --verbose              Enable detailed progress and timing logs\n",
         "  -q, --quiet                Suppress non-error status and progress output\n",
         "      --watch                Repeat package checks after source changes (check only)\n",
+        "      --explain CODE         Print long-form diagnostic documentation\n",
+        "  -Werror                    Promote warnings to errors (also: --warnings-as-errors)\n",
         "  -V, --version              Print compiler version and exit\n",
         "  -h, --help                 Print this help message (or command-specific help)\n\n",
         "Generational Memory Safety (GenRef):\n",
@@ -522,6 +546,7 @@ pub fn global_help() -> &'static str {
         "  -Zdebug-all                Enable all compiler debug traces\n",
         "  -Zself-profile=<path>      Record detailed execution profile\n",
         "  -Zexplain-rebuild          Explain reason for Salsa incremental rebuild\n",
+        "  -Z flags run in batch mode; timings are written to stderr\n",
         "  -Zno-generational-fallback Synonym for --no-generational-fallback\n\n",
         "Environment & Defaults:\n",
         "  backend: build → Cranelift baseline; build --release → Cranelift speed + AMIR O2; --size → speed_and_size + AMIR Os\n",
@@ -590,6 +615,9 @@ pub fn command_help(command: &str) -> Option<&'static str> {
         ),
         "cache" => Some(
             "Usage: arandu cache <dir|inspect|verify|verify-tree|prune> [options]\n\nInspect or maintain the compiler cache.\n",
+        ),
+        "explain" => Some(
+            "Usage: arandu explain <CODE>\n\nPrint the long-form documentation for a user-facing diagnostic code.\nAlso available as the global flag `--explain CODE`.\n\nExamples:\n  arandu explain T018\n  arandu --explain W006\n",
         ),
         "lex" => Some(
             "Usage: arandu lex <file.aru>\n\nPrint the source token stream (compiler inspection tool).\n",
@@ -675,6 +703,58 @@ mod tests {
             "--backend=cranelift".to_string(),
         ]);
         assert_eq!(equals.backend, RunBackend::Cranelift);
+    }
+
+    #[test]
+    fn explain_accepts_separated_and_equals_forms() {
+        let separated = parse_invocation([
+            "arandu".to_string(),
+            "--explain".to_string(),
+            "T018".to_string(),
+        ]);
+        assert_eq!(separated.explain.as_deref(), Some("T018"));
+        assert_eq!(separated.args, ["arandu"]);
+
+        let equals = parse_invocation(["arandu".to_string(), "--explain=T018".to_string()]);
+        assert_eq!(equals.explain.as_deref(), Some("T018"));
+        assert_eq!(equals.args, ["arandu"]);
+    }
+
+    #[test]
+    fn explain_does_not_consume_the_double_dash_separator() {
+        let invocation = parse_invocation([
+            "arandu".to_string(),
+            "run".to_string(),
+            "--".to_string(),
+            "--explain".to_string(),
+            "T018".to_string(),
+        ]);
+        assert_eq!(invocation.explain, None);
+        assert_eq!(invocation.program_args, ["--explain", "T018"]);
+    }
+
+    #[test]
+    fn help_lists_explain_and_its_command_help() {
+        assert!(global_help().contains("--explain CODE"));
+        assert!(
+            command_help("explain")
+                .unwrap()
+                .contains("Usage: arandu explain <CODE>")
+        );
+    }
+
+    #[test]
+    fn warnings_as_errors_aliases_are_project_flags() {
+        for alias in ["-Werror", "--warnings-as-errors"] {
+            let invocation = parse_invocation([
+                "arandu".to_string(),
+                "check".to_string(),
+                alias.to_string(),
+                "main.aru".to_string(),
+            ]);
+            assert!(invocation.project_flags.warnings_as_errors, "{alias}");
+            assert_eq!(invocation.args, ["arandu", "check", "main.aru"]);
+        }
     }
 
     #[test]

@@ -1471,6 +1471,53 @@ fn test_contextual_literal_overflow_diagnostic() {
 }
 
 #[test]
+fn t038_structured_quick_fix_replaces_only_direct_annotations() {
+    let source = r#"
+    module test;
+    func main(): int {
+        let a: int = 3_000_000_000;
+        return 0
+    }
+    "#;
+    let program = arandu_parser::parse(source).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let check_res = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    let diag = check_res
+        .diagnostics
+        .iter()
+        .find(|d| d.code == crate::DiagCode::T038IntegerLiteralOutOfRange)
+        .expect("direct literal under `int` must report T038");
+    let replacement = diag
+        .hints
+        .iter()
+        .find_map(|hint| hint.replacement.as_ref())
+        .expect("T038 must carry a structured replacement for `int`");
+    assert_eq!(replacement.new_text, "i64");
+    assert_eq!(
+        &source[replacement.span.start as usize..replacement.span.end as usize],
+        "int"
+    );
+
+    let nested = r#"
+    module test;
+    func take(x: int): int { return x }
+    func main(): int { return take(3_000_000_000) }
+    "#;
+    let program = arandu_parser::parse(nested).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let check_res = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    let diag = check_res
+        .diagnostics
+        .iter()
+        .find(|d| d.code == crate::DiagCode::T038IntegerLiteralOutOfRange)
+        .expect("nested literal must still report T038");
+    assert!(
+        diag.hints.iter().all(|hint| hint.replacement.is_none()),
+        "nested literal has no safe annotation to rewrite"
+    );
+}
+
+#[test]
 fn test_contextual_literal_uint_overflow() {
     // RFC 0023: uint is fixed 32-bit across all targets.
     let source = r#"

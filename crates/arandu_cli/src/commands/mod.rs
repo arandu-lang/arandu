@@ -5,6 +5,7 @@ pub mod bench;
 pub mod build;
 pub mod doc;
 pub mod doctor;
+pub mod explain;
 pub mod fmt;
 pub mod hash;
 mod llvm_product;
@@ -52,6 +53,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "hash-file",
     "completions",
     "archive",
+    "explain",
 ];
 
 pub fn run(raw_args: Vec<String>) -> CliResult {
@@ -74,6 +76,9 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
         println!("arandu {}", env!("CARGO_PKG_VERSION"));
         return Ok(CliSuccess::Done);
     }
+    if let Some(code) = &inv.explain {
+        return explain::cmd_explain(code);
+    }
 
     if inv.args.len() < 2 {
         usage_and_exit();
@@ -81,6 +86,57 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
     if matches!(inv.args.get(1).map(String::as_str), Some("-h" | "--help")) {
         println!("{}", args::global_help());
         return Ok(CliSuccess::Done);
+    }
+    if inv.args.get(1).map(String::as_str) == Some("help") {
+        if inv.args.len() == 2 {
+            println!("{}", args::global_help());
+            return Ok(CliSuccess::Done);
+        }
+        let target = inv.args[2].as_str();
+        match args::command_help(target) {
+            Some(help) => {
+                println!("{help}");
+                return Ok(CliSuccess::Done);
+            }
+            None => {
+                let suggestion = COMMAND_NAMES
+                    .iter()
+                    .map(|candidate| (*candidate, edit_distance(target, candidate)))
+                    .filter(|(_, distance)| *distance <= 2)
+                    .min_by_key(|(_, distance)| *distance)
+                    .map(|(candidate, _)| candidate);
+                match suggestion {
+                    Some(candidate) => fail_usage(format!(
+                        "error: unknown command '{target}'. Did you mean '{candidate}'?"
+                    )),
+                    None => fail_usage(format!("error: unknown command '{target}'")),
+                }
+            }
+        }
+    }
+    if let Some(option) = inv.args.get(1)
+        && option.starts_with('-')
+    {
+        fail_usage(unknown_option_error(
+            option,
+            None,
+            &[
+                "--help",
+                "--version",
+                "--explain",
+                "--release",
+                "--target",
+                "--layout",
+                "--stdlib-path",
+                "--cache-dir",
+                "--quiet",
+                "--verbose",
+                "-Werror",
+                "--warnings-as-errors",
+                "--watch",
+                "--no-daemon",
+            ],
+        ));
     }
 
     let command = inv.args[1].as_str();
@@ -116,6 +172,12 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
 
     // ── Project / environment commands (no mandatory .aru path) ──────────
     match command {
+        "explain" => {
+            if inv.args.len() != 3 {
+                fail_usage("usage: arandu explain <CODE>");
+            }
+            return explain::cmd_explain(&inv.args[2]);
+        }
         "completions" => {
             if inv.args.len() != 3 {
                 fail_usage("usage: arandu completions <bash|zsh|fish|powershell>");
@@ -130,7 +192,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                 if arg == "--check" {
                     check_only = true;
                 } else if arg.starts_with('-') {
-                    fail_usage(format!("unknown option for fmt: {arg}"));
+                    fail_usage(unknown_option_error(arg, Some("fmt"), &["--check"]));
                 } else {
                     paths.push(PathBuf::from(arg));
                 }
@@ -300,7 +362,25 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                     if runner.output.is_none() {
                         fail_usage("--output requires a file path");
                     }
-                } else if argument.starts_with('-') || start.is_some() {
+                } else if argument.starts_with('-') {
+                    fail_usage(unknown_option_error(
+                        argument,
+                        Some("test"),
+                        &[
+                            "--list",
+                            "--doc",
+                            "--harness-child",
+                            "--exact",
+                            "--fail-fast",
+                            "--jobs",
+                            "--timeout",
+                            "--seed",
+                            "--format",
+                            "--filter",
+                            "--output",
+                        ],
+                    ));
+                } else if start.is_some() {
                     fail_usage("usage: arandu test [package-path] --list [--exact <id>]");
                 } else {
                     start = Some(PathBuf::from(argument));
@@ -438,7 +518,32 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                             "--noise-threshold requires a percentage from 0 to 100",
                         );
                     }
-                    _ if argument.starts_with('-') || start.is_some() => {
+                    _ if argument.starts_with('-') => {
+                        fail_usage(unknown_option_error(
+                            argument,
+                            Some("bench"),
+                            &[
+                                "--list",
+                                "--harness-child",
+                                "--exact",
+                                "--filter",
+                                "--warmup",
+                                "--measurement-time",
+                                "--samples",
+                                "--timeout",
+                                "--format",
+                                "--output",
+                                "--save-baseline",
+                                "--compare",
+                                "--baseline",
+                                "--strict",
+                                "--dry-run",
+                                "--max-regression",
+                                "--noise-threshold",
+                            ],
+                        ));
+                    }
+                    _ if start.is_some() => {
                         fail_usage("usage: arandu bench [package-path] [flags]");
                     }
                     _ => start = Some(PathBuf::from(argument)),
@@ -532,6 +637,27 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
     }
 
     // ── Legacy single-path commands ──────────────────────────────────────
+    if matches!(
+        command,
+        "lex"
+            | "parse"
+            | "check"
+            | "hir"
+            | "amir"
+            | "run"
+            | "emit-c"
+            | "emit-llvm"
+            | "emit-wasm"
+            | "emit-component"
+            | "graph"
+    ) && let Some(option) = inv.args[2..].iter().find(|arg| arg.starts_with('-'))
+    {
+        fail_usage(unknown_option_error(
+            option,
+            Some(command),
+            &["--stdlib-path", "--cache-dir", "--layout", "--target"],
+        ));
+    }
     if inv.args.len() != 3 {
         usage_and_exit();
     }
@@ -608,7 +734,23 @@ fn print_completions(shell: &str) {
     }
 }
 
-fn edit_distance(left: &str, right: &str) -> usize {
+pub(crate) fn unknown_option_error(flag: &str, command: Option<&str>, known: &[&str]) -> String {
+    let suggestion = known
+        .iter()
+        .map(|candidate| (*candidate, edit_distance(flag, candidate)))
+        .filter(|(_, distance)| *distance <= 2)
+        .min_by_key(|(_, distance)| *distance)
+        .map(|(candidate, _)| format!(". Did you mean '{candidate}'?"))
+        .unwrap_or_default();
+    match command {
+        Some(command) => format!(
+            "error: unknown option '{flag}' for '{command}'{suggestion}; see 'arandu {command} --help'"
+        ),
+        None => format!("error: unknown option '{flag}'{suggestion}; see 'arandu --help'"),
+    }
+}
+
+pub(crate) fn edit_distance(left: &str, right: &str) -> usize {
     let mut previous: Vec<usize> = (0..=right.chars().count()).collect();
     for (row, left_char) in left.chars().enumerate() {
         let mut current = vec![row + 1; previous.len()];

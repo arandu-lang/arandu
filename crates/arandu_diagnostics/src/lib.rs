@@ -208,6 +208,17 @@ impl Diagnostic {
         }
     }
 
+    /// Promotes a warning to an error for `-Werror`, preserving all other data.
+    ///
+    /// Local `@Deny`/`@Forbid` levels and real errors are already promoted by
+    /// the type checker; this driver-boundary helper must not touch them or
+    /// `Note`/`Hint` severities.
+    pub fn promote_warning_to_error(&mut self) {
+        if self.severity == Severity::Warning {
+            self.severity = Severity::Error;
+        }
+    }
+
     /// Returns `true` if this diagnostic represents an Internal Compiler Error (ICE).
     #[must_use]
     pub fn is_ice(&self) -> bool {
@@ -307,6 +318,31 @@ mod tests {
         assert_eq!(Severity::Warning.to_string(), "warning");
         assert_eq!(Severity::Note.to_string(), "note");
         assert_eq!(Severity::Hint.to_string(), "hint");
+    }
+
+    #[test]
+    fn werror_promotes_only_warnings_and_preserves_payload() {
+        let mut warning = Diagnostic::warning(
+            DiagCode::W001VariableAssignedNotUsed,
+            "unused variable",
+            dummy_span(),
+        )
+        .with_note("declared here")
+        .with_hint("remove it");
+        warning.promote_warning_to_error();
+        assert_eq!(warning.severity, Severity::Error);
+        assert_eq!(warning.code, DiagCode::W001VariableAssignedNotUsed);
+        assert_eq!(warning.message, "unused variable");
+        assert_eq!(warning.notes, ["declared here"]);
+        assert_eq!(warning.hints[0].message, "remove it");
+
+        let mut note = Diagnostic::note(DiagCode::N001UndefinedValue, "note", dummy_span());
+        note.promote_warning_to_error();
+        assert_eq!(note.severity, Severity::Note);
+
+        let mut error = Diagnostic::error(DiagCode::T001CannotInferType, "error", dummy_span());
+        error.promote_warning_to_error();
+        assert_eq!(error.severity, Severity::Error);
     }
 
     // ── DiagCode ──
@@ -580,7 +616,7 @@ mod tests {
         )
         .with_hint_replacement(hint);
         let out = d.format_for_cli(&reg);
-        assert!(out.contains("replacement: at 1:1-1:5 with \"int\""));
+        assert!(out.contains("replacement: at 1:1-1:5 with 'int'"));
     }
 
     #[test]

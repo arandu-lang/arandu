@@ -28,6 +28,7 @@ arandu_backend_wasm = { path = "../arandu_backend_wasm" }
 arandu_codegen = { path = "../arandu_codegen" }
 arandu_runtime = { path = "../arandu_runtime" }
 arandu_query = { path = "../arandu_query" }
+arandu_diagnostics = { path = "../arandu_diagnostics" }
 arandu_fmt = { path = "../arandu_fmt" }
 arandu_doc = { path = "../arandu_doc" }
 

@@ -6,6 +6,7 @@ use super::synth_expr;
 use crate::type_checker::TypeChecker;
 use crate::type_checker::constraints::ConstraintOrigin;
 use crate::type_checker::types::{self, ArType, Primitive};
+use crate::{CodeReplacement, Hint};
 use arandu_middle::types::type_interner::TypeId;
 
 /// Infer `struct` type arguments from field initializers.
@@ -207,21 +208,42 @@ pub(super) fn synth_literal_expr(
                         _ => true,
                     };
                     if !fits {
-                        checker.diagnostics.push(
-                            crate::Diagnostic::error(
-                                crate::DiagCode::T038IntegerLiteralOutOfRange,
-                                format!(
-                                    "integer literal `{value}` does not fit in `{}`",
-                                    p.as_str()
-                                ),
-                                span,
-                            )
-                            .with_label(
-                                span,
-                                format!("value is outside the range of `{}`", p.as_str()),
-                            )
-                            .with_hint("use a wider integer type or change the literal value"),
+                        let mut diag = crate::Diagnostic::error(
+                            crate::DiagCode::T038IntegerLiteralOutOfRange,
+                            format!("integer literal `{value}` does not fit in `{}`", p.as_str()),
+                            span,
+                        )
+                        .with_label(
+                            span,
+                            format!("value is outside the range of `{}`", p.as_str()),
                         );
+                        // Only a direct literal under a known annotation gets a
+                        // replacement: changing `int` elsewhere would not fix
+                        // literals nested in calls or aggregates.
+                        if p == Primitive::Int
+                            && let Some(annotation) = checker.expected_type_span
+                            && annotation.file_id == span.file_id
+                            && annotation.start != annotation.end
+                        {
+                            let wider = if parsed <= i64::MAX as i128 {
+                                "i64"
+                            } else {
+                                "u64"
+                            };
+                            diag = diag.with_hint_replacement(Hint {
+                                message: format!(
+                                    "change the type annotation from `int` to `{wider}`"
+                                ),
+                                replacement: Some(CodeReplacement {
+                                    span: annotation,
+                                    new_text: wider.to_owned(),
+                                }),
+                            });
+                        } else {
+                            diag = diag
+                                .with_hint("use a wider integer type or change the literal value");
+                        }
+                        checker.diagnostics.push(diag);
                     }
                     // Keep the contextual type after reporting. Falling back to
                     // `IntLiteral` would make generic literal unification accept

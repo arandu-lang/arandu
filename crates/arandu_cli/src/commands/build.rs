@@ -446,7 +446,7 @@ impl BuildSession {
         )?);
         let mut registry = arandu_base::SourceRegistry::default();
         let (file, filepath) = try_open_entry_file(db, &mut registry, &ctx.entry_path)?;
-        let artifacts = lower(db, file, &filepath)?;
+        let artifacts = lower(db, file, &filepath, flags.warnings_as_errors)?;
         if checkpoint() {
             return Err(superseded_failure());
         }
@@ -477,7 +477,7 @@ impl BuildSession {
             );
         }
         if explain_rebuild && let Some(log) = &rebuild_log {
-            errp!("{}", log.format_chain(true));
+            errp!("{}", log.format_summary(true, 12));
         }
 
         let compiler_artifact_layout = if is_wasm {
@@ -731,7 +731,7 @@ mod tests {
                 log.count_executions_matching("instance_hir"),
                 1,
                 "{}",
-                log.format_chain(false)
+                log.format_summary(false, 12)
             );
 
             let cold = project("cold", &library(3));

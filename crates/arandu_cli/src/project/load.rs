@@ -74,6 +74,8 @@ pub struct ProjectFlags {
     pub verbose: bool,
     pub locked: bool,
     pub offline: bool,
+    /// Promote warnings to errors at the driver boundary (like rustc `-D warnings`).
+    pub warnings_as_errors: bool,
     /// Explicit authority to publish a changed graph containing remote code.
     pub accept_lock: bool,
     pub color: crate::args::ColorChoice,
@@ -140,6 +142,8 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
             flags.offline = true;
         } else if a == "--accept" {
             flags.accept_lock = true;
+        } else if a == "-Werror" || a == "--warnings-as-errors" {
+            flags.warnings_as_errors = true;
         } else if a == "--no-color" {
             flags.color = crate::args::ColorChoice::Never;
         } else if a == "--color=always" {

@@ -26,7 +26,19 @@ pub(super) fn check_var_decl_stmt(
     };
     // The binding keeps the value alive while a `str` view of it is used.
     checker.text_view_sites.insert(value);
-    let val_ty_id = super::super::super::synth::synth_expr_expected(checker, value, expected);
+    let annotation_span = bindings
+        .first()
+        .and_then(|binding| binding.ty)
+        .map(|ty| checker.pool.type_expr_span(ty));
+    let direct_literal = matches!(checker.pool.expr(value), ExprKind::Int { .. });
+    let val_ty_id = checker.with_expected_type_span(
+        if direct_literal {
+            annotation_span
+        } else {
+            None
+        },
+        |checker| super::super::super::synth::synth_expr_expected(checker, value, expected),
+    );
 
     if bindings.len() > 1 {
         check_multi_var_decl(checker, bindings, value, val_ty_id);

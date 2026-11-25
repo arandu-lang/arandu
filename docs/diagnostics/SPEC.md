@@ -164,7 +164,7 @@ crates/arandu_diagnostics/
 
 #### Mecanismo de Validação e Geração:
 1.  Durante a etapa de build, o `build.rs` lê o diretório `docs/errors/` e extrai todos os códigos documentados (arquivos no formato `[CÓDIGO].md`).
-2.  O script valida a **bijetividade (sincronia 1:1)** entre as variantes do enum `DiagCode` e os arquivos `.md` existentes. Se houver algum código declarado sem sua respectiva documentação em português (ou vice-versa), o build **falha imediatamente**, exibindo uma mensagem limpa:
+2.  O script valida a **bijetividade (sincronia 1:1)** entre as variantes do enum `DiagCode` e os arquivos `.md` existentes. Se houver algum código declarado sem sua respectiva documentação em inglês (ou vice-versa), o build **falha imediatamente**, exibindo uma mensagem limpa:
     ```text
     error: missing documentation file docs/errors/T018.md for declared diagnostic code T018
     ```

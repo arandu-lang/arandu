@@ -147,6 +147,7 @@ dependencies = [
  "arandu_backend_wasm",
  "arandu_base",
  "arandu_codegen",
+ "arandu_diagnostics",
  "arandu_doc",
  "arandu_ffi",
  "arandu_fmt",

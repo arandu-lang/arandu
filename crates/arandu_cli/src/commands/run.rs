@@ -61,7 +61,7 @@ pub fn cmd_project_run(
     };
     let mut registry = arandu_base::SourceRegistry::default();
     let (file, filepath) = open_entry_file(&db, &mut registry, &ctx.entry_path);
-    let artifacts = pipeline_lower(&db, file, &filepath);
+    let artifacts = pipeline_lower(&db, file, &filepath, flags.warnings_as_errors);
     if genref_report {
         print_genref_report(&filepath, &artifacts);
     }
@@ -466,7 +466,11 @@ pub fn cmd_single_file_dispatch(
                     Ok(guard) => guard.clone(),
                     Err(poisoned) => poisoned.into_inner().clone(),
                 };
-                let outcome = pipeline_lower_checked(&thread_db, source_file);
+                let outcome = pipeline_lower_checked(
+                    &thread_db,
+                    source_file,
+                    project_flags.warnings_as_errors,
+                );
                 (filepath, outcome)
             })
             .collect::<Vec<_>>();
@@ -503,7 +507,7 @@ pub fn cmd_single_file_dispatch(
         }
 
         if explain && let Some(log) = rebuild_log {
-            eprint!("{}", log.format_chain(true));
+            eprint!("{}", log.format_summary(true, 12));
         }
         return Ok(CliSuccess::Done);
     }
@@ -528,7 +532,7 @@ pub fn cmd_single_file_dispatch(
         );
     }
     if explain && let Some(log) = rebuild_log {
-        eprint!("{}", log.format_chain(true));
+        eprint!("{}", log.format_summary(true, 12));
     }
 
     Ok(CliSuccess::Done)
@@ -591,7 +595,7 @@ pub fn cmd_project_check(
                     Ok(guard) => guard.clone(),
                     Err(poisoned) => poisoned.into_inner().clone(),
                 };
-                let outcome = pipeline_lower_checked(&thread_db, sf);
+                let outcome = pipeline_lower_checked(&thread_db, sf, flags.warnings_as_errors);
                 (path_str, outcome)
             })
             .collect::<Vec<_>>();
@@ -611,7 +615,7 @@ pub fn cmd_project_check(
         }
     } else {
         for (sf, path_str) in &module_files {
-            let artifacts = pipeline_lower(&db, *sf, path_str);
+            let artifacts = pipeline_lower(&db, *sf, path_str, flags.warnings_as_errors);
             if genref_report && *path_str == filepath {
                 print_genref_report(&filepath, &artifacts);
             }
@@ -623,7 +627,7 @@ pub fn cmd_project_check(
         eprintln!("{}", log.status_line());
     }
     if explain_rebuild && let Some(log) = &rebuild_log {
-        eprint!("{}", log.format_chain(true));
+        eprint!("{}", log.format_summary(true, 12));
     }
     if !flags.quiet {
         println!("ok {} ({}/{})", filepath, ctx.name, ctx.version);

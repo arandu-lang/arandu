@@ -10,6 +10,17 @@ cd "$ROOT"
 
 PKG="${1:-arandu_typeck}"
 THREADS_N="${2:-8}"
+SUITE=(--lib)
+if [[ "${3:-}" == --test ]]; then
+  if [[ -z "${4:-}" ]]; then
+    echo "error: --test requires a test target name" >&2
+    exit 2
+  fi
+  SUITE=(--test "$4")
+elif [[ -n "${3:-}" ]]; then
+  echo "error: unknown argument '$3' (expected --test <name>)" >&2
+  exit 2
+fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -25,16 +36,16 @@ normalize() {
     | sort -u
 }
 
-echo "==> determinism: cargo test --locked -p ${PKG} --lib -- --test-threads=1"
+echo "==> determinism: cargo test --locked -p ${PKG} ${SUITE[*]} -- --test-threads=1"
 set +e
-cargo test --locked -p "$PKG" --lib -- --test-threads=1 --quiet >"$TMP/t1.raw" 2>&1
+cargo test --locked -p "$PKG" "${SUITE[@]}" -- --test-threads=1 --quiet >"$TMP/t1.raw" 2>&1
 EC1=$?
 set -e
 normalize <"$TMP/t1.raw" >"$TMP/t1.norm"
 
-echo "==> determinism: cargo test --locked -p ${PKG} --lib -- --test-threads=${THREADS_N}"
+echo "==> determinism: cargo test --locked -p ${PKG} ${SUITE[*]} -- --test-threads=${THREADS_N}"
 set +e
-cargo test --locked -p "$PKG" --lib -- --test-threads="$THREADS_N" --quiet >"$TMP/tN.raw" 2>&1
+cargo test --locked -p "$PKG" "${SUITE[@]}" -- --test-threads="$THREADS_N" --quiet >"$TMP/tN.raw" 2>&1
 ECN=$?
 set -e
 normalize <"$TMP/tN.raw" >"$TMP/tN.norm"

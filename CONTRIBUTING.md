@@ -116,7 +116,7 @@ Arandu relies on various test types:
 - **Golden Tests**: Tests that compare the output of parser/AST/AMIR lowering stages against stable snapshots (`.hir`, `.amir`, `.diag` files).
   To update golden tests after making valid parser/compiler modifications, run:
   ```bash
-  UPDATE_EXPECT=1 cargo test --workspace --locked
+  UPDATE_GOLDEN=1 cargo test --workspace --locked
   ```
 
 Thank you again for contributing to Arandu!

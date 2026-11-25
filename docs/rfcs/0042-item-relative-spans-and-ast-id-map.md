@@ -407,7 +407,7 @@ acoplamentos além dos spans.
 | `NodeKey` locais colidindo entre itens | chaves sempre acompanhadas do `AstId` quando atravessam itens |
 | diagnóstico com label em outro item ou arquivo | materializar cada span com o mapa do arquivo dono do span |
 | caminhos CTFE/staged que leem o `Program` inteiro | migrar junto ou manter identidade exata, como `FingerprintEq::exact` já faz para ramos não auditados |
-| goldens de HIR/AMIR que imprimem spans | inspecionar cada mudança antes de `UPDATE_EXPECT=1` |
+| goldens de HIR/AMIR que imprimem spans | inspecionar cada mudança antes de `UPDATE_GOLDEN=1` |
 | memória duplicada (AST do arquivo + AST por item) | medir RSS na fase 2; se pesar, o AST do arquivo deixa de ser retido pelo caminho por item |
 | reordenação de itens muda ordinais (Q1) | aceitar a invalidação dos itens reordenados na v1 |
 

@@ -132,7 +132,7 @@ camadas é uma regressão arquitetural.
 - Preserve spans reais e a ordenação determinística dos diagnósticos. O
   renderer atual é Miette; não introduza outro renderer sem decisão explícita.
 - Fixtures dourados cobrem lexer/parser/semântica/HIR/AMIR/UI. Só use
-  `UPDATE_EXPECT=1 cargo test --workspace --locked` após inspecionar e aceitar cada
+  `UPDATE_GOLDEN=1 cargo test --workspace --locked` após inspecionar e aceitar cada
   alteração de snapshot.
 - Snapshots não devem serializar offsets incidentais quando o contrato testado
   é semântico. Quando spans fizerem parte do contrato, fixtures e scripts devem
@@ -259,7 +259,7 @@ devem ficar no `AGENTS.md` daquela subárvore ou no skill apropriado.
    1. `cargo fmt --all -- --check`
    2. `cargo check --workspace --locked`
    3. `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
-   4. `cargo nextest run --workspace --locked` (ou `cargo test --workspace --locked`)
+   4. `cargo nextest run --workspace --locked --profile verification --test-threads 2` (ou `cargo test --workspace --locked`, como no CI)
    5. `cargo run --locked -p xtask -- check-diag-docs`
    6. `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`
 

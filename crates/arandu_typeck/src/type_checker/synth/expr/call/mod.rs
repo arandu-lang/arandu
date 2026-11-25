@@ -97,7 +97,7 @@ fn instantiate_function_value(
             bindings
                 .get(param)
                 .copied()
-                .filter(|&ty| !closure::mentions_type_parameter(checker, ty))
+                .filter(|&ty| !closure::mentions_foreign_type_parameter(checker, ty))
         })
         .collect::<Option<Vec<_>>>();
     let Some(concrete) = concrete else {
@@ -164,50 +164,7 @@ fn check_function_value(
         );
         return;
     }
-    if checker.type_info.exported_functions.contains(&symbol)
-        && !exported_entry_is_internal(checker, symbol)
-    {
-        checker.diagnostics.push(
-            crate::Diagnostic::error(
-                crate::DiagCode::U001FeatureNotSupported,
-                "an `@Export` function cannot be used as a function value yet",
-                span,
-            )
-            .with_label(
-                span,
-                "its exported entry point uses the C calling convention",
-            )
-            .with_note("a signature of scalars and pointers alone has one entry point for both conventions")
-            .with_note("wrap it in a plain function and use that as the value"),
-        );
-        return;
-    }
     let _ = check_target_thread_capabilities(checker, symbol, span);
-}
-
-/// Whether the C entry point of an `@Export` function is also a valid
-/// internal one: with scalars and thin pointers alone, both conventions
-/// pass every value in the same registers, as a C function pointer such as
-/// Lua's `lua_CFunction` needs. Aggregates and views are laid out for C.
-fn exported_entry_is_internal(checker: &TypeChecker<'_>, symbol: arandu_middle::SymbolId) -> bool {
-    let Some(ty) = checker.type_info.decl_type_id(symbol) else {
-        return false;
-    };
-    let interner = &checker.type_info.type_interner;
-    let ArType::Func(params, ret) = interner.resolve(ty) else {
-        return false;
-    };
-    let scalar = |ty: TypeId, is_return: bool| match interner.resolve(ty) {
-        ArType::Primitive(primitive) => primitive != arandu_middle::types::Primitive::Str,
-        ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) => true,
-        ArType::Void => is_return,
-        _ => false,
-    };
-    interner
-        .type_args(params)
-        .iter()
-        .all(|&param| scalar(param, false))
-        && scalar(ret, true)
 }
 
 fn synth_result_ctor_value_type(
@@ -598,7 +555,6 @@ pub(super) fn synth_call_expr(
             let left_ty_id = synth_expr(checker, left_id);
             let left_ty = checker.resolve(left_ty_id);
             let unwrapped_ty = match left_ty {
-                ArType::Nullable(inner) => Some(checker.resolve(inner)),
                 ArType::Option(inner) => Some(checker.resolve(inner)),
                 _ => None,
             };

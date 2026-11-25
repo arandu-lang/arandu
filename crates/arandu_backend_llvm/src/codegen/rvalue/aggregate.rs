@@ -28,8 +28,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     ) {
         let trap = self.new_block();
         let proceed = self.new_block();
+        let prof = self.module.require_cold_trap_weights();
         self.writer.line(format!(
-            "br i1 {condition}, label %{trap}, label %{proceed}"
+            "br i1 {condition}, label %{trap}, label %{proceed}, !prof {prof}"
         ));
         self.enter_llvm_label(&trap);
         self.emit_trap(kind);

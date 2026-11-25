@@ -14,7 +14,7 @@ use super::expr::synth_expr;
 /// `mut self` (`&mut T`) can use `self.field` without an explicit `*`.
 fn peel_auto_deref_base(checker: &TypeChecker<'_>, base_ty_id: TypeId) -> (TypeId, bool, bool) {
     let mut id = base_ty_id;
-    let mut was_nullable = false;
+    let was_nullable = false;
     let mut was_option = false;
     // Bound iterations: Option/Nullable? + a few ref layers is plenty; avoid infinite
     // loops on malformed interned graphs.
@@ -22,10 +22,6 @@ fn peel_auto_deref_base(checker: &TypeChecker<'_>, base_ty_id: TypeId) -> (TypeI
         match checker.resolve(id) {
             ArType::Option(inner) => {
                 was_option = true;
-                id = inner;
-            }
-            ArType::Nullable(inner) => {
-                was_nullable = true;
                 id = inner;
             }
             ArType::Ref(inner) | ArType::RefMut(inner) => {
@@ -173,7 +169,19 @@ pub(crate) fn resolve_field_type(
     let struct_info_opt = match actual_base_ty {
         ArType::Named(id, args) => Some((id, args)),
         ArType::Ptr(inner) => match checker.resolve(inner) {
-            ArType::Named(id, args) => Some((id, args)),
+            ArType::Named(id, args) => {
+                if !checker.ctx.is_in_unsafe() {
+                    checker.diagnostics.push(
+                        crate::Diagnostic::error(
+                            crate::DiagCode::O019RawPtrRequiresUnsafe,
+                            "reading a field through a raw pointer requires an `unsafe` block",
+                            field_span,
+                        )
+                        .with_label(field_span, "raw `ptr[T]` field access is unsafe"),
+                    );
+                }
+                Some((id, args))
+            }
             _ => None,
         },
         _ => None,
@@ -312,14 +320,12 @@ pub(crate) fn resolve_field_type(
         return checker.intern(ArType::Error);
     };
 
-    let field_already_nullable = matches!(field_ty, ArType::Nullable(_));
+    let field_already_nullable = matches!(field_ty, ArType::Option(_));
     let field_id = checker.intern(field_ty);
-    if was_option {
+    if (safe || was_nullable || was_option) && !field_already_nullable {
         checker.intern(ArType::Option(field_id))
-    } else if (safe || was_nullable) && !field_already_nullable {
-        checker.intern(ArType::Nullable(field_id))
     } else {
-        // `a?.b` where `b: T?` is `T?`: nil-or-absent collapses to one nil.
+        // `a?.b` where `b: T?` (`Option<T>`) collapses to one `T?`.
         field_id
     }
 }
@@ -373,7 +379,7 @@ pub(crate) fn resolve_index(
                 let idx_span = checker.pool.expr_span(index);
                 checker.diagnostics.push(
                     crate::Diagnostic::error(
-                        crate::DiagCode::O012AllocRequiresUnsafe,
+                        crate::DiagCode::O019RawPtrRequiresUnsafe,
                         "indexing a raw pointer requires an `unsafe` block",
                         idx_span,
                     )
@@ -423,18 +429,17 @@ pub(crate) fn resolve_index(
         } else {
             checker.intern(ArType::Slice(elem_ty_id))
         };
-        if was_option {
+        if safe || was_nullable || was_option {
             checker.intern(ArType::Option(slice_ty_id))
-        } else if safe || was_nullable {
-            checker.intern(ArType::Nullable(slice_ty_id))
         } else {
             slice_ty_id
         }
-    } else if was_option {
-        checker.intern(ArType::Option(elem_ty_id))
-    } else if safe || was_nullable {
-        checker.intern(ArType::Nullable(elem_ty_id))
     } else {
-        elem_ty_id
+        let elem_already_optional = matches!(checker.resolve(elem_ty_id), ArType::Option(_));
+        if (safe || was_nullable || was_option) && !elem_already_optional {
+            checker.intern(ArType::Option(elem_ty_id))
+        } else {
+            elem_ty_id
+        }
     }
 }

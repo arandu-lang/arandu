@@ -24,30 +24,16 @@ mod walk;
 use walk::{apply_block, apply_stmt, apply_terminator, compute_move_in};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalMoveState {
+pub(crate) enum LocalMoveState {
     Available,
     Moved,
     MaybeMoved,
 }
 
-/// Ownership paths on entry and after each block, computed from a single
-/// dataflow pass so cleanup cannot diverge from the move checker.
-#[must_use]
-pub(crate) fn move_states_entry_and_exit(func: &AmirFunc) -> (Vec<MoveState>, Vec<MoveState>) {
+/// Resolves each `TempId` to its single originating memory `AmirPlace`, if any.
+pub(crate) fn compute_temp_origins(func: &AmirFunc) -> Vec<Option<AmirPlace>> {
     let bump = bumpalo::Bump::new();
-    let Some((block_in, origins)) = compute_move_in(func, &bump) else {
-        let empty = vec![MoveState::new(func.locals.len()); func.blocks.len()];
-        return (empty.clone(), empty);
-    };
-    let mut entry = Vec::with_capacity(func.blocks.len());
-    let mut exit = Vec::with_capacity(func.blocks.len());
-    for (index, incoming) in block_in.into_iter().enumerate() {
-        let mut state = incoming.clone();
-        apply_block(BlockId::from_usize(index), func, &origins, &mut state, None);
-        entry.push(incoming);
-        exit.push(state);
-    }
-    (entry, exit)
+    walk::temp_origins(func, &bump).into_iter().collect()
 }
 
 /// Ownership paths after each block and immediately before every statement,
@@ -184,7 +170,7 @@ impl MoveState {
         joined
     }
 
-    fn root_state(&self, local: LocalId) -> LocalMoveState {
+    pub(crate) fn root_state(&self, local: LocalId) -> LocalMoveState {
         if self.moved.contains(local) {
             LocalMoveState::Moved
         } else if self.maybe_moved.contains(local) {
@@ -228,11 +214,12 @@ impl MoveState {
         places
     }
 
+    #[cfg(test)]
     pub(crate) fn place_itself_is_available(&self, place: &AmirPlace) -> bool {
         self.field_fact_state(place) == LocalMoveState::Available
     }
 
-    fn has_moved_descendant(&self, place: &AmirPlace) -> bool {
+    pub(crate) fn has_moved_descendant(&self, place: &AmirPlace) -> bool {
         let tracked = tracked_move_place(place);
         let is_descendant = |moved: &AmirPlace| {
             moved.local == tracked.local
@@ -298,7 +285,7 @@ impl MoveState {
         }
     }
 
-    fn field_fact_state(&self, place: &AmirPlace) -> LocalMoveState {
+    pub(crate) fn field_fact_state(&self, place: &AmirPlace) -> LocalMoveState {
         // Writes and moves store canonical paths. Reads (including the
         // drop-on-assignment query) must use exactly the same representation.
         // Comparing `Deref.Field` against a stored `Field` loses the move and
@@ -319,6 +306,32 @@ impl MoveState {
             .maybe_moved_fields
             .iter()
             .any(|moved| place_is_prefix(moved, place))
+        {
+            LocalMoveState::MaybeMoved
+        } else {
+            LocalMoveState::Available
+        }
+    }
+
+    /// Exact ownership state for drop elaboration: prefers definite `Moved`
+    /// facts on a specific descendant field even when the enclosing root is
+    /// `MaybeMoved` (e.g. `(Moved(p), Moved(p.a))`).
+    pub(crate) fn drop_fact_state(&self, place: &AmirPlace) -> LocalMoveState {
+        let tracked = tracked_move_place(place);
+        let place = &tracked;
+        let root = self.root_state(place.local);
+        if root == LocalMoveState::Moved
+            || self
+                .moved_fields
+                .iter()
+                .any(|moved| place_is_prefix(moved, place))
+        {
+            LocalMoveState::Moved
+        } else if root == LocalMoveState::MaybeMoved
+            || self
+                .maybe_moved_fields
+                .iter()
+                .any(|moved| place_is_prefix(moved, place))
         {
             LocalMoveState::MaybeMoved
         } else {
@@ -395,7 +408,7 @@ fn join_move_state(left: LocalMoveState, right: LocalMoveState) -> LocalMoveStat
     }
 }
 
-fn tracked_move_place(place: &AmirPlace) -> AmirPlace {
+pub(crate) fn tracked_move_place(place: &AmirPlace) -> AmirPlace {
     // Dereference is an access route, not an ownership path component. Keep
     // named fields beneath `&mut self` distinct so replacing one field restores
     // just that field instead of marking the receiver binding itself moved.
@@ -428,7 +441,7 @@ fn tracked_move_place(place: &AmirPlace) -> AmirPlace {
     }
 }
 
-fn place_is_prefix(prefix: &AmirPlace, place: &AmirPlace) -> bool {
+pub(crate) fn place_is_prefix(prefix: &AmirPlace, place: &AmirPlace) -> bool {
     prefix.local == place.local
         && prefix.projections.len() <= place.projections.len()
         && prefix

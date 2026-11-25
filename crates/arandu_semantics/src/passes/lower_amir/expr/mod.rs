@@ -457,10 +457,23 @@ impl LowerCtx<'_> {
                 self.lower_index(*base, *index, expr.ty, target, symbols)
             }
             HirExprKind::Array { items } => {
+                let elem_ty = match self.resolve_ty(expr.ty) {
+                    ArType::Array(_, elem) | ArType::ConstArray(_, elem) | ArType::Slice(elem) => {
+                        Some(elem)
+                    }
+                    _ => None,
+                };
                 let items_slice = self.hir.pool.expr_list(*items);
                 let mut item_ops = Vec::with_capacity(items_slice.len());
                 for &item in items_slice {
-                    item_ops.push(self.lower_expr(item, None, symbols)?);
+                    let item_ty = self.hir.pool.expr(item).ty;
+                    let op = self.lower_expr(item, None, symbols)?;
+                    let op = if let Some(exp) = elem_ty {
+                        self.coerce_to_option(op, item_ty, exp)
+                    } else {
+                        op
+                    };
+                    item_ops.push(op);
                 }
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
                 self.emit_assign_temp(dest, AmirRvalue::Array { items: item_ops });
@@ -470,10 +483,23 @@ impl LowerCtx<'_> {
                 self.lower_array_repeat(*value, expr, target, symbols)
             }
             HirExprKind::Tuple { items } => {
+                let elem_tys = match self.resolve_ty(expr.ty) {
+                    ArType::Tuple(ids) => Some(self.tc.type_info.type_interner.type_args(ids)),
+                    _ => None,
+                };
                 let items_slice = self.hir.pool.expr_list(*items);
                 let mut item_ops = Vec::with_capacity(items_slice.len());
-                for &item in items_slice {
-                    item_ops.push(self.lower_expr(item, None, symbols)?);
+                for (idx, &item) in items_slice.iter().enumerate() {
+                    let item_ty = self.hir.pool.expr(item).ty;
+                    let op = self.lower_expr(item, None, symbols)?;
+                    let op = if let Some(exp) =
+                        elem_tys.as_ref().and_then(|tys| tys.get(idx).copied())
+                    {
+                        self.coerce_to_option(op, item_ty, exp)
+                    } else {
+                        op
+                    };
+                    item_ops.push(op);
                 }
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
                 self.emit_assign_temp(dest, AmirRvalue::Tuple { items: item_ops });

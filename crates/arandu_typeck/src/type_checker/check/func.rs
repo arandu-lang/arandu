@@ -116,12 +116,6 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
             ArType::Ptr(_) if checker.symbols.builtins.ptr_type == Some(owner) => {
                 Some(self_ty.clone())
             }
-            ArType::Nullable(inner)
-                if matches!(checker.resolve(*inner), ArType::Ptr(_))
-                    && checker.symbols.builtins.ptr_type == Some(owner) =>
-            {
-                Some(self_ty.clone())
-            }
             _ => None,
         };
         if let Some(intrinsic_receiver) = intrinsic_receiver {

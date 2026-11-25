@@ -110,7 +110,6 @@ pub fn clif_type_with_float(ty: &ArType, ptr_type: Type, float_type: Type) -> Cl
         ArType::Ptr(_)
         | ArType::Ref(_)
         | ArType::RefMut(_)
-        | ArType::Nullable(_)
         | ArType::Slice(_)
         | ArType::MutSlice(_)
         | ArType::Array(_, _)
@@ -120,6 +119,7 @@ pub fn clif_type_with_float(ty: &ArType, ptr_type: Type, float_type: Type) -> Cl
         // `Err` is a message handle (pointer to UTF-8 buffer from `err.new`).
         ArType::Err => ClifType::Concrete(ptr_type),
         ArType::Void
+        | ArType::Never
         | ArType::Error
         | ArType::Infer(_)
         | ArType::FrozenConst(_)

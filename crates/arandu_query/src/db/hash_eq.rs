@@ -92,7 +92,8 @@ impl<T> Clone for FingerprintEq<T> {
 
 impl<T: StableHash> FingerprintEq<T> {
     /// Identity by `fingerprint`, which must cover every read that determines
-    /// `value`. Debug builds check that with the fingerprint oracle.
+    /// `value`. The owner crate's unit tests check that with the fingerprint
+    /// oracle.
     pub(crate) fn fingerprinted(
         db: &dyn crate::ArandCompilerDb,
         kind: &'static str,
@@ -101,13 +102,13 @@ impl<T: StableHash> FingerprintEq<T> {
     ) -> Self {
         let value = value.into();
         let content = OnceLock::new();
-        #[cfg(any(test, debug_assertions))]
+        #[cfg(test)]
         {
             let hash = value.stable_hash();
             crate::fingerprint::verify(db, kind, fingerprint, hash);
             let _ = content.set(hash);
         }
-        #[cfg(not(any(test, debug_assertions)))]
+        #[cfg(not(test))]
         let _ = (db, kind);
         Self {
             value,

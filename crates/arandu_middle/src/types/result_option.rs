@@ -4,12 +4,8 @@ use super::ar_type::ArType;
 use super::type_interner::{TypeId, TypeInterner};
 
 #[must_use]
-pub fn is_err_type(ty: &ArType, interner: &TypeInterner) -> bool {
+pub fn is_err_type(ty: &ArType, _interner: &TypeInterner) -> bool {
     matches!(ty, ArType::Err)
-        || matches!(
-            ty,
-            ArType::Nullable(inner) if matches!(interner.resolve(*inner), ArType::Err)
-        )
 }
 
 /// Extract ok/err from `Result<T,E>`.
@@ -105,15 +101,13 @@ pub fn try_ok_type(ty: &ArType, interner: &TypeInterner) -> Option<ArType> {
     }
     match ty {
         ArType::Option(inner) => Some(interner.resolve(*inner)),
-        ArType::Nullable(inner) if !is_err_type(ty, interner) => Some(interner.resolve(*inner)),
         _ => None,
     }
 }
 
 #[must_use]
-pub fn is_tryable_type(ty: &ArType, interner: &TypeInterner) -> bool {
+pub fn is_tryable_type(ty: &ArType, _interner: &TypeInterner) -> bool {
     matches!(ty, ArType::Result(_, _) | ArType::Option(_))
-        || (matches!(ty, ArType::Nullable(_)) && !is_err_type(ty, interner))
 }
 
 /// `Poll[T]` → `T` when Ready.
@@ -151,13 +145,6 @@ mod tests {
     fn err_is_err_type() {
         let i = interner();
         assert!(is_err_type(&ArType::Err, &i));
-    }
-
-    #[test]
-    fn nullable_err_is_err_type() {
-        let i = interner();
-        let inner = i.intern(ArType::Err);
-        assert!(is_err_type(&ArType::Nullable(inner), &i));
     }
 
     #[test]
@@ -241,24 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn try_ok_from_nullable_non_err() {
-        let mut i = interner();
-        let null = ArType::Nullable(int_id(&mut i));
-        assert_eq!(
-            try_ok_type(&null, &i),
-            Some(ArType::Primitive(Primitive::Int))
-        );
-    }
-
-    #[test]
-    fn try_ok_from_nullable_err_returns_none() {
-        let i = interner();
-        let inner = i.intern(ArType::Err);
-        let null_err = ArType::Nullable(inner);
-        assert_eq!(try_ok_type(&null_err, &i), None);
-    }
-
-    #[test]
     fn try_ok_non_tryable_returns_none() {
         let i = interner();
         assert_eq!(try_ok_type(&ArType::Primitive(Primitive::Int), &i), None);
@@ -268,21 +237,13 @@ mod tests {
     // ── is_tryable_type ──
 
     #[test]
-    fn result_option_and_non_err_nullable_are_tryable() {
+    fn result_and_option_are_tryable() {
         let mut i = interner();
         assert!(is_tryable_type(
             &ArType::Result(int_id(&mut i), str_id(&mut i)),
             &i
         ));
         assert!(is_tryable_type(&ArType::Option(int_id(&mut i)), &i));
-        assert!(is_tryable_type(&ArType::Nullable(int_id(&mut i)), &i));
-    }
-
-    #[test]
-    fn nullable_err_is_not_tryable() {
-        let i = interner();
-        let inner = i.intern(ArType::Err);
-        assert!(!is_tryable_type(&ArType::Nullable(inner), &i));
     }
 
     #[test]

@@ -59,6 +59,19 @@ pub fn solve_borrow_interfaces(
     program: &mut AmirProgram,
     type_info: &dyn AmirTypeContext,
 ) -> BorrowInterfaceSolution {
+    solve_borrow_interfaces_with_layout(
+        program,
+        type_info,
+        arandu_middle::layout::DataLayout::ptr_width(8),
+    )
+}
+
+#[must_use]
+pub fn solve_borrow_interfaces_with_layout(
+    program: &mut AmirProgram,
+    type_info: &dyn AmirTypeContext,
+    data_layout: arandu_middle::layout::DataLayout,
+) -> BorrowInterfaceSolution {
     let local_symbols = program
         .funcs
         .iter()
@@ -90,7 +103,9 @@ pub fn solve_borrow_interfaces(
         let mut changed = false;
         for &index in &order {
             let function = &program.funcs[index];
-            let summary = infer_function_interface(function, type_info, &summaries).0;
+            let summary =
+                infer_function_interface_with_layout(function, type_info, &summaries, data_layout)
+                    .0;
             let old = summaries.get(&function.symbol);
             if old != Some(&summary) {
                 summaries.insert(function.symbol, summary);
@@ -105,7 +120,8 @@ pub fn solve_borrow_interfaces(
     let mut unproven = Vec::new();
     for &index in &order {
         let function = &program.funcs[index];
-        let (summary, missing) = infer_function_interface(function, type_info, &summaries);
+        let (summary, missing) =
+            infer_function_interface_with_layout(function, type_info, &summaries, data_layout);
         summaries.insert(function.symbol, summary);
         unproven.extend(missing.into_iter().map(|result_path| UnprovenBorrowReturn {
             function: function.symbol,
@@ -143,6 +159,20 @@ pub fn infer_function_interface(
     function: &AmirFunc,
     type_info: &dyn AmirTypeContext,
     summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
+) -> (ReturnBorrowSummary, Vec<BorrowPath>) {
+    infer_function_interface_with_layout(
+        function,
+        type_info,
+        summaries,
+        arandu_middle::layout::DataLayout::ptr_width(8),
+    )
+}
+
+fn infer_function_interface_with_layout(
+    function: &AmirFunc,
+    type_info: &dyn AmirTypeContext,
+    summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
+    data_layout: arandu_middle::layout::DataLayout,
 ) -> (ReturnBorrowSummary, Vec<BorrowPath>) {
     let expected = match type_info.borrow_paths(function.return_type) {
         Ok(expected) => expected,
@@ -198,6 +228,7 @@ pub fn infer_function_interface(
                     function,
                     statement,
                     type_info,
+                    data_layout,
                     summaries,
                     &mut temps,
                     &mut locals,
@@ -265,6 +296,7 @@ fn transfer_statement(
     function: &AmirFunc,
     statement: &AmirStmt,
     type_info: &dyn AmirTypeContext,
+    data_layout: arandu_middle::layout::DataLayout,
     summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
     temps: &mut [Origins],
     locals: &mut [Origins],
@@ -275,7 +307,7 @@ fn transfer_statement(
             let mut produced = match rhs {
                 AmirRvalue::Use(operand) => operand_origins(*operand, temps),
                 AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
-                    borrowed_place_origins(function, place, type_info, locals)
+                    borrowed_place_origins(function, place, type_info, data_layout, locals)
                 }
                 AmirRvalue::RelativeBorrow { local, .. } => {
                     locals.get(local.as_usize()).cloned().unwrap_or_default()
@@ -286,7 +318,7 @@ fn transfer_statement(
                     .cloned()
                     .unwrap_or_default(),
                 AmirRvalue::Load(place) => {
-                    borrowed_place_origins(function, place, type_info, locals)
+                    borrowed_place_origins(function, place, type_info, data_layout, locals)
                 }
                 AmirRvalue::Tuple { items } => {
                     aggregate_origins(items, temps, BorrowPathSegment::Tuple)
@@ -592,6 +624,7 @@ fn borrowed_place_origins(
     function: &AmirFunc,
     place: &AmirPlace,
     type_info: &dyn AmirTypeContext,
+    data_layout: arandu_middle::layout::DataLayout,
     locals: &[Origins],
 ) -> Origins {
     let mut origins = locals
@@ -703,6 +736,7 @@ fn borrowed_place_origins(
             place.local,
             type_info.type_interner(),
             Some(type_info),
+            data_layout,
         )
     {
         origins

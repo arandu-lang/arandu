@@ -142,6 +142,7 @@ impl ArType {
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::Infer(_)
@@ -160,8 +161,7 @@ impl ArType {
                 }
                 f(*ret);
             }
-            ArType::Nullable(inner)
-            | ArType::Slice(inner)
+            ArType::Slice(inner)
             | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
@@ -222,10 +222,6 @@ impl ArType {
                 } else {
                     format!("func({}) {}", params_str.join(", "), ret_str)
                 }
-            }
-            ArType::Nullable(inner) => {
-                let inner_str = interner.resolve(*inner).display(symbols, interner);
-                format!("{}?", inner_str)
             }
             ArType::Slice(inner) => {
                 let inner_str = interner.resolve(*inner).display(symbols, interner);
@@ -307,6 +303,7 @@ impl ArType {
             }
             ArType::Err => "Err".to_string(),
             ArType::Void => "void".to_string(),
+            ArType::Never => "!".to_string(),
             ArType::IntLiteral => "int".to_string(),
             ArType::FloatLiteral => "float".to_string(),
             // Like rustc, a type not inferred yet is shown as `_`.
@@ -363,13 +360,12 @@ impl ArType {
             | ArType::FrozenConst(_)
             | ArType::Const(_)
             | ArType::Ptr(_)
-            | ArType::Nullable(_)
             | ArType::Ref(_)
             | ArType::Slice(_)
             | ArType::GenRef => true,
             // A function value is a code pointer without an environment.
             ArType::Func(_, _) => true,
-            ArType::Error | ArType::Void | ArType::Err => true,
+            ArType::Error | ArType::Void | ArType::Err | ArType::Never => true,
             ArType::Infer(_) => false,
             // Named / aggregates: structural decision needs `TypeInfo::is_copy`.
             ArType::Named(_, _)

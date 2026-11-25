@@ -405,7 +405,7 @@ impl LowerCtx<'_> {
     /// Lower refutable enum patterns as a decision chain. The payload is not
     /// read until its outer variant is selected, and a failed nested test
     /// falls through without consuming any source place.
-    fn lower_pattern_test_branch(
+    pub(super) fn lower_pattern_test_branch(
         &mut self,
         scrutinee: AmirOperand,
         pattern: &HirPattern,
@@ -589,7 +589,17 @@ impl LowerCtx<'_> {
     ) -> Result<(), Diagnostic> {
         match &arm.body {
             HirMatchArmBody::Expr(expr_id) => {
-                self.lower_expr(*expr_id, Some(dest), symbols)?;
+                let dest_ty = self.temps[dest.as_usize()].ty;
+                let expr_ty = self.hir.pool.expr(*expr_id).ty;
+                if self.with_ty(dest_ty, crate::passes::type_checker::types::is_option_type)
+                    && !self.with_ty(expr_ty, crate::passes::type_checker::types::is_option_type)
+                {
+                    let op = self.lower_expr(*expr_id, None, symbols)?;
+                    let coerced = self.coerce_to_option(op, expr_ty, dest_ty);
+                    self.emit_assign_temp(dest, AmirRvalue::Use(coerced));
+                } else {
+                    self.lower_expr(*expr_id, Some(dest), symbols)?;
+                }
             }
             HirMatchArmBody::Block(block) => {
                 self.lower_block_as_expr(*block, Some(dest), symbols)?;

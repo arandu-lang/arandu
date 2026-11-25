@@ -140,12 +140,6 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
             let new_ret = to.intern(translated_ret);
             ArType::func(&new_params, new_ret, to)
         }
-        ArType::Nullable(inner) => {
-            let resolved = from.resolve(*inner);
-            let translated = translate_type(&resolved, from, to);
-            let new_inner = to.intern(translated);
-            ArType::Nullable(new_inner)
-        }
         ArType::Slice(inner) => {
             let resolved = from.resolve(*inner);
             let translated = translate_type(&resolved, from, to);
@@ -241,6 +235,7 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
         }
         ArType::Err => ArType::Err,
         ArType::Void => ArType::Void,
+        ArType::Never => ArType::Never,
         // A variable is local to one interner's body check; one crossing to
         // another interner was never resolved and stays poison.
         ArType::Error | ArType::Infer(_) => ArType::Error,

@@ -140,12 +140,6 @@ impl<'a> TypeLowerer<'a> {
             ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
                 self.lower_type(*inner)
             }
-            ArType::Nullable(inner) => {
-                let inner_id = self
-                    .lower_type(*inner)
-                    .unwrap_or_else(|| self.pool.add(WitTypeKind::Primitive(WitPrimitive::U8)));
-                Some(self.pool.add(WitTypeKind::Option(inner_id)))
-            }
 
             _ => Some(self.pool.add(WitTypeKind::Primitive(WitPrimitive::U32))),
         }

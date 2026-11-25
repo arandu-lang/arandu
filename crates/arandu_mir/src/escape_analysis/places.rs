@@ -17,13 +17,13 @@ pub(super) fn borrows_through_external_storage(
             (projections.first(), interner.try_resolve(local.ty)),
             (
                 Some(crate::amir::AmirProjection::Deref),
-                Some(ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_) | ArType::Nullable(_))
+                Some(ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_))
             ) | (
                 Some(
                     crate::amir::AmirProjection::Index(_)
                         | crate::amir::AmirProjection::IndexConstant(_)
                 ),
-                Some(ArType::Slice(_) | ArType::MutSlice(_) | ArType::Ptr(_) | ArType::Nullable(_))
+                Some(ArType::Slice(_) | ArType::MutSlice(_) | ArType::Ptr(_))
             )
         )
     })
@@ -88,7 +88,6 @@ pub(crate) fn type_is_borrow_carrier(
             ArType::Named(_, _)
                 | ArType::Tuple(_)
                 | ArType::Option(_)
-                | ArType::Nullable(_)
                 | ArType::Array(_, _)
                 | ArType::ConstArray(_, _)
                 | ArType::Result(_, _)
@@ -113,7 +112,6 @@ pub(crate) fn type_is_borrow_carrier(
                 ArType::Ref(_) | ArType::RefMut(_) => return true,
                 ArType::Named(_, _) => return true,
                 ArType::Option(inner)
-                | ArType::Nullable(inner)
                 | ArType::Array(_, inner)
                 | ArType::ConstArray(_, inner)
                 | ArType::Poll(inner)
@@ -140,7 +138,6 @@ pub(crate) fn type_is_borrow_carrier(
             .into_iter()
             .any(|ty| contains_reference(ty, interner, &mut rustc_hash::FxHashSet::default())),
         ArType::Option(inner)
-        | ArType::Nullable(inner)
         | ArType::Array(_, inner)
         | ArType::ConstArray(_, inner)
         | ArType::Poll(inner)

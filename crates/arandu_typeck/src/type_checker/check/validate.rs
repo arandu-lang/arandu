@@ -13,7 +13,7 @@ const ANY_ERROR_MESSAGE: &str =
 
 pub(crate) fn contains_any(pool: &AstPool, ty: TypeExprId) -> Option<Span> {
     match pool.type_expr(ty) {
-        TypeExpr::Const { .. } | TypeExpr::ConstExpression { .. } => None,
+        TypeExpr::Const { .. } | TypeExpr::ConstExpression { .. } | TypeExpr::Never { .. } => None,
         TypeExpr::Primitive { span, name } => {
             if name == "any" {
                 Some(*span)
@@ -110,7 +110,7 @@ fn report_unstaged_argument(checker: &mut TypeChecker<'_>, span: Span) {
 pub(crate) fn validate_const_arguments(checker: &mut TypeChecker<'_>, ty: TypeExprId) {
     match checker.pool.type_expr(ty) {
         TypeExpr::ConstExpression { span, .. } => report_unstaged_argument(checker, *span),
-        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
+        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } | TypeExpr::Never { .. } => {}
         TypeExpr::Named { args, .. } => {
             for &arg in checker.pool.type_expr_list(*args) {
                 validate_const_arguments(checker, arg);
@@ -631,7 +631,7 @@ fn validate_type_expr_constraints(
                 );
             }
         }
-        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
+        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } | TypeExpr::Never { .. } => {}
         TypeExpr::ConstExpression { span, .. } => report_unstaged_argument(checker, *span),
         TypeExpr::Nullable { inner, .. }
         | TypeExpr::Pointer { inner, .. }

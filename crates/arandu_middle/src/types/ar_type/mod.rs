@@ -24,9 +24,6 @@ pub enum ArType {
     /// The `IndexRange` points into `TypeInterner::type_args_pool`.
     Func(IndexRange, TypeId),
 
-    /// Nullable wrapper: str?
-    Nullable(TypeId),
-
     /// Slice type: []int
     Slice(TypeId),
 
@@ -68,8 +65,7 @@ pub enum ArType {
     /// `Result<T, E>` — canonical success/error type
     Result(TypeId, TypeId),
 
-    /// `Option<T>` — algebraic optional. SYN.3: `nil` fills this type as `.None`.
-    /// `T?` remains [`ArType::Nullable`] (safe-nav / heap handle; see strategic plan §2.1).
+    /// `Option<T>` — algebraic optional (and canonical lowering of `T?`). `nil` fills this type as `.None`.
     Option(TypeId),
 
     /// `Coroutine[T]` — coroutine machine state type returning T
@@ -86,6 +82,9 @@ pub enum ArType {
 
     /// Functions with no return type
     Void,
+
+    /// Never / diverging bottom type: `!`
+    Never,
 
     /// An integer literal that hasn't been assigned a concrete type yet.
     /// Absorbs the context type during check mode.
@@ -342,12 +341,11 @@ mod tests {
     }
 
     #[test]
-    fn literals_ptr_nullable_are_copy() {
+    fn literals_ptr_are_copy() {
         assert!(ArType::IntLiteral.is_copy_v01());
         assert!(ArType::FloatLiteral.is_copy_v01());
         let i = new_interner();
         assert!(ArType::Ptr(i.intern(ArType::Primitive(Primitive::Int))).is_copy_v01());
-        assert!(ArType::Nullable(i.intern(ArType::Primitive(Primitive::Int))).is_copy_v01());
         // Shared refs are Copy; exclusive refs preserve uniqueness by moving.
         assert!(ArType::Ref(i.intern(ArType::Primitive(Primitive::Int))).is_copy_v01());
         assert!(!ArType::RefMut(i.intern(ArType::Primitive(Primitive::Int))).is_copy_v01());
@@ -494,7 +492,7 @@ mod tests {
             .unwrap();
         let i = new_interner();
         let int_tid = i.intern(ArType::Named(int_sym, IndexRange::empty()));
-        assert_eq!(ArType::Nullable(int_tid).display(&syms, &i), "int?");
+        assert_eq!(ArType::Option(int_tid).display(&syms, &i), "Option<int>");
         assert_eq!(ArType::Slice(int_tid).display(&syms, &i), "[]int");
         assert_eq!(ArType::MutSlice(int_tid).display(&syms, &i), "mut []int");
         assert_eq!(ArType::Array(4, int_tid).display(&syms, &i), "[4]int");

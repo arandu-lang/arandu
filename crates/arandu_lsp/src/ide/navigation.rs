@@ -32,8 +32,7 @@ fn named_type_symbol(tc: &TypeCheckResult, ty: &ArType) -> Option<SymbolId> {
     use arandu_middle::types::ArType::*;
     match ty {
         Named(id, _) => Some(*id),
-        Nullable(inner)
-        | Slice(inner)
+        Slice(inner)
         | Array(_, inner)
         | Ptr(inner)
         | Ref(inner)

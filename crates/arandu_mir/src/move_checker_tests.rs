@@ -31,7 +31,7 @@ fn local(id: usize, ty: ArType) -> AmirLocal {
 
 fn temp(id: usize, ty: ArType) -> AmirTemp {
     let is_copy = ty.is_copy_v01();
-    let is_nullable = matches!(ty, crate::types::ArType::Nullable(_));
+    let is_nullable = false;
     AmirTemp {
         id: TempId::from_usize(id),
         ty: intern_ty(ty),
@@ -314,11 +314,7 @@ fn move_on_one_branch_maybe_moved() {
     );
     let symbols = SymbolTable::new(0);
     let diags = check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default());
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == DiagCode::O007InconsistentMoveBetweenBranches)
-    );
+    assert!(diags.iter().any(|d| d.code == DiagCode::O001UseAfterMove));
 }
 
 #[test]

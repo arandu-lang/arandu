@@ -177,9 +177,10 @@ pub fn is_dual_locus_promotable(
     local: LocalId,
     interner: &TypeInterner,
     type_info: Option<&dyn AmirTypeContext>,
+    data_layout: DataLayout,
 ) -> bool {
     is_dual_locus_promoted(func, local)
-        || dual_locus_layout(func, local, interner, type_info, DataLayout::ptr_width(8)).is_some()
+        || dual_locus_layout(func, local, interner, type_info, data_layout).is_some()
 }
 
 /// Promotes all Dual-Locus-eligible escaping locals in `func` to `TaskArena`.

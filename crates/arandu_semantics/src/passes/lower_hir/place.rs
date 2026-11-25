@@ -93,12 +93,8 @@ pub(crate) fn lower_place(
                 });
             }
             PlaceSuffix::Field { span, name } => {
-                let base = interner.resolve(current_ty);
-                // Auto-deref: Nullable / & / &mut / ptr (shared|mut self places).
-                let mut actual_base_ty = match base {
-                    ArType::Nullable(inner) => interner.resolve(inner),
-                    other => other,
-                };
+                let mut actual_base_ty = interner.resolve(current_ty);
+                // Auto-deref: & / &mut / ptr (shared|mut self places).
                 for _ in 0..4 {
                     actual_base_ty = match actual_base_ty {
                         ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
@@ -149,11 +145,7 @@ pub(crate) fn lower_place(
                 });
             }
             PlaceSuffix::Index { span, expr } => {
-                let base = interner.resolve(current_ty);
-                let actual_base_ty = match base {
-                    ArType::Nullable(inner) => interner.resolve(inner),
-                    other => other,
-                };
+                let actual_base_ty = interner.resolve(current_ty);
                 let elem_ty = match &actual_base_ty {
                     ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)

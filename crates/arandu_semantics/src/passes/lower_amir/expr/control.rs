@@ -9,6 +9,34 @@ use crate::ops::BinaryOp;
 use crate::passes::type_checker::types::{ArType, Primitive, is_option_type, result_ok_err_id};
 
 impl LowerCtx<'_> {
+    pub(crate) fn coerce_to_option(
+        &mut self,
+        value: AmirOperand,
+        value_ty: crate::types::TypeId,
+        expected_ty: crate::types::TypeId,
+    ) -> AmirOperand {
+        if !self.with_ty(expected_ty, is_option_type)
+            || self.with_ty(value_ty, is_option_type)
+            || matches!(value, AmirOperand::Constant(AmirConstant::Nil))
+        {
+            return value;
+        }
+        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = value
+            && self.with_ty(self.temps[t.as_usize()].ty, is_option_type)
+        {
+            return value;
+        }
+        let wrapped = self.new_temp_id(expected_ty);
+        self.emit_assign_temp(
+            wrapped,
+            AmirRvalue::EnumConstruct {
+                variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
+                payload: Some(value),
+            },
+        );
+        AmirOperand::Copy(wrapped)
+    }
+
     pub(super) fn lower_if(
         &mut self,
         condition: &HirCondition,
@@ -87,8 +115,6 @@ impl LowerCtx<'_> {
             self.lower_try_result(inner, target, expr.ty, symbols)
         } else if self.with_ty(inner_expr.ty, is_option_type) {
             self.lower_try_option(inner, target, expr.ty, symbols)
-        } else if self.with_ty(inner_expr.ty, |t| matches!(t, ArType::Nullable(_))) {
-            self.lower_try_nullable(inner, target, expr.ty, symbols)
         } else {
             self.lower_try_result(inner, target, expr.ty, symbols)
         }
@@ -110,11 +136,11 @@ impl LowerCtx<'_> {
             return Ok(AmirOperand::Copy(dest));
         }
 
-        let bb_null = self.new_block();
-        let bb_access = self.new_block();
-        let bb_join = self.new_block();
-
         if base_is_option {
+            let bb_null = self.new_block();
+            let bb_access = self.new_block();
+            let bb_join = self.new_block();
+
             // Option: tag OPTION_NONE_TAG is None, OPTION_SOME_TAG is Some
             let tag_tmp = self.new_temp(ArType::Primitive(Primitive::Int));
             self.emit_assign_temp(tag_tmp, AmirRvalue::Discriminant { value: base_op });
@@ -150,78 +176,106 @@ impl LowerCtx<'_> {
             };
             let payload_tmp = self.new_temp_id(payload_ty);
             self.lower_result_ok_field(base_op, payload_tmp);
-            let payload_resolved = self.resolve_ty(payload_ty);
+            let mut payload_resolved = self.resolve_ty(payload_ty);
+            let mut field_base_op = AmirOperand::Copy(payload_tmp);
+            for _ in 0..4 {
+                match payload_resolved {
+                    ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                        let deref_tmp = self.new_temp_id(inner);
+                        self.emit_assign_temp(
+                            deref_tmp,
+                            AmirRvalue::Unary {
+                                op: crate::ops::UnaryOp::Deref,
+                                operand: field_base_op,
+                            },
+                        );
+                        field_base_op = AmirOperand::Copy(deref_tmp);
+                        payload_resolved = self.resolve_ty(inner);
+                    }
+                    _ => break,
+                }
+            }
             let field_idx = self.resolve_field_index(&payload_resolved, field);
-            let field_val_tmp = self.new_temp(ArType::Error); // will be used as payload
-            self.emit_assign_temp(
-                field_val_tmp,
-                AmirRvalue::FieldAccess {
-                    base: AmirOperand::Copy(payload_tmp),
-                    field: field_idx,
-                },
-            );
-            self.emit_assign_temp(
-                dest,
-                AmirRvalue::EnumConstruct {
-                    variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
-                    payload: Some(AmirOperand::Copy(field_val_tmp)),
-                },
-            );
-            self.emit_goto(bb_join);
-        } else {
-            let cond_tmp = self.new_temp(ArType::Primitive(Primitive::Bool));
-            self.emit_assign_temp(
-                cond_tmp,
-                AmirRvalue::Binary {
-                    op: BinaryOp::Equal,
-                    left: base_op,
-                    right: AmirOperand::Constant(AmirConstant::Nil),
-                },
-            );
-
-            self.set_bool_branch(AmirOperand::Copy(cond_tmp), bb_null, bb_access);
-            self.seal_block(bb_null);
-            self.seal_block(bb_access);
-
-            self.builder.current_block = Some(bb_null);
-            self.emit_assign_temp(
-                dest,
-                AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
-            );
-            self.emit_goto(bb_join);
-
-            self.builder.current_block = Some(bb_access);
-            // Unwrap `T?` to `T` first, as `??` does: the field belongs to `T`.
-            let (unwrapped_ty, base_ty) = match self.resolve_ty(base_expr.ty) {
-                ArType::Nullable(inner) => (inner, self.resolve_ty(inner)),
-                other => (base_expr.ty, other),
-            };
-            let base_tmp = self.new_temp_id(unwrapped_ty);
-            self.emit_assign_temp(base_tmp, AmirRvalue::Use(base_op));
-            let field_idx = self.resolve_field_index(&base_ty, field);
-            // Project at the field's own type; `Use` then wraps a plain field
-            // into the `T?` result, or passes an already nullable one through.
             let field_ty = arandu_middle::layout::instantiated_field_type(
-                &base_ty,
+                &payload_resolved,
                 field,
                 &self.tc.type_info.type_interner,
                 &*self.tc.type_info,
             )
             .unwrap_or(expr.ty);
-            let field_tmp = self.new_temp_id(field_ty);
+            let field_val_tmp = self.new_temp_id(field_ty);
             self.emit_assign_temp(
-                field_tmp,
+                field_val_tmp,
                 AmirRvalue::FieldAccess {
-                    base: AmirOperand::Copy(base_tmp),
+                    base: field_base_op,
                     field: field_idx,
                 },
             );
-            self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(field_tmp)));
+            if self.with_ty(field_ty, is_option_type) {
+                self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(field_val_tmp)));
+            } else {
+                self.emit_assign_temp(
+                    dest,
+                    AmirRvalue::EnumConstruct {
+                        variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
+                        payload: Some(AmirOperand::Copy(field_val_tmp)),
+                    },
+                );
+            }
             self.emit_goto(bb_join);
+
+            self.seal_block(bb_join);
+            self.builder.current_block = Some(bb_join);
+            return Ok(AmirOperand::Copy(dest));
         }
 
-        self.seal_block(bb_join);
-        self.builder.current_block = Some(bb_join);
+        // Non-optional base with `?.`: access field directly and wrap as `Option<U>`.
+        let mut base_resolved = self.resolve_ty(base_expr.ty);
+        let mut field_base_op = base_op;
+        for _ in 0..4 {
+            match base_resolved {
+                ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                    let deref_tmp = self.new_temp_id(inner);
+                    self.emit_assign_temp(
+                        deref_tmp,
+                        AmirRvalue::Unary {
+                            op: crate::ops::UnaryOp::Deref,
+                            operand: field_base_op,
+                        },
+                    );
+                    field_base_op = AmirOperand::Copy(deref_tmp);
+                    base_resolved = self.resolve_ty(inner);
+                }
+                _ => break,
+            }
+        }
+        let field_idx = self.resolve_field_index(&base_resolved, field);
+        let field_ty = arandu_middle::layout::instantiated_field_type(
+            &base_resolved,
+            field,
+            &self.tc.type_info.type_interner,
+            &*self.tc.type_info,
+        )
+        .unwrap_or(expr.ty);
+        let field_tmp = self.new_temp_id(field_ty);
+        self.emit_assign_temp(
+            field_tmp,
+            AmirRvalue::FieldAccess {
+                base: field_base_op,
+                field: field_idx,
+            },
+        );
+        if self.with_ty(field_ty, is_option_type) {
+            self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(field_tmp)));
+        } else {
+            self.emit_assign_temp(
+                dest,
+                AmirRvalue::EnumConstruct {
+                    variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
+                    payload: Some(AmirOperand::Copy(field_tmp)),
+                },
+            );
+        }
         Ok(AmirOperand::Copy(dest))
     }
 
@@ -234,52 +288,152 @@ impl LowerCtx<'_> {
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
         let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
+        let base_expr = self.hir.pool.expr(base);
+        let base_is_option = self.with_ty(base_expr.ty, is_option_type);
         let base_op = self.lower_expr(base, None, symbols)?;
         if self.builder.current_block.is_none() {
             return Ok(AmirOperand::Copy(dest));
         }
 
-        let cond_tmp = self.new_temp(ArType::Primitive(Primitive::Bool));
-        self.emit_assign_temp(
-            cond_tmp,
-            AmirRvalue::Binary {
-                op: BinaryOp::Equal,
-                left: base_op,
-                right: AmirOperand::Constant(AmirConstant::Nil),
-            },
-        );
+        if base_is_option {
+            let bb_null = self.new_block();
+            let bb_access = self.new_block();
+            let bb_join = self.new_block();
 
-        let bb_null = self.new_block();
-        let bb_access = self.new_block();
-        let bb_join = self.new_block();
+            let tag_tmp = self.new_temp(ArType::Primitive(Primitive::Int));
+            self.emit_assign_temp(tag_tmp, AmirRvalue::Discriminant { value: base_op });
+            let zero_lit =
+                self.intern_literal_int(arandu_middle::amir::OPTION_NONE_TAG.to_string());
+            let cond_tmp = self.new_temp(ArType::Primitive(Primitive::Bool));
+            self.emit_assign_temp(
+                cond_tmp,
+                AmirRvalue::Binary {
+                    op: BinaryOp::Equal,
+                    left: AmirOperand::Copy(tag_tmp),
+                    right: AmirOperand::Constant(zero_lit),
+                },
+            );
+            self.set_bool_branch(AmirOperand::Copy(cond_tmp), bb_null, bb_access);
+            self.seal_block(bb_null);
+            self.seal_block(bb_access);
 
-        self.set_bool_branch(AmirOperand::Copy(cond_tmp), bb_null, bb_access);
-        self.seal_block(bb_null);
-        self.seal_block(bb_access);
-
-        self.builder.current_block = Some(bb_null);
-        self.emit_assign_temp(
-            dest,
-            AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
-        );
-        self.emit_goto(bb_join);
-
-        self.builder.current_block = Some(bb_access);
-        let index_op = self.lower_expr(index, None, symbols)?;
-        self.emit_assign_temp(
-            dest,
-            AmirRvalue::IndexAccess {
-                base: base_op,
-                index: index_op,
-                in_bounds: false,
-            },
-        );
-        if self.builder.current_block.is_some() {
+            self.builder.current_block = Some(bb_null);
+            self.emit_assign_temp(
+                dest,
+                AmirRvalue::EnumConstruct {
+                    variant_tag: arandu_middle::amir::OPTION_NONE_TAG,
+                    payload: None,
+                },
+            );
             self.emit_goto(bb_join);
+
+            self.builder.current_block = Some(bb_access);
+            let payload_ty = match self.resolve_ty(base_expr.ty) {
+                ArType::Option(inner) => inner,
+                _ => base_expr.ty,
+            };
+            let payload_tmp = self.new_temp_id(payload_ty);
+            self.lower_result_ok_field(base_op, payload_tmp);
+            let index_ty = self.hir.pool.expr(index).ty;
+            let index_op = self.lower_expr(index, None, symbols)?;
+            let payload_resolved = self.resolve_ty(payload_ty);
+            let elem_ty = arandu_middle::types::index_elem_type(
+                &payload_resolved,
+                symbols,
+                &self.tc.type_info.type_interner,
+            )
+            .unwrap_or(expr.ty);
+            let elem_tmp = self.new_temp_id(elem_ty);
+            if arandu_middle::types::is_vec_type(&payload_resolved, symbols) {
+                let local = self.new_compiler_local_id(payload_ty, expr.span);
+                self.mark_local_materialized(local);
+                self.write_variable_source(local, AmirOperand::Copy(payload_tmp))?;
+                let mut place = crate::amir::AmirPlace {
+                    local,
+                    projections: smallvec::SmallVec::new(),
+                };
+                self.check_vec_index(&place, &payload_resolved, index_op, index_ty, symbols)?;
+                place
+                    .projections
+                    .push(crate::amir::AmirProjection::Index(index_op));
+                self.emit_assign_temp(elem_tmp, AmirRvalue::Load(place));
+            } else {
+                self.emit_assign_temp(
+                    elem_tmp,
+                    AmirRvalue::IndexAccess {
+                        base: AmirOperand::Copy(payload_tmp),
+                        index: index_op,
+                        in_bounds: false,
+                    },
+                );
+            }
+            if self.builder.current_block.is_some() {
+                if self.with_ty(elem_ty, is_option_type) {
+                    self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(elem_tmp)));
+                } else {
+                    self.emit_assign_temp(
+                        dest,
+                        AmirRvalue::EnumConstruct {
+                            variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
+                            payload: Some(AmirOperand::Copy(elem_tmp)),
+                        },
+                    );
+                }
+                self.emit_goto(bb_join);
+            }
+
+            self.seal_block(bb_join);
+            self.builder.current_block = Some(bb_join);
+            return Ok(AmirOperand::Copy(dest));
         }
 
-        self.seal_block(bb_join);
-        self.builder.current_block = Some(bb_join);
+        // Non-optional container with `?[i]`: index directly and wrap as `Option<E>`.
+        let index_ty = self.hir.pool.expr(index).ty;
+        let index_op = self.lower_expr(index, None, symbols)?;
+        let base_resolved = self.resolve_ty(base_expr.ty);
+        let elem_ty = arandu_middle::types::index_elem_type(
+            &base_resolved,
+            symbols,
+            &self.tc.type_info.type_interner,
+        )
+        .unwrap_or(expr.ty);
+        let elem_tmp = self.new_temp_id(elem_ty);
+        if arandu_middle::types::is_vec_type(&base_resolved, symbols) {
+            let local = self.new_compiler_local_id(base_expr.ty, expr.span);
+            self.mark_local_materialized(local);
+            self.write_variable_source(local, base_op)?;
+            let mut place = crate::amir::AmirPlace {
+                local,
+                projections: smallvec::SmallVec::new(),
+            };
+            self.check_vec_index(&place, &base_resolved, index_op, index_ty, symbols)?;
+            place
+                .projections
+                .push(crate::amir::AmirProjection::Index(index_op));
+            self.emit_assign_temp(elem_tmp, AmirRvalue::Load(place));
+        } else {
+            self.emit_assign_temp(
+                elem_tmp,
+                AmirRvalue::IndexAccess {
+                    base: base_op,
+                    index: index_op,
+                    in_bounds: false,
+                },
+            );
+        }
+        if self.builder.current_block.is_some() {
+            if self.with_ty(elem_ty, is_option_type) {
+                self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(elem_tmp)));
+            } else {
+                self.emit_assign_temp(
+                    dest,
+                    AmirRvalue::EnumConstruct {
+                        variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
+                        payload: Some(AmirOperand::Copy(elem_tmp)),
+                    },
+                );
+            }
+        }
         Ok(AmirOperand::Copy(dest))
     }
 

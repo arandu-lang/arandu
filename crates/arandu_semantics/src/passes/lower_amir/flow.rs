@@ -1,6 +1,6 @@
 use super::LowerCtx;
 use crate::SymbolTable;
-use crate::amir::{AmirConstant, AmirOperand, AmirRvalue, AmirTerminator, TempId};
+use crate::amir::{AmirOperand, AmirRvalue, AmirTerminator, TempId};
 use crate::diagnostics::{DiagCode, Diagnostic};
 use crate::hir::{HirExpr, HirExprId, HirExprKind, ResultCtorVariant};
 use crate::ops::BinaryOp;
@@ -257,46 +257,6 @@ impl LowerCtx<'_> {
 
         self.seal_block(bb_join);
         self.builder.current_block = Some(bb_join);
-        Ok(AmirOperand::Copy(dest))
-    }
-
-    pub(crate) fn lower_try_nullable(
-        &mut self,
-        inner_id: HirExprId,
-        target: Option<TempId>,
-        expr_ty: crate::types::TypeId,
-        symbols: &SymbolTable,
-    ) -> Result<AmirOperand, Diagnostic> {
-        let base = self.lower_expr(inner_id, None, symbols)?;
-        if self.builder.current_block.is_none() {
-            let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
-            return Ok(AmirOperand::Copy(dest));
-        }
-
-        let cond_tmp = self.new_temp(ArType::Primitive(Primitive::Bool));
-        self.emit_assign_temp(
-            cond_tmp,
-            AmirRvalue::Binary {
-                op: BinaryOp::Equal,
-                left: base,
-                right: AmirOperand::Constant(AmirConstant::Nil),
-            },
-        );
-
-        let bb_return_nil = self.new_block();
-        let bb_continue = self.new_block();
-
-        self.set_bool_branch(AmirOperand::Copy(cond_tmp), bb_return_nil, bb_continue);
-        self.seal_block(bb_return_nil);
-        self.seal_block(bb_continue);
-
-        self.builder.current_block = Some(bb_return_nil);
-        self.emit_propagated_return(AmirOperand::Constant(AmirConstant::Nil), symbols)?;
-        self.builder.current_block = None;
-
-        self.builder.current_block = Some(bb_continue);
-        let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
-        self.emit_assign_temp(dest, AmirRvalue::Use(base));
         Ok(AmirOperand::Copy(dest))
     }
 

@@ -168,11 +168,14 @@ pub(super) fn synth_control_flow_expr(
             let then_diverges = crate::type_checker::check::block_diverges(
                 checker.pool,
                 checker.pool.block(then_id),
-            );
+            ) || matches!(then_ty, ArType::Never);
             let else_diverges = crate::type_checker::check::block_diverges(
                 checker.pool,
                 checker.pool.block(else_id),
-            );
+            ) || matches!(else_ty, ArType::Never);
+            if then_diverges && else_diverges {
+                return Some(checker.intern(ArType::Never));
+            }
             if then_diverges && !else_diverges {
                 return Some(checker.intern(else_ty));
             }
@@ -247,7 +250,7 @@ pub(super) fn synth_control_flow_expr(
                     }
                 }
 
-                let arm_diverges = match &arm.body {
+                let arm_diverges_syntactically = match &arm.body {
                     arandu_parser::MatchArmBody::Expr {
                         expr: inner_expr, ..
                     } => crate::type_checker::check::expr_diverges(checker.pool, *inner_expr),
@@ -285,6 +288,8 @@ pub(super) fn synth_control_flow_expr(
                     }
                 };
 
+                let arm_diverges = arm_diverges_syntactically
+                    || matches!(checker.resolve(arm_ty_id), ArType::Never);
                 if is_void_context || arm_diverges {
                     continue;
                 }
@@ -314,6 +319,8 @@ pub(super) fn synth_control_flow_expr(
                 Some(checker.intern(ArType::Void))
             } else if let Some((ty_id, _)) = first_non_diverging {
                 Some(ty_id)
+            } else if !arm_ids.is_empty() {
+                Some(checker.intern(ArType::Never))
             } else {
                 Some(expected.unwrap_or_else(|| checker.intern(ArType::Void)))
             }

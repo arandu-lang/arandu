@@ -1342,3 +1342,72 @@ func main(): int {
     let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
     assert_eq!(unsafe { main() }, 0);
 }
+
+#[test]
+fn float_to_from_bits_direct_ir() {
+    let source = r#"
+module std.core.floatBitsTest
+
+extern "arandu-intrinsic" {
+    func f64ToBits(value: f64): u64
+    func f64FromBits(bits: u64): f64
+    func f32ToBits(value: f32): u32
+    func f32FromBits(bits: u32): f32
+}
+
+func main(): int {
+    let original: f64 = 42.5
+    let bits: u64 = f64ToBits(original)
+    let back: f64 = f64FromBits(bits)
+    if back != 42.5 {
+        return 1
+    }
+
+    let orig32: f32 = 13.25
+    let bits32: u32 = f32ToBits(orig32)
+    let back32: f32 = f32FromBits(bits32)
+    if back32 != 13.25 {
+        return 2
+    }
+    return 0
+}
+"#;
+    let ir = emit(source);
+    assert!(ir.contains("bitcast double"));
+    assert!(ir.contains("to i64"));
+    assert!(ir.contains("bitcast i64"));
+    assert!(ir.contains("to double"));
+    assert!(ir.contains("bitcast float"));
+    assert!(ir.contains("to i32"));
+    assert!(ir.contains("bitcast i32"));
+    assert!(ir.contains("to float"));
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli failed on float bitcasts:\n{ir}");
+    }
+}
+
+#[test]
+fn cold_trap_branch_weights_direct_ir() {
+    let source = r#"
+module std.core.trapWeightTest
+
+func check_index(xs: []int, idx: int): int {
+    return xs[idx]
+}
+
+func main(): int {
+    return 0
+}
+"#;
+    let ir = emit(source);
+    assert!(
+        ir.contains("!prof !"),
+        "expected !prof on trap branch in IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("!\"branch_weights\", i32 1, i32 1048576"),
+        "expected cold weights in IR:\n{ir}"
+    );
+    verify(&ir);
+}

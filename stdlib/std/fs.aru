@@ -382,7 +382,7 @@ public func DirListing.nameStr(self: ref DirListing, index: usize): ref str {
     unsafe {
         let descriptors = mem.ptrOffset<u8>(self.data, (8 + self.count * 16) as isize) as ptr[DirNameDescriptor]
         let views = intrinsics.sliceFromRaw<DirListing, DirNameDescriptor>(self, descriptors, self.count)
-        return intrinsics.strView<DirNameDescriptor>(&views[index])
+        return intrinsics.strView<DirNameDescriptor>(ref views[index])
     }
 }
 

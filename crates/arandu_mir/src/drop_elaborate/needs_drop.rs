@@ -1,5 +1,5 @@
 use crate::amir::{AmirFunc, AmirPlace, AmirProjection, AmirStmt, AmirStmtTable, LocalId};
-use crate::move_checker::MoveState;
+use crate::move_checker::{LocalMoveState, MoveState};
 use arandu_middle::SymbolId;
 use arandu_middle::layout::instantiated_field_type;
 use arandu_middle::type_context::AmirTypeContext;
@@ -61,10 +61,13 @@ pub(super) fn emit_recursive_drops(
     type_info: &dyn AmirTypeContext,
     move_state: &MoveState,
     skip_top_level_destructor: bool,
+    allow_maybe_moved: bool,
     rebuilt: &mut AmirStmtTable,
 ) {
-    if !move_state.place_itself_is_available(place) {
-        return;
+    match move_state.drop_fact_state(place) {
+        LocalMoveState::Moved => return,
+        LocalMoveState::MaybeMoved if !allow_maybe_moved => return,
+        LocalMoveState::Available | LocalMoveState::MaybeMoved => {}
     }
     let resolved = type_info.resolve_type_id(ty);
     match resolved {
@@ -109,6 +112,7 @@ pub(super) fn emit_recursive_drops(
                                 type_info,
                                 move_state,
                                 false,
+                                allow_maybe_moved,
                                 rebuilt,
                             );
                         }
@@ -144,7 +148,13 @@ pub(super) fn emit_recursive_drops(
                             sub_place.projections.push(AmirProjection::Field(fsym));
                         }
                         emit_recursive_drops(
-                            &sub_place, fty, type_info, move_state, false, rebuilt,
+                            &sub_place,
+                            fty,
+                            type_info,
+                            move_state,
+                            false,
+                            allow_maybe_moved,
+                            rebuilt,
                         );
                     }
                 }
@@ -162,7 +172,15 @@ pub(super) fn emit_recursive_drops(
         ArType::Option(inner) => {
             if let Some(payload_place) = moved_enum_payload_place(place, move_state, 1, inner, None)
             {
-                emit_recursive_drops(&payload_place, inner, type_info, move_state, false, rebuilt);
+                emit_recursive_drops(
+                    &payload_place,
+                    inner,
+                    type_info,
+                    move_state,
+                    false,
+                    allow_maybe_moved,
+                    rebuilt,
+                );
             } else {
                 rebuilt.push(AmirStmt::Destroy(place.clone()));
             }
@@ -189,6 +207,7 @@ pub(super) fn emit_recursive_drops(
                         type_info,
                         move_state,
                         false,
+                        allow_maybe_moved,
                         rebuilt,
                     );
                 }
@@ -212,11 +231,16 @@ pub(super) fn emit_recursive_drops(
                     type_info,
                     move_state,
                     false,
+                    allow_maybe_moved,
                     rebuilt,
                 );
             }
         }
         ArType::Array(len, elem) => {
+            if len > 4 && type_needs_drop(elem, type_info) {
+                rebuilt.push(AmirStmt::Destroy(place.clone()));
+                return;
+            }
             for index in (0..len).rev() {
                 if !type_needs_drop(elem, type_info) {
                     continue;
@@ -229,7 +253,15 @@ pub(super) fn emit_recursive_drops(
                 element_place
                     .projections
                     .push(AmirProjection::IndexConstant(index));
-                emit_recursive_drops(&element_place, elem, type_info, move_state, false, rebuilt);
+                emit_recursive_drops(
+                    &element_place,
+                    elem,
+                    type_info,
+                    move_state,
+                    false,
+                    allow_maybe_moved,
+                    rebuilt,
+                );
             }
         }
         ArType::ConstArray(..) => {
@@ -251,10 +283,7 @@ pub(super) fn projected_place_type(
         let resolved = type_info.resolve_type_id(ty);
         ty = match projection {
             AmirProjection::Deref => match resolved {
-                ArType::Ref(inner)
-                | ArType::RefMut(inner)
-                | ArType::Ptr(inner)
-                | ArType::Nullable(inner) => inner,
+                ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => inner,
                 _ => return None,
             },
             AmirProjection::Field(field_symbol) => {

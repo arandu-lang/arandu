@@ -87,6 +87,10 @@ pub enum TypeExpr {
         span: Span,
         items: IndexRange,
     },
+    /// Never / diverging bottom type: `!`.
+    Never {
+        span: Span,
+    },
     /// Owning, escaping closure type `own (A) -> R`, with an optional
     /// capability bound: `own (A) -> R + Send` (RFC 0032, L3). `func` is
     /// always a [`TypeExpr::Func`].
@@ -118,6 +122,7 @@ impl TypeExpr {
             | TypeExpr::Func { span, .. }
             | TypeExpr::Group { span, .. }
             | TypeExpr::Tuple { span, .. }
+            | TypeExpr::Never { span, .. }
             | TypeExpr::OwnFunc { span, .. } => *span,
         }
     }

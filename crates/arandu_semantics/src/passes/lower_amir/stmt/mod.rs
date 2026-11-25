@@ -47,11 +47,28 @@ impl LowerCtx<'_> {
         self.seal_block(bb_err);
         self.seal_block(bb_ok);
 
-        // Err branch: err = payload; ok = zero/nil so both locals are defined on all paths.
+        // Err branch: err = Some(payload); ok = zero/nil so both locals are defined on all paths.
         self.builder.current_block = Some(bb_err);
-        let err_tmp = self.new_temp_id(err_b.ty);
+        let err_payload_ty = match self.resolve_ty(err_b.ty) {
+            ArType::Option(inner) => inner,
+            _ => err_b.ty,
+        };
+        let err_tmp = self.new_temp_id(err_payload_ty);
         self.lower_result_err_field(result_op, err_tmp);
-        let err_consumed = self.consume_operand(AmirOperand::Copy(err_tmp))?;
+        let err_val = if matches!(self.resolve_ty(err_b.ty), ArType::Option(_)) {
+            let wrapped = self.new_temp_id(err_b.ty);
+            self.emit_assign_temp(
+                wrapped,
+                AmirRvalue::EnumConstruct {
+                    variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
+                    payload: Some(AmirOperand::Copy(err_tmp)),
+                },
+            );
+            AmirOperand::Copy(wrapped)
+        } else {
+            AmirOperand::Copy(err_tmp)
+        };
+        let err_consumed = self.consume_operand(err_val)?;
         self.write_variable_source(err_local, err_consumed)?;
         let ok_zero = self.new_temp_id(ok_b.ty);
         self.emit_assign_temp(
@@ -62,17 +79,27 @@ impl LowerCtx<'_> {
         self.write_variable_source(ok_local, ok_zero_c)?;
         self.emit_goto(bb_join);
 
-        // Ok branch: ok = payload, err = nil.
+        // Ok branch: ok = payload, err = None / nil.
         self.builder.current_block = Some(bb_ok);
         let ok_tmp = self.new_temp_id(ok_b.ty);
         self.lower_result_ok_field(result_op, ok_tmp);
         let ok_consumed = self.consume_operand(AmirOperand::Copy(ok_tmp))?;
         self.write_variable_source(ok_local, ok_consumed)?;
         let nil_tmp = self.new_temp_id(err_b.ty);
-        self.emit_assign_temp(
-            nil_tmp,
-            AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
-        );
+        if matches!(self.resolve_ty(err_b.ty), ArType::Option(_)) {
+            self.emit_assign_temp(
+                nil_tmp,
+                AmirRvalue::EnumConstruct {
+                    variant_tag: arandu_middle::amir::OPTION_NONE_TAG,
+                    payload: None,
+                },
+            );
+        } else {
+            self.emit_assign_temp(
+                nil_tmp,
+                AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
+            );
+        }
         let nil_consumed = self.consume_operand(AmirOperand::Copy(nil_tmp))?;
         self.write_variable_source(err_local, nil_consumed)?;
         self.emit_goto(bb_join);
@@ -108,7 +135,9 @@ impl LowerCtx<'_> {
                 if bindings_slice.len() == 1 {
                     let b = &bindings_slice[0];
                     let local_id = self.new_local_id(b.ty, b.symbol, b.span);
+                    let val_expr = self.hir.pool.expr(*value);
                     let val_op = self.lower_expr(*value, None, symbols)?;
+                    let val_op = self.coerce_to_option(val_op, val_expr.ty, b.ty);
                     if let AmirOperand::Copy(t) | AmirOperand::Move(t) = &val_op {
                         self.owned_string_temps.remove(t);
                     }
@@ -157,8 +186,13 @@ impl LowerCtx<'_> {
                 }
             }
             HirSimpleStmt::Set { places, op, value } => {
-                let val_op = self.lower_expr(*value, None, symbols)?;
-                self.lower_set_places(self.hir.pool.places_list(*places), op, &val_op, symbols)?;
+                let val_ty = self.hir.pool.expr(*value).ty;
+                let mut val_op = self.lower_expr(*value, None, symbols)?;
+                let places_slice = self.hir.pool.places_list(*places);
+                if places_slice.len() == 1 && *op == SetOp::Assign {
+                    val_op = self.coerce_to_option(val_op, val_ty, places_slice[0].ty);
+                }
+                self.lower_set_places(places_slice, op, &val_op, symbols)?;
             }
             HirSimpleStmt::Expr(expr) => {
                 self.lower_expr_stmt(*expr, symbols)?;
@@ -564,7 +598,7 @@ impl LowerCtx<'_> {
         let dest_is_void = target.is_some_and(|dest| {
             matches!(
                 self.resolve_ty(self.temps[dest.as_usize()].ty),
-                ArType::Void
+                ArType::Void | ArType::Never
             )
         }) && async_payload_ty.is_none();
         let last_idx = statements_slice.len() - 1;
@@ -580,7 +614,7 @@ impl LowerCtx<'_> {
                     (&stmt.kind, target, async_payload_ty)
                 {
                     let dest_ty = self.temps[dest.as_usize()].ty;
-                    if !matches!(self.resolve_ty(dest_ty), ArType::Void) {
+                    if !matches!(self.resolve_ty(dest_ty), ArType::Void | ArType::Never) {
                         self.lower_match(*value, arms, Some(dest), dest_ty, symbols)?;
                         continue;
                     }
@@ -600,6 +634,22 @@ impl LowerCtx<'_> {
                                 stack: false,
                             },
                         );
+                        AmirOperand::Copy(dest)
+                    } else if let Some(dest) = target
+                        && self.with_ty(
+                            self.temps[dest.as_usize()].ty,
+                            crate::passes::type_checker::types::is_option_type,
+                        )
+                        && !self.with_ty(
+                            self.hir.pool.expr(expr).ty,
+                            crate::passes::type_checker::types::is_option_type,
+                        )
+                    {
+                        let expr_ty = self.hir.pool.expr(expr).ty;
+                        let inner = self.lower_expr(expr, None, symbols)?;
+                        let coerced =
+                            self.coerce_to_option(inner, expr_ty, self.temps[dest.as_usize()].ty);
+                        self.emit_assign_temp(dest, AmirRvalue::Use(coerced));
                         AmirOperand::Copy(dest)
                     } else {
                         self.lower_expr(expr, target, symbols)?

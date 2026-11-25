@@ -1639,14 +1639,25 @@ fn test_recursive_struct_infinite_size() {
 
 #[test]
 fn test_recursive_struct_nullable_ok() {
-    let source = "
+    // Because `Node?` is `Option<Node>` (an inline value enum, not a pointer),
+    // `next: Node?` has infinite size unless broken with indirection (`ptr[Node]`).
+    let inline_recursive = "
         struct Node {
             val: int
             next: Node?
         }
         func main() {}
     ";
-    assert_type_errors!(source, []);
+    assert_type_errors!(inline_recursive, [T029RecursiveStructInfiniteSize]);
+
+    let ptr_recursive = "
+        struct Node {
+            val: int
+            next: ptr[Node]
+        }
+        func main() {}
+    ";
+    assert_type_errors!(ptr_recursive, []);
 }
 
 #[test]
@@ -2455,6 +2466,138 @@ fn test_slice_mutability_enforcement() {
         func main() {
             let mut arr = [1, 2, 3]
             set arr[0] = 42
+        }
+        ",
+        []
+    );
+}
+
+#[test]
+fn onda1_cast_and_raw_pointer_unsafe_boundary() {
+    // 1. `integer as TypeParam` is rejected outside `unsafe` (prevents safe transmute).
+    assert_type_errors!(
+        "
+        func forge<T>(x: i64): T {
+            return x as T
+        }
+        ",
+        [O019RawPtrRequiresUnsafe]
+    );
+    assert_type_errors!(
+        "
+        func forge<T>(x: i64): T {
+            unsafe {
+                return x as T
+            }
+        }
+        ",
+        []
+    );
+
+    // 2. Raw pointer field read, field write, and deref/index/pointee-method require `unsafe`.
+    assert_type_errors!(
+        "
+        struct Node { value: int }
+        func Node.get(self: ref Node): int { return self.value }
+        func read_field(p: ptr[Node]): int { return p.value }
+        func write_field(p: ptr[Node]): void { p.value = 1 }
+        func call_pointee(p: ptr[Node]): int { return (*p).get() }
+        ",
+        [
+            O019RawPtrRequiresUnsafe,
+            O019RawPtrRequiresUnsafe,
+            O019RawPtrRequiresUnsafe
+        ]
+    );
+    assert_type_errors!(
+        "
+        struct Node { value: int }
+        func Node.get(self: ref Node): int { return self.value }
+        func ok_ops(p: ptr[Node]): int {
+            unsafe {
+                p.value = 1
+                return p.value + (*p).get()
+            }
+        }
+        ",
+        []
+    );
+}
+
+#[test]
+fn onda1_nil_nullable_method_and_multibinding_soundness() {
+    // 1. Assigning `nil` to non-nullable types (including non-void Result) fails with T006.
+    assert_type_errors!(
+        "
+        func main() {
+            let x: int = nil
+            let mut y: int = 1
+            y = nil
+            let r: Result<int, str> = nil
+        }
+        ",
+        [T006NotNullable, T006NotNullable, T006NotNullable]
+    );
+
+    // 2. Unannotated `nil` does not steal the enclosing function return type.
+    assert_type_errors!(
+        "
+        func maybe(): Option<int> {
+            let x = nil
+            return Option.None
+        }
+        ",
+        [T001CannotInferType]
+    );
+
+    // 3. Multi-binding a non-tuple scalar fails with T002.
+    assert_type_errors!(
+        "
+        func main() {
+            let a, b = 42
+        }
+        ",
+        [T002IncompatibleAssignment]
+    );
+
+    // 4. Calling a pointee method on a nullable value without `?.` fails with T006.
+    assert_type_errors!(
+        "
+        struct User { age: int }
+        func User.getAge(self: ref User): int { return self.age }
+        func main() {
+            let u: User? = nil
+            let a = u.getAge()
+        }
+        ",
+        [T006NotNullable]
+    );
+}
+
+#[test]
+fn onda2_unified_nullable_option_semantics() {
+    // 1. `T?` works with resource-owning types, generics, `[]T?`, `?.` flattening,
+    //    `??`, `if x is v`, and `T` -> `T?` coercion.
+    assert_type_errors!(
+        "
+        struct Owned { id: int }
+        @Destructor
+        func Owned.destroy(own self): void {}
+        struct Child { age: int? }
+        struct Parent { child: Child? }
+
+        func wrap<T>(x: T): T? { return x }
+
+        func main(): int {
+            let o: Owned? = Owned { id: 1 }
+            let o2: Option<Owned> = o
+            let arr: []int? = [1, nil, 3]
+            let p: Parent? = Parent { child: Child { age: 42 } }
+            let age: int? = p?.child?.age
+            let a = age ?? 7
+            let b: int = if o2 is v { v.id } else { 0 }
+            let w: Owned? = wrap<Owned>(Owned { id: 5 })
+            return a + b
         }
         ",
         []

@@ -408,6 +408,7 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
                 dump_type(pool.type_expr(*inner), pool)
             )
         }
+        TypeExpr::Never { span } => format!("Never {}", dump_span(*span)),
         TypeExpr::Array {
             span,
             size,

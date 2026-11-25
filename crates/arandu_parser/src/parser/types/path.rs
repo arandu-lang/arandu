@@ -160,7 +160,11 @@ impl<'a> Parser<'a> {
     pub(in crate::parser) fn can_start_type(&self) -> bool {
         matches!(
             self.current().kind,
-            TokenKind::KwPtr | TokenKind::LBracket | TokenKind::KwFunc | TokenKind::LParen
+            TokenKind::KwPtr
+                | TokenKind::LBracket
+                | TokenKind::KwFunc
+                | TokenKind::LParen
+                | TokenKind::Bang
         ) || is_type_token(&self.current().kind)
     }
 

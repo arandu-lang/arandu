@@ -325,6 +325,7 @@ mod tests {
                     0,
                     arandu_middle::types::BorrowKind::Shared,
                 )),
+                ..EscapeCheckOptions::default()
             },
         );
         assert!(

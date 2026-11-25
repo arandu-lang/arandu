@@ -148,11 +148,7 @@ impl LowerCtx<'_> {
     /// Allocate a temp from an already-interned type id (no `ArType` clone).
     pub(crate) fn new_temp_id(&mut self, ty: crate::types::TypeId) -> TempId {
         let is_copy = self.tc.type_info.is_copy(ty);
-        let is_nullable = self
-            .tc
-            .type_info
-            .type_interner
-            .with_type(ty, |t| matches!(t, ArType::Nullable(_)));
+        let is_nullable = false;
         let id = self.next_temp_id();
         let span = if Self::span_is_usable(self.current_span) {
             self.current_span
@@ -237,11 +233,7 @@ impl LowerCtx<'_> {
     pub(crate) fn new_temp_ref(&mut self, ty: &ArType) -> TempId {
         let ty = self.intern_ty_ref(ty);
         let is_copy = self.tc.type_info.is_copy(ty);
-        let is_nullable = self
-            .tc
-            .type_info
-            .type_interner
-            .with_type(ty, |t| matches!(t, ArType::Nullable(_)));
+        let is_nullable = false;
         let id = self.next_temp_id();
         let span = if Self::span_is_usable(self.current_span) {
             self.current_span
@@ -699,7 +691,7 @@ impl LowerCtx<'_> {
         };
         let idx = temp.as_usize();
         if self.temp_states[idx] == MoveState::Moved {
-            return Err(self.move_diag(format!("use of moved temporary _{idx}")));
+            return Err(self.move_diag("use of moved temporary value"));
         }
         // Consuming a non-copy temp is a use of its origin local at this site.
         self.note_temp_origin_use(temp);

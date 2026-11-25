@@ -345,7 +345,7 @@ pub fn constraint_to_diagnostic(
             fn get_struct_id(ty: &ArType, interner: &super::types::TypeInterner) -> Option<SymbolId> {
                 match ty {
                     ArType::Named(id, _) => Some(*id),
-                    ArType::Ptr(inner) | ArType::Nullable(inner) => {
+                    ArType::Ptr(inner) => {
                         let inner_ty = interner.resolve(*inner);
                         get_struct_id(&inner_ty, interner)
                     }
@@ -591,7 +591,7 @@ fn suggest_bool_conversion(ty: &ArType) -> String {
         ArType::Primitive(p) if p.is_numeric() => {
             "use explicit comparison: 'value != 0'".to_string()
         }
-        ArType::Nullable(_) => "use explicit comparison: 'value != nil'".to_string(),
+        ArType::Ptr(_) | ArType::Option(_) => "use explicit comparison: 'value != nil'".to_string(),
         ArType::Primitive(super::types::Primitive::Str) => {
             "strings are not automatically bool — use explicit comparison".to_string()
         }

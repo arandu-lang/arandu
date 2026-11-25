@@ -452,12 +452,6 @@ fn substitute(ty: &ArType, subst: &FxHashMap<SymbolId, TypeId>, interner: &TypeI
             let range = interner.push_type_args(&new_params);
             ArType::Func(range, new_ret)
         }
-        ArType::Nullable(inner) => {
-            let inner_ty = interner.resolve(*inner);
-            let substituted_inner = substitute(&inner_ty, subst, interner);
-            let new_inner = interner.lookup(&substituted_inner).unwrap_or(*inner);
-            ArType::Nullable(new_inner)
-        }
         ArType::Slice(inner) => {
             let inner_ty = interner.resolve(*inner);
             let substituted_inner = substitute(&inner_ty, subst, interner);

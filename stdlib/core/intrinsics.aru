@@ -75,6 +75,12 @@ extern "arandu-intrinsic" {
     func fma32(a: f32, b: f32, c: f32): f32
     func fma64(a: f64, b: f64, c: f64): f64
 
+    /// Bitwise reinterpretation between floats and raw integer bits (zero-cost bitcast).
+    func f64ToBits(value: f64): u64
+    func f32ToBits(value: f32): u32
+    func f64FromBits(bits: u64): f64
+    func f32FromBits(bits: u32): f32
+
     /// Overflow-checked and saturating integer arithmetic (SADD/UADD/SSAT/USAT).
     func addWithOverflowI32(a: i32, b: i32): (i32, bool)
     func addWithOverflowU32(a: u32, b: u32): (u32, bool)
@@ -171,7 +177,7 @@ extern "arandu-intrinsic" {
     func atomicCompilerFence(): void
 
     /// Unconditional fatal trap (out-of-bounds, failed assertions, etc.).
-    func abort(): void
+    func abort(): !
 
     /// Generational ref mismatch trap: slot was recycled (use-after-free detected).
     /// Used by `std.alloc.gen_arena` verification paths and compiler-lowered `GenGet` nodes.

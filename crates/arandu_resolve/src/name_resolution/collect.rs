@@ -347,9 +347,12 @@ impl<'a> Resolver<'a> {
                     use arandu_middle::symbol_table::LangItem;
                     let capability = match (self.current_module.as_deref(), decl.name.as_str()) {
                         (Some("std.core.marker"), "Copy") => Some(LangItem::Copy),
+                        (Some("std.core.marker"), "Clone") => Some(LangItem::Clone),
                         (Some("std.core.marker"), "Send") => Some(LangItem::Send),
                         (Some("std.core.marker"), "Sync") => Some(LangItem::Sync),
+                        (Some("std.core.cmp"), "Eq") => Some(LangItem::Eq),
                         (Some("std.core.cmp"), "Ord") => Some(LangItem::Ord),
+                        (Some("std.core.fmt"), "Display") => Some(LangItem::Display),
                         (Some("std.thread"), "ThreadJob") => Some(LangItem::ThreadJob),
                         _ => None,
                     };

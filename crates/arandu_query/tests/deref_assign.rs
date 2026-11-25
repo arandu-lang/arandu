@@ -34,7 +34,7 @@ fn writes_need_a_mutable_reference() {
 fn raw_pointers_need_unsafe() {
     assert_eq!(
         errors("func f(p: ptr[int]): void {\n    *p = 1\n}"),
-        [DiagCode::O012AllocRequiresUnsafe]
+        [DiagCode::O019RawPtrRequiresUnsafe]
     );
     assert!(
         errors("func f(p: ptr[int]): void {\n    unsafe {\n        *p = 1\n    }\n}").is_empty()

@@ -520,6 +520,58 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 true
             }
+            Some(arandu_middle::IntrinsicKind::FloatToBits(width)) => {
+                if let [arg] = args {
+                    let (in_ty, out_ty) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => (
+                            cranelift_codegen::ir::types::F64,
+                            cranelift_codegen::ir::types::I64,
+                        ),
+                        arandu_middle::intrinsics::FloatWidth::F32 => (
+                            cranelift_codegen::ir::types::F32,
+                            cranelift_codegen::ir::types::I32,
+                        ),
+                    };
+                    let val = self.translate_operand(arg, Some(in_ty));
+                    let result = self.builder.ins().bitcast(
+                        out_ty,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        val,
+                    );
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::FloatFromBits(width)) => {
+                if let [arg] = args {
+                    let (in_ty, out_ty) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => (
+                            cranelift_codegen::ir::types::I64,
+                            cranelift_codegen::ir::types::F64,
+                        ),
+                        arandu_middle::intrinsics::FloatWidth::F32 => (
+                            cranelift_codegen::ir::types::I32,
+                            cranelift_codegen::ir::types::F32,
+                        ),
+                    };
+                    let val = self.translate_operand(arg, Some(in_ty));
+                    let result = self.builder.ins().bitcast(
+                        out_ty,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        val,
+                    );
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
             Some(arandu_middle::IntrinsicKind::SpinLoopHint) => {
                 // Cranelift targets have no direct pause instruction; emit a safe no-op.
                 true

@@ -175,6 +175,75 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                                     }
                                     return Ok(Action::Continue);
                                 }
+                                if let IntrinsicKind::FloatToBits(width) = intrinsic {
+                                    if args.len() != 1 {
+                                        return Err(EvalErrorKind::InvalidIr);
+                                    }
+                                    meter.step()?;
+                                    let arg_val = frame.operand(args[0], None, &mut meter)?;
+                                    let ConstValue::Float(f) = arg_val else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let bits = match width {
+                                        arandu_middle::intrinsics::FloatWidth::F64 => {
+                                            f.bits() as i128
+                                        }
+                                        arandu_middle::intrinsics::FloatWidth::F32 => {
+                                            (f.bits() as u32) as i128
+                                        }
+                                    };
+                                    if let Some(lhs) = lhs {
+                                        let dest_ty = frame
+                                            .unit
+                                            .temp_types
+                                            .get(lhs.as_usize())
+                                            .ok_or(EvalErrorKind::InvalidIr)?
+                                            .clone();
+                                        let ValueType::Integer(dest_int_ty) = dest_ty else {
+                                            return Err(EvalErrorKind::TypeMismatch);
+                                        };
+                                        let val = ConstValue::Integer(
+                                            ConstInt::new(dest_int_ty, bits)
+                                                .map_err(EvalErrorKind::Value)?,
+                                        );
+                                        frame.assign(*lhs, val)?;
+                                    }
+                                    return Ok(Action::Continue);
+                                }
+                                if let IntrinsicKind::FloatFromBits(width) = intrinsic {
+                                    if args.len() != 1 {
+                                        return Err(EvalErrorKind::InvalidIr);
+                                    }
+                                    meter.step()?;
+                                    let arg_val = frame.operand(args[0], None, &mut meter)?;
+                                    let ConstValue::Integer(u) = arg_val else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let bits = match width {
+                                        arandu_middle::intrinsics::FloatWidth::F64 => {
+                                            u.value() as u64
+                                        }
+                                        arandu_middle::intrinsics::FloatWidth::F32 => {
+                                            u64::from(u.value() as u32)
+                                        }
+                                    };
+                                    if let Some(lhs) = lhs {
+                                        let dest_ty = frame
+                                            .unit
+                                            .temp_types
+                                            .get(lhs.as_usize())
+                                            .ok_or(EvalErrorKind::InvalidIr)?
+                                            .clone();
+                                        let ValueType::Float(flt_ty) = dest_ty else {
+                                            return Err(EvalErrorKind::TypeMismatch);
+                                        };
+                                        let result_float =
+                                            arandu_middle::ctfe::ConstFloat::new(flt_ty, bits)
+                                                .map_err(|_| EvalErrorKind::InvalidIr)?;
+                                        frame.assign(*lhs, ConstValue::Float(result_float))?;
+                                    }
+                                    return Ok(Action::Continue);
+                                }
                                 if let IntrinsicKind::OverflowArithmetic(op, arith_int) = intrinsic
                                 {
                                     if args.len() != 2 {

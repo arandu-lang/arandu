@@ -297,15 +297,44 @@ func main(): int { require(42); require(true); require(1.5); return 0 }
 }
 
 #[test]
-fn destructor_resource_is_not_approved_from_scalar_fields() {
+fn destructor_resource_derives_transfer_structurally_from_fields() {
+    // A @Destructor struct with Send+Sync fields is Send and Sync, though never Copy.
     check_program(
         r#"
 import std.core.marker as marker
 struct Resource { id: int }
 @Destructor
 func Resource.close(own self): void {}
-func require<T: marker.Send>(value: T): void {}
-func inspect(value: Resource): void { require(value) }
+func requireSend<T: marker.Send>(value: T): void {}
+func requireSync<T: marker.Sync>(value: T): void {}
+func inspect(value: Resource): void {
+    requireSend(value)
+    requireSync(value)
+}
+func main(): int { return 0 }
+"#,
+        false,
+    );
+    check_program(
+        r#"
+import std.core.marker as marker
+struct Resource { id: int }
+@Destructor
+func Resource.close(own self): void {}
+func requireCopy<T: marker.Copy>(value: T): void {}
+func inspect(value: Resource): void { requireCopy(value) }
+func main(): int { return 0 }
+"#,
+        true,
+    );
+    check_program(
+        r#"
+import std.core.marker as marker
+struct RawResource { raw: ptr[u8] }
+@Destructor
+func RawResource.close(own self): void {}
+func requireSend<T: marker.Send>(value: T): void {}
+func inspect(value: RawResource): void { requireSend(value) }
 func main(): int { return 0 }
 "#,
         true,

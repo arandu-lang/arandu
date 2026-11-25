@@ -421,16 +421,16 @@ fn test_func_layout() {
 }
 
 #[test]
-fn test_nullable_layout_is_pointer_handle() {
+fn test_option_ptr_layout_uses_direct_tag_because_ptr_can_be_null() {
     let engine = LayoutEngine::new(8);
     let interner = TypeInterner::new();
     let provider = MockProvider;
     let inner = interner.intern(ArType::Primitive(Primitive::I32));
-    let nullable = ArType::Nullable(inner);
-    let tid = interner.intern(nullable);
+    let ptr_inner = interner.intern(ArType::Ptr(inner));
+    let opt = ArType::Option(ptr_inner);
+    let tid = interner.intern(opt);
     let layout = engine.layout_of(tid, &interner, &provider);
-    // Handle ABI: always pointer-sized (null vs box/object ptr).
-    assert_eq!(layout.size, 8);
+    assert_eq!(layout.size, 16);
     assert_eq!(layout.align, 8);
 }
 
@@ -1081,6 +1081,26 @@ fn test_niche_layout_option_ref_vs_val() {
             tagged_variant: 0,
         })
     );
+
+    // Option<mut ref i32> and Option<(i32) -> i32> also get 1-word null-niche layout.
+    let ref_mut_i32_tid = interner.intern(ArType::RefMut(i32_tid));
+    let opt_ref_mut_tid = interner.intern(ArType::Option(ref_mut_i32_tid));
+    let layout_ref_mut = engine_64.layout_of(opt_ref_mut_tid, &interner, &provider);
+    assert_eq!(layout_ref_mut.size, 8);
+    assert!(matches!(
+        layout_ref_mut.tag_encoding,
+        Some(TagEncoding::Niche { .. })
+    ));
+
+    let fn_ty = ArType::func(&[i32_tid], i32_tid, &interner);
+    let fn_tid = interner.intern(fn_ty);
+    let opt_fn_tid = interner.intern(ArType::Option(fn_tid));
+    let layout_fn = engine_64.layout_of(opt_fn_tid, &interner, &provider);
+    assert_eq!(layout_fn.size, 8);
+    assert!(matches!(
+        layout_fn.tag_encoding,
+        Some(TagEncoding::Niche { .. })
+    ));
 }
 
 #[test]

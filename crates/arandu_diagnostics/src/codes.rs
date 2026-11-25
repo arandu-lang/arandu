@@ -183,6 +183,8 @@ pub enum DiagCode {
     /// A part of a value is moved out of a type with a `@Destructor`, which
     /// would then run on an incomplete value.
     O018MoveOutOfDestructor,
+    /// Raw pointer dereference/arithmetic/indexing or unsafe cast requires an `unsafe` block.
+    O019RawPtrRequiresUnsafe,
 
     // ── Warnings & Linting (W) ──
     W001VariableAssignedNotUsed,
@@ -325,6 +327,7 @@ impl DiagCode {
             O016MoveOutOfReference,
             O017StaticMutRequiresUnsafe,
             O018MoveOutOfDestructor,
+            O019RawPtrRequiresUnsafe,
             W001VariableAssignedNotUsed,
             W002DeadCode,
             W003UnreachableCode,
@@ -511,6 +514,7 @@ impl DiagCode {
             DiagCode::O016MoveOutOfReference => "O016",
             DiagCode::O017StaticMutRequiresUnsafe => "O017",
             DiagCode::O018MoveOutOfDestructor => "O018",
+            DiagCode::O019RawPtrRequiresUnsafe => "O019",
             DiagCode::W001VariableAssignedNotUsed => "W001",
             DiagCode::W002DeadCode => "W002",
             DiagCode::W003UnreachableCode => "W003",

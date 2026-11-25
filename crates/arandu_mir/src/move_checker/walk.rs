@@ -425,7 +425,14 @@ pub(super) fn apply_stmt(
 ) {
     match stmt {
         AmirStmt::Assign { lhs, rhs } => {
-            check_rvalue_reads(rhs, func, state, diagnostics);
+            let is_synthesized_drop_borrow = matches!(rhs, AmirRvalue::Borrow(_))
+                && func
+                    .temps
+                    .get(lhs.as_usize())
+                    .is_some_and(|temp| temp.span == Span::new(0, 0, 0));
+            if !is_synthesized_drop_borrow {
+                check_rvalue_reads(rhs, func, state, diagnostics);
+            }
             consume_rvalue(rhs, func, temp_origins, state, diagnostics);
             // A value loaded into the return register is never consumed
             // later by an operand: the load itself moves it out of its place,
@@ -488,10 +495,21 @@ fn consume_rvalue(
     diagnostics: &mut MoveDiagSink<'_>,
 ) {
     match rvalue {
-        AmirRvalue::Len(op)
-        | AmirRvalue::SliceData(op)
-        | AmirRvalue::Discriminant { value: op } => {
+        AmirRvalue::Len(op) | AmirRvalue::SliceData(op) => {
             check_operand_read(op, func, temp_origins, state, diagnostics);
+        }
+        AmirRvalue::Discriminant { value: op } => {
+            let is_synthesized_drop_borrow = matches!(
+                op,
+                AmirOperand::Copy(t)
+                    if func
+                        .temps
+                        .get(t.as_usize())
+                        .is_some_and(|temp| temp.span == Span::new(0, 0, 0))
+            );
+            if !is_synthesized_drop_borrow {
+                check_operand_read(op, func, temp_origins, state, diagnostics);
+            }
         }
         _ => {
             for_each_rvalue_operand(rvalue, |op| {
@@ -695,12 +713,12 @@ fn check_place_state(
         LocalMoveState::MaybeMoved => diagnostics.push((
             block,
             move_diag(
-                DiagCode::O007InconsistentMoveBetweenBranches,
+                DiagCode::O001UseAfterMove,
                 place.local,
                 func,
                 symbols,
-                "value may have been moved on some control-flow paths",
-                "ensure all branches leave the value in a consistent ownership state",
+                "use of moved value",
+                "value may have been moved on a prior control-flow path",
             ),
         )),
     }
@@ -747,15 +765,16 @@ fn check_consume_place(
                 "value was already consumed on this path",
             ),
         )),
+        LocalMoveState::MaybeMoved if double_free => {}
         LocalMoveState::MaybeMoved => diagnostics.push((
             block,
             move_diag(
-                DiagCode::O007InconsistentMoveBetweenBranches,
+                DiagCode::O001UseAfterMove,
                 place.local,
                 func,
                 symbols,
-                "value may have been moved on some control-flow paths",
-                "ensure all branches leave the value in a consistent ownership state",
+                "use of moved value",
+                "value may have been moved on a prior control-flow path",
             ),
         )),
     }

@@ -449,10 +449,9 @@ mod tests {
             assert!(scratch_carrier_safe(carrier, &interner, &info));
             assert!(!scratch_type_safe(carrier, &interner, &info));
         }
-        for opaque in [ArType::Coroutine(byte), ArType::Nullable(byte)] {
-            let carrier = interner.intern(ArType::Option(interner.intern(opaque)));
-            assert!(!scratch_carrier_safe(carrier, &interner, &info));
-        }
+        let opaque = ArType::Coroutine(byte);
+        let carrier = interner.intern(ArType::Option(interner.intern(opaque)));
+        assert!(!scratch_carrier_safe(carrier, &interner, &info));
     }
 
     #[test]

@@ -32,7 +32,173 @@ pub(super) fn lower_path(
     if let Some(kind) = generic_function_value(type_check, hir_pool, expr, symbol, span) {
         return Ok(kind);
     }
-    Ok(captured_value(hir_pool, symbol, span))
+    let kind = captured_value(hir_pool, symbol, span);
+    if let HirExprKind::Path { symbol: sym } = kind {
+        let sym = maybe_wrap_exported_func_value(type_check, hir_pool, sym, span);
+        return Ok(HirExprKind::Path { symbol: sym });
+    }
+    Ok(kind)
+}
+
+fn alloc_synthetic_symbol(
+    type_check: &mut TypeCheckResult,
+    span: arandu_middle::Span,
+    name: &str,
+    kind: crate::SymbolKind,
+) -> crate::SymbolId {
+    use arandu_middle::{Symbol, SymbolId, Visibility};
+    let file_id = type_check.symbols.file_id;
+    let mut salt = name.bytes().fold(0x811C_9DC5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    loop {
+        let mixed = span.start.wrapping_mul(0x9E37_79B1)
+            ^ span.end.wrapping_mul(0x85EB_CA6B)
+            ^ salt.wrapping_mul(0xC2B2_AE35);
+        let id = SymbolId::new(
+            file_id,
+            SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x7FFF_FFFF),
+        );
+        if type_check.symbols.try_get(id).is_none() {
+            let scope = type_check.symbols.global_scope();
+            type_check.symbols_mut().register_synthetic(Symbol {
+                id,
+                name: name.into(),
+                kind,
+                span,
+                scope,
+                visibility: Visibility::Private,
+                lang_item: None,
+            });
+            return id;
+        }
+        salt = salt.wrapping_add(0x1_0000);
+    }
+}
+
+/// Synthesizes an internal non-exported wrapper function when an `@Export`
+/// function is referenced as a value so indirect calls always use the internal
+/// ABI across every backend (even for aggregate parameters or returns).
+pub(super) fn maybe_wrap_exported_func_value(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    symbol: crate::SymbolId,
+    span: arandu_middle::Span,
+) -> crate::SymbolId {
+    if hir_pool.suppress_export_thunk_span == Some(span) {
+        return symbol;
+    }
+    let Some(entry) = type_check.symbols.try_get(symbol) else {
+        return symbol;
+    };
+    let is_exported_func = entry.kind == crate::SymbolKind::Func
+        && (type_check.type_info.exported_functions.contains(&symbol)
+            || type_check.symbols.is_exported(symbol));
+    if !is_exported_func {
+        return symbol;
+    }
+    if let Some(&cached) = hir_pool.exported_thunks.get(&symbol) {
+        return cached;
+    }
+    let Some(decl_ty_id) = type_check.type_info.decl_type_id(symbol) else {
+        return symbol;
+    };
+    let (param_tys, ret_ty) = match type_check.type_info.type_interner.resolve(decl_ty_id) {
+        ArType::Func(params, ret) => (type_check.type_info.type_interner.type_args(params), ret),
+        _ => return symbol,
+    };
+    let is_direct_abi_scalar = |ty_id: arandu_middle::types::TypeId| -> bool {
+        match type_check.type_info.type_interner.resolve(ty_id) {
+            ArType::Void | ArType::Never | ArType::Ptr(_) | ArType::Func(..) => true,
+            ArType::Primitive(p) => !matches!(p, Primitive::Str),
+            _ => false,
+        }
+    };
+    if param_tys.iter().all(|&p| is_direct_abi_scalar(p)) && is_direct_abi_scalar(ret_ty) {
+        return symbol;
+    }
+    let thunk_span = entry.span;
+    let thunk_name = format!("__ar_export_thunk_{}_{}", symbol.file_id, symbol.local_id.0);
+    let thunk_sym =
+        alloc_synthetic_symbol(type_check, thunk_span, &thunk_name, crate::SymbolKind::Func);
+    type_check
+        .type_info_mut()
+        .decl_types
+        .insert(thunk_sym, decl_ty_id);
+    hir_pool.exported_thunks.insert(symbol, thunk_sym);
+
+    let mut hir_params = Vec::with_capacity(param_tys.len());
+    let mut call_args = Vec::with_capacity(param_tys.len());
+    for (idx, param_ty) in param_tys.into_iter().enumerate() {
+        let param_name = format!("__arg_{idx}");
+        let param_sym = alloc_synthetic_symbol(
+            type_check,
+            thunk_span,
+            &param_name,
+            crate::SymbolKind::Param,
+        );
+        type_check
+            .type_info_mut()
+            .decl_types
+            .insert(param_sym, param_ty);
+        hir_params.push(crate::hir::HirParam {
+            symbol: param_sym,
+            ty: param_ty,
+            span: thunk_span,
+            is_receiver: false,
+            receiver_kind: None,
+        });
+        call_args.push(hir_pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Path { symbol: param_sym },
+            ty: param_ty,
+            span: thunk_span,
+        }));
+    }
+
+    let callee_expr = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol },
+        ty: decl_ty_id,
+        span: thunk_span,
+    });
+    let args_range = hir_pool.alloc_expr_list(&call_args);
+    let call_expr = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call {
+            callee: callee_expr,
+            args: args_range,
+        },
+        ty: ret_ty,
+        span: thunk_span,
+    });
+    let stmt_kind = if matches!(
+        type_check.type_info.type_interner.resolve(ret_ty),
+        ArType::Void
+    ) {
+        crate::hir::HirStmtKind::Expr(call_expr)
+    } else {
+        let ret_values = hir_pool.alloc_expr_list(&[call_expr]);
+        crate::hir::HirStmtKind::Return { values: ret_values }
+    };
+    let stmt_id = hir_pool.alloc_stmt(crate::hir::HirStmt {
+        kind: stmt_kind,
+        span: thunk_span,
+    });
+    let stmts_range = hir_pool.alloc_stmt_list(&[stmt_id]);
+    let block_id = hir_pool.alloc_block(crate::hir::HirBlock {
+        statements: stmts_range,
+        span: thunk_span,
+    });
+    let params_range = hir_pool.alloc_param_list(&hir_params);
+    let decl_id = hir_pool.alloc_decl(crate::hir::HirDecl::Func(crate::hir::HirFunc {
+        symbol: thunk_sym,
+        params: params_range,
+        return_type: ret_ty,
+        body: Some(block_id),
+        span: thunk_span,
+        is_async: false,
+        no_fallback: false,
+    }));
+    hir_pool.synthetic_decls.push(decl_id);
+    thunk_sym
 }
 
 /// A generic function used as a value names one instance: typeck recorded

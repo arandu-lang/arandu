@@ -387,11 +387,7 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                 HirExprKind::Path { symbol } => *symbol,
                 HirExprKind::TypePath { member_symbol, .. } => *member_symbol,
                 HirExprKind::Field { base, field } | HirExprKind::SafeField { base, field } => {
-                    let base_ty = tc.type_info.type_interner.resolve(hir.pool.expr(*base).ty);
-                    let mut actual = match base_ty {
-                        ArType::Nullable(inner) => tc.type_info.type_interner.resolve(inner),
-                        other => other,
-                    };
+                    let mut actual = tc.type_info.type_interner.resolve(hir.pool.expr(*base).ty);
                     // Peel & / &mut / ptr (shared self receivers).
                     for _ in 0..4 {
                         actual = match actual {

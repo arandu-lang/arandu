@@ -17,18 +17,6 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             AmirOperand::Constant(constant) => self.constant(constant, expected),
             AmirOperand::Copy(temp) | AmirOperand::Move(temp) => {
                 let actual_ty = self.temp_type(*temp);
-                // Reading a `T?` box handle as its `T` unboxes it.
-                if let ArType::Nullable(inner) = &actual_ty
-                    && !matches!(expected, ArType::Nullable(_))
-                    && !self.module.is_pointer(expected)
-                {
-                    let inner = self.module.interner.resolve(*inner);
-                    if self.is_boxed_nullable(&inner) {
-                        let handle = self.operand(operand, &actual_ty)?;
-                        let value = self.unbox_nullable(handle, &inner)?;
-                        return self.coerce(value, expected);
-                    }
-                }
                 let override_ty = self.temp_llvm_ty[temp.as_usize()].clone();
                 if let Some(slot) = self.temp_slot(*temp).map(str::to_owned) {
                     let ty_text = override_ty

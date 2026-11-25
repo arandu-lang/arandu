@@ -201,6 +201,14 @@ pub struct HirPool {
     /// Lowering context only: the span whose own value is being lowered into
     /// its temporary, so its use as a callback adapter does not apply yet.
     pub lowering_temporary: Option<crate::Span>,
+    /// Lowering context only: direct callee span suppressed from `@Export`
+    /// function-value thunk wrapping so direct calls still target the export.
+    pub suppress_export_thunk_span: Option<crate::Span>,
+    /// Lowering context only: synthesized internal non-exported wrapper thunks
+    /// for `@Export` functions used as function values.
+    pub exported_thunks: rustc_hash::FxHashMap<crate::SymbolId, crate::SymbolId>,
+    /// Additional declarations synthesized while lowering a module or function.
+    pub synthetic_decls: Vec<HirDeclId>,
     pub exprs: IndexVec<HirExprId, super::HirExpr>,
     pub stmts: IndexVec<HirStmtId, super::HirStmt>,
     pub blocks: IndexVec<HirBlockId, super::HirBlock>,

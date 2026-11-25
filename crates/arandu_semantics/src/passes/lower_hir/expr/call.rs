@@ -69,7 +69,22 @@ pub(super) fn lower_call(
                     .is_some_and(|ty| super::text::has_user_to_str_method(type_check, ty, field))
             {
                 let value_id = super::lower_expr(type_check, pool, hir_pool, *base)?;
-                let kind = HirExprKind::ToStr { value: value_id };
+                let to_str_kind = HirExprKind::ToStr { value: value_id };
+                let owned = super::text::own_type(type_check, pool, expr)
+                    .is_some_and(|ty| super::text::is_string(type_check, ty));
+                let kind = if owned {
+                    super::text::string_from(type_check, hir_pool, to_str_kind, span).ok_or_else(
+                        || {
+                            Diagnostic::ice(
+                                crate::DiagCode::ICEL001,
+                                "`String.from` is missing",
+                                span,
+                            )
+                        },
+                    )?
+                } else {
+                    to_str_kind
+                };
                 let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
                 return Ok(HirExpr { kind, ty, span });
             }
@@ -128,7 +143,16 @@ pub(super) fn lower_call(
                         _ => None,
                     })
             };
-            let mut callee_vid = super::lower_expr(type_check, pool, hir_pool, callee_id)?;
+            let direct_callee_span = match pool.expr(callee_id) {
+                ExprKind::Generic { callee: inner, .. } => pool.expr_span(*inner),
+                _ => pool.expr_span(callee_id),
+            };
+            let prev_suppress = hir_pool
+                .suppress_export_thunk_span
+                .replace(direct_callee_span);
+            let callee_res = super::lower_expr(type_check, pool, hir_pool, callee_id);
+            hir_pool.suppress_export_thunk_span = prev_suppress;
+            let mut callee_vid = callee_res?;
             // A called generic path stays a path: the call instantiates it.
             if matches!(pool.expr(callee_id), ExprKind::Path { .. })
                 && let HirExprKind::Generic { callee: path, .. } = hir_pool.expr(callee_vid).kind

@@ -269,16 +269,22 @@ promover o serviço quente.
 
 ### 0.3.x — Instâncias, closures e staging delimitado
 
-Por decisão do mantenedor (2026-11-06), a 0.3.0 exige a série inteira e a
-paridade do caminho quente nas três plataformas. Os gates de latência são
-contagens determinísticas de trabalho; o p95 é registrado por classe e
-plataforma e o antigo "p95 ≤10 ms" é meta direcional. Ordem, estado de
-partida e riscos na [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md).
+Por decisão revisada do mantenedor (2026-11-24), a 0.3.0 prioriza o fechamento
+da campanha de solidez da linguagem (Ondas 1–7: unificação de `T?` para
+`Option<T>`, separação `str`/`String`, `Send`/`Sync` estrutural, drop flags
+reais no AMIR, `ref`/`mut ref` canônico, `Clone`/`Eq`/`Display`, Maranget
+exhaustiveness, APIs coesas de stdlib, indexação/iteração com variáveis
+`Range`, tipo `!`, thunks internos de `@Export`, diagnósticos limpos e `pin_free`
+com projeções de campo), juntamente com `LAMBDA`, `CT.NEXT`, `TYP.NEXT`,
+`D0`, `HW.1–9` e `INC.3a`. Os incrementos de infraestrutura `INC.3b–e` e
+`PLAT.1–3` ficam escalonados para a 0.3.1. Ordem, estado de partida e riscos
+na [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md).
 
 | ID | Base atual | Trabalho / gate |
 | --- | --- | --- |
-| INC.3a–e | `function_hir`, `instance_hir`, `runtime_raw_unit`, `instance_contracts`, `runtime_unit`, compositor e closure CGU ativos; importadores observam a view importável das assinaturas e o contexto liga só imports diretos e o que a view alcança (corte no importador direto, `0.3.0-dev`); `symbol_surface` por símbolo existe, ainda fora do fingerprint | dependências por símbolo e contexto reduzido juntos (INC.3a/b), composição incremental por arquivo (INC.3c), menos memos verificados (INC.3d) e entrega não agregada às CGUs (INC.3e); assinatura pública reexecuta só units que a referenciam, corpo privado não recompõe arquivos intocados, clean/incremental idênticos |
-| PLAT.1–3 | patch in-place só em ELF x86-64; daemon no Windows por named pipe implementado na `0.3.0-dev`, sem prova nativa | PLAT.1: `cli_daemon` verde em runner Windows; patch Mach-O arm64 (assinatura ad-hoc, chained fixups, unwind) e PE x64 (`/MAP`, `.pdata`, `.reloc`); equivalência clean em runners nativos |
+| Solidez da Linguagem (Ondas 1–7) | concluído na `0.3.0-dev` (2026-11-24) | fronteira `@Unsafe` para `ptr[T]`, `T?` como açúcar de `Option<T>`, `str` vs `String`, `Send`/`Sync` estrutural com destrutores, drop flags reais + retirada de `O007` + loop reverso de array, `ref`/`mut ref` canônico, `Clone`/`Eq`/`Display`, Maranget exhaustiveness + `or`-patterns aninhados com guarda, `Option.asMut`/`Result.asRef`/`asMut`/`HashMap.getMut`/`GenArena.tryGet*`, `Range` variável em indexação/for, tipo `!`, thunks `@Export`, diagnósticos sem jargão e `pin_free` com campos |
+| INC.3a / INC.3b–e | `INC.3a` ativo (`function_hir`, `instance_hir`, `runtime_raw_unit`, `instance_contracts`, `runtime_unit`, compositor, closure CGU e corte nos importadores diretos); `INC.3b–e` diferidos para `0.3.1` | dependências por símbolo e contexto reduzido juntos (INC.3b), composição incremental por arquivo (INC.3c), menos memos verificados (INC.3d) e entrega não agregada às CGUs (INC.3e) na 0.3.1 |
+| PLAT.1–3 | `PLAT.1` daemon Windows implementado na `0.3.0-dev`; `PLAT.2–3` e validação em runners nativos diferidos para `0.3.1` | `cli_daemon` em runner Windows; patch Mach-O arm64 e PE x64 com equivalência clean em runners nativos na 0.3.1 |
 | LAMBDA / [RFC 0032](rfcs/0032-closures-ossa-capture-modes-and-first-class-functions.md) | concluído na `0.3.0-dev`: L1–L3, `own once`, temporários e `extern "C"` validado | L1 callbacks não escapantes por desfuncionalização; L2 valor função `{code, env}` e chamada indireta nos quatro backends; L3 closures escapantes e com dono; capturas verificadas pelo OSSA e paridade C/Cranelift/Wasm |
 | CT.NEXT / [RFC 0013](rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md) §10.1 | C2 implementado na `0.3.0-dev` (2026-11-19): `types.info<T>()` em `std.core.types` devolve `TypeInfo` com caminho canônico do módulo declarante, `TypeKind`, layout do alvo, `[]FieldInfo`/`[]VariantInfo` e `isComplete` pela visibilidade da chamada; lowering após a monomorfização, igual no CTFE e em runtime; num `const` vive em armazenamento estático | API de reflexão (C3) e atributos executáveis ficam na 0.4+; padrões aceitam caminho de módulo (`types.TypeKind.Struct =>`) e `..` em struct; `let` ainda não desestrutura struct |
 | D0 — dados estáticos com ponteiros | implementado na `0.3.0-dev` (2026-11-19) | imagem estática com objetos próprios e relocações nos 4 backends (Cranelift `write_data_addr`, LLVM `ptr`, Wasm endereço absoluto, C passo em `main`); `static mut` com `str`, `[]u8`, fatias e arrays de texto; `const` com fatia de elementos vive em armazenamento estático com origem `'static` no solver de empréstimos; CTFE avalia fatias e `ref` compartilhado (como `const fn` do Rust), `mut ref` segue fora (T044). Paridade JIT/`--opt`/C+ASan/Wasm/LLVM |

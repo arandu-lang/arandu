@@ -26,6 +26,12 @@ pub(super) fn lower_field(
             if let Some(symbol) =
                 super::lookup_namespace_field(pool, base_id, field, type_check).or(value_ref)
             {
+                let symbol = super::path::maybe_wrap_exported_func_value(
+                    type_check,
+                    hir_pool,
+                    symbol,
+                    pool.expr_span(expr),
+                );
                 HirExprKind::Path { symbol }
             } else {
                 let base_vid = super::lower_expr(type_check, pool, hir_pool, base_id)?;
@@ -53,6 +59,12 @@ pub(super) fn lower_safe_field(
             if let Some(symbol) = super::lookup_namespace_field(pool, base_id, field, type_check)
                 .or_else(|| super::get_resolved_value_ref(type_check, expr))
             {
+                let symbol = super::path::maybe_wrap_exported_func_value(
+                    type_check,
+                    hir_pool,
+                    symbol,
+                    pool.expr_span(expr),
+                );
                 HirExprKind::Path { symbol }
             } else {
                 let base_vid = super::lower_expr(type_check, pool, hir_pool, base_id)?;

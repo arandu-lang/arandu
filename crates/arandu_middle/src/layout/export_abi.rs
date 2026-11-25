@@ -500,12 +500,7 @@ fn collect_leaf_type(
             });
             Ok(())
         }
-        ArType::Ptr(_)
-        | ArType::Ref(_)
-        | ArType::RefMut(_)
-        | ArType::Nullable(_)
-        | ArType::GenRef
-        | ArType::Err => {
+        ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::GenRef | ArType::Err => {
             out.push(Leaf {
                 offset: base,
                 size: pointer_width,

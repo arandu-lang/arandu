@@ -183,7 +183,7 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                     if func_decl
                         .attrs
                         .iter()
-                        .any(|attr| attr.name == "Unsafe" || attr.name == "unsafe")
+                        .any(|attr| attr.name == "Unsafe")
                     {
                         checker.type_info.unsafe_functions.insert(symbol_id);
                     }
@@ -199,7 +199,7 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                     let has_destructor_attr = func_decl
                         .attrs
                         .iter()
-                        .any(|attr| attr.name == "Destructor" || attr.name == "destructor");
+                        .any(|attr| attr.name == "Destructor");
                     if has_destructor_attr
                         && let arandu_parser::FuncName::Method { .. } = &func_decl.name
                         && let Some(first_param) = func_decl.params.first()
@@ -303,7 +303,7 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                         let pure_bits = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
                             == arandu_parser::AbiKind::AranduIntrinsic
                             && arandu_middle::IntrinsicKind::from_name(member_name)
-                                .is_some_and(|kind| kind.is_pure_bit_operation());
+                                .is_some_and(|kind| kind.is_pure_integer_bit_operation());
                         if pure_bits
                             && let Some(kind) = arandu_middle::IntrinsicKind::from_name(member_name)
                         {
@@ -341,6 +341,44 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                                 checker.diagnostics.push(arandu_middle::Diagnostic::error(
                                     arandu_middle::DiagCode::U001FeatureNotSupported,
                                     format!("unsupported signature for bit intrinsic '{member_name}': expected {params_text} and {output_name} result without generics"),
+                                    member.span,
+                                ));
+                            }
+                        }
+                        let float_bitcast = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                .is_some_and(|kind| matches!(kind, arandu_middle::IntrinsicKind::FloatToBits(..) | arandu_middle::IntrinsicKind::FloatFromBits(..)));
+                        if float_bitcast
+                            && let Some(kind) = arandu_middle::IntrinsicKind::from_name(member_name)
+                        {
+                            use arandu_middle::types::Primitive;
+                            let (expected_param, expected_ret, param_name, ret_name) = match kind {
+                                arandu_middle::IntrinsicKind::FloatToBits(arandu_middle::intrinsics::FloatWidth::F64) => {
+                                    (ArType::Primitive(Primitive::F64), ArType::Primitive(Primitive::U64), "f64", "u64")
+                                }
+                                arandu_middle::IntrinsicKind::FloatToBits(arandu_middle::intrinsics::FloatWidth::F32) => {
+                                    (ArType::Primitive(Primitive::F32), ArType::Primitive(Primitive::U32), "f32", "u32")
+                                }
+                                arandu_middle::IntrinsicKind::FloatFromBits(arandu_middle::intrinsics::FloatWidth::F64) => {
+                                    (ArType::Primitive(Primitive::U64), ArType::Primitive(Primitive::F64), "u64", "f64")
+                                }
+                                arandu_middle::IntrinsicKind::FloatFromBits(arandu_middle::intrinsics::FloatWidth::F32) => {
+                                    (ArType::Primitive(Primitive::U32), ArType::Primitive(Primitive::F32), "u32", "f32")
+                                }
+                                _ => unreachable!(),
+                            };
+                            let actual_params: Vec<ArType> = param_types
+                                .iter()
+                                .map(|&ty| checker.type_info.type_interner.resolve(ty))
+                                .collect();
+                            if !member.generic_params.is_empty()
+                                || actual_params != vec![expected_param]
+                                || ret_ty != expected_ret
+                            {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for float bitcast intrinsic '{member_name}': expected one {param_name} parameter and {ret_name} result without generics"),
                                     member.span,
                                 ));
                             }
@@ -483,6 +521,7 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             }
                         }
                         let mut flags = if pure_bits
+                            || float_bitcast
                             || simd.is_some()
                             || is_fma
                             || is_spin_hint

@@ -124,8 +124,11 @@ pub enum LangItem {
     Float,
     Ptr,
     Copy,
+    Clone,
     Send,
     Sync,
+    Eq,
+    Display,
     /// Cooperative executor handle; its opaque ID is not a transfer proof.
     TaskHandle,
     Alloc,

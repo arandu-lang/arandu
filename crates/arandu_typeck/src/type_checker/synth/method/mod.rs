@@ -97,10 +97,6 @@ fn instantiate_method_sig_for_result_option(
         ArType::Option(inner) => vec![checker.resolve(inner)],
         ArType::Slice(elem) | ArType::MutSlice(elem) => vec![checker.resolve(elem)],
         ArType::Ptr(inner) => vec![checker.resolve(inner)],
-        ArType::Nullable(inner) => match checker.resolve(inner) {
-            ArType::Ptr(elem) => vec![checker.resolve(elem)],
-            _ => return (params, ret),
-        },
         _ => return (params, ret),
     };
 
@@ -173,8 +169,7 @@ pub(super) fn bind_receiver_type_arg(
         | (ArType::MutSlice(f_inner), ArType::MutSlice(a_inner))
         | (ArType::Ref(f_inner), ArType::Ref(a_inner))
         | (ArType::RefMut(f_inner), ArType::RefMut(a_inner))
-        | (ArType::Ptr(f_inner), ArType::Ptr(a_inner))
-        | (ArType::Nullable(f_inner), ArType::Nullable(a_inner)) => {
+        | (ArType::Ptr(f_inner), ArType::Ptr(a_inner)) => {
             bind_receiver_type_arg(
                 checker,
                 *f_inner,
@@ -245,8 +240,7 @@ pub(crate) fn contains_generic_params(
                 .any(|&p| contains_generic_params(&interner.resolve(p), gp, interner))
                 || contains_generic_params(&interner.resolve(*ret), gp, interner)
         }
-        ArType::Nullable(inner)
-        | ArType::Slice(inner)
+        ArType::Slice(inner)
         | ArType::MutSlice(inner)
         | ArType::Ptr(inner)
         | ArType::Ref(inner)

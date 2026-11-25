@@ -1,14 +1,14 @@
 //! Elaborate semantic cleanup obligations into explicit AMIR `Destroy`.
 //!
-//! Arandu currently rejects inconsistent moves between CFG branches, so a
-//! valid return boundary never needs a runtime drop flag: each initialized
-//! local is either available on every path or moved on every path. This pass
-//! reuses the move and definite-init facts that enforce that rule.
+//! Inserts exact-once drops using path-sensitive move and initialization facts,
+//! emitting runtime boolean drop flags only for conditionally initialized or
+//! conditionally moved places.
 
+mod arrays;
 mod dynamic;
 mod elaborate;
+mod flags;
 mod needs_drop;
-mod settle;
 
 pub use elaborate::elaborate_drops;
 pub use needs_drop::type_needs_drop;
@@ -134,7 +134,15 @@ mod tests {
         let move_state = MoveState::default();
         let mut rebuilt = AmirStmtTable::new();
 
-        emit_recursive_drops(&place, arr_ty, &type_info, &move_state, false, &mut rebuilt);
+        emit_recursive_drops(
+            &place,
+            arr_ty,
+            &type_info,
+            &move_state,
+            false,
+            false,
+            &mut rebuilt,
+        );
 
         let destroyed_indices: Vec<_> = rebuilt
             .payloads
@@ -180,6 +188,7 @@ mod tests {
             tuple_ty,
             &type_info,
             &MoveState::default(),
+            false,
             false,
             &mut rebuilt,
         );

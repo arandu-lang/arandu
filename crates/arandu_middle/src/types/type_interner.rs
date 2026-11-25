@@ -539,7 +539,7 @@ mod tests {
     fn test_resolve_roundtrip() {
         let interner = TypeInterner::new();
         let str_id = interner.intern(ArType::Primitive(Primitive::Str));
-        let ty = ArType::Nullable(str_id);
+        let ty = ArType::Option(str_id);
         let id = interner.intern(ty.clone());
         assert_eq!(interner.resolve(id), ty);
     }

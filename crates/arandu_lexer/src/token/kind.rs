@@ -413,6 +413,7 @@ static TOKEN_FLAGS_TABLE: [TokenFlags; TokenKind::COUNT] = {
                 | TokenKind::RBracket
                 | TokenKind::RBrace
                 | TokenKind::Question
+                | TokenKind::Bang
                 | TokenKind::KwReturn
                 | TokenKind::KwBreak
                 | TokenKind::KwContinue

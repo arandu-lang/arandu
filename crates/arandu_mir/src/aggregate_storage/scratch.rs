@@ -68,7 +68,7 @@ fn backing_type_safe(
             ArType::Primitive(Primitive::Str) => views,
             ArType::Slice(_) | ArType::MutSlice(_) | ArType::Ref(_) | ArType::RefMut(_) => views,
             ArType::Primitive(_) => true,
-            ArType::Void | ArType::Ptr(_) | ArType::Vector(_) => true,
+            ArType::Void | ArType::Never | ArType::Ptr(_) | ArType::Vector(_) => true,
             ArType::Array(_, inner) | ArType::Option(inner) | ArType::Poll(inner) => {
                 visit(inner, depth + 1)
             }
@@ -97,8 +97,7 @@ fn backing_type_safe(
                         })
                 }
             }
-            ArType::Nullable(_)
-            | ArType::Coroutine(_)
+            ArType::Coroutine(_)
             | ArType::Range(_)
             | ArType::Func(..)
             | ArType::GenRef
@@ -339,6 +338,7 @@ pub fn function_scratch_safe(
         ArType::Primitive(_)
         | ArType::Vector(_)
         | ArType::Void
+        | ArType::Never
         | ArType::IntLiteral
         | ArType::FloatLiteral => {}
         ArType::Coroutine(_) if scalar_ready_result => {}
@@ -358,7 +358,6 @@ pub fn function_scratch_safe(
         }
         ArType::Slice(_)
         | ArType::MutSlice(_)
-        | ArType::Nullable(_)
         | ArType::Ptr(_)
         | ArType::Ref(_)
         | ArType::RefMut(_)

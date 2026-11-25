@@ -1,11 +1,11 @@
 T034: cannot format value of type `Point` as `str`
   --> tests/ui/type_checker/invalid/cannot_format.aru:9:16
   label: 9:5-9:15 parameter expects `str`
-  note: only bool, integers, floats, char, and str are supported in v0.1
+  note: only bool, integers, floats, char, str, String, and types implementing `toStr` are supported
 T034: cannot format value of type `Point` as `str`
   --> tests/ui/type_checker/invalid/cannot_format.aru:10:18
-  note: only bool, integers, floats, char, and str are supported in v0.1
+  note: only bool, integers, floats, char, str, String, and types implementing `toStr` are supported
 T034: cannot format value of type `Point` as `str`
   --> tests/ui/type_checker/invalid/cannot_format.aru:11:13
   label: 11:13-11:21 to_str is not available for this type
-  note: only bool, integers, floats, char, and str are supported in v0.1
+  note: only bool, integers, floats, char, str, String, and types implementing `toStr` are supported

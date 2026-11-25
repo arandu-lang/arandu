@@ -44,13 +44,47 @@ fn check_multi_var_decl(
     // Root cause fix (RC-ERR-NIL): Go-style `let ok, err = f()` where `f` returns
     // `Result<T, E>` binds `err` as `E?` (nullable error), so `err != nil` typechecks.
     let val_tys: Vec<TypeId> = if let Some((ok_id, err_id)) = checker.result_ok_err_ids(val_ty_id) {
-        let err_nullable = checker.intern(ArType::Nullable(err_id));
-        vec![ok_id, err_nullable]
+        let err_opt = checker.intern(ArType::Option(err_id));
+        vec![ok_id, err_opt]
     } else {
         match checker.resolve(val_ty_id) {
-            ArType::Tuple(tys) => checker.type_info.type_interner.type_args(tys),
+            ArType::Tuple(tys) => {
+                let elems = checker.type_info.type_interner.type_args(tys);
+                if elems.len() != bindings.len() {
+                    let found_str = checker
+                        .resolve(val_ty_id)
+                        .display(&checker.symbols, &checker.type_info.type_interner);
+                    checker.diagnostics.push(
+                        crate::Diagnostic::error(
+                            crate::DiagCode::T002IncompatibleAssignment,
+                            format!(
+                                "incompatible assignment: expected a tuple with {} elements, found '{}'",
+                                bindings.len(),
+                                found_str
+                            ),
+                            checker.pool.expr_span(value),
+                        ),
+                    );
+                    vec![checker.intern(ArType::Error); bindings.len()]
+                } else {
+                    elems
+                }
+            }
             ArType::Error => vec![checker.intern(ArType::Error); bindings.len()],
-            _ => vec![val_ty_id; bindings.len()],
+            other => {
+                let found_str = other.display(&checker.symbols, &checker.type_info.type_interner);
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T002IncompatibleAssignment,
+                        format!(
+                            "incompatible assignment: expected a tuple with {} elements, found '{found_str}'",
+                            bindings.len()
+                        ),
+                        checker.pool.expr_span(value),
+                    ),
+                );
+                vec![checker.intern(ArType::Error); bindings.len()]
+            }
         }
     };
 
@@ -97,7 +131,7 @@ fn check_single_var_decl(
             && let Some(ty_expr) = &binding.ty
         {
             let expected = checker.lower_type_expr(*ty_expr, checker.type_scope());
-            if !expected.is_error() {
+            if matches!(expected, ArType::Option(_) | ArType::Ptr(_)) {
                 let expected_id = checker.intern(expected);
                 checker.type_info.record_expr_type(value, expected_id);
                 bind_ty_id = expected_id;

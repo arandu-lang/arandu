@@ -119,7 +119,7 @@ fn each_rejected_owning_closure_reports_one_diagnostic() {
         ),
         (
             "a capture that is not Send",
-            "struct Guard { id: int }\n@Destructor\nfunc Guard.destroy(self: own Guard): void {}\nfunc f(guard: Guard): own () -> int + Send { return () => guard.id }",
+            "struct Guard { raw: ptr[int], id: int }\n@Destructor\nfunc Guard.destroy(self: own Guard): void {}\nfunc f(guard: Guard): own () -> int + Send { return () => guard.id }",
             DiagCode::T025InterfaceNotSatisfied,
         ),
         (

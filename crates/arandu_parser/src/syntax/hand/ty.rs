@@ -20,6 +20,7 @@ pub fn can_start_type_kind(kind: TokenKind) -> bool {
             | TokenKind::LBracket
             | TokenKind::LParen
             | TokenKind::KwFunc
+            | TokenKind::Bang
             | TokenKind::Amp // `&T` / `&mut T`
     ) || primitive_type_token_name(kind).is_some()
 }
@@ -162,6 +163,12 @@ fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeE
         return Some(ctx.pool.alloc_type_expr(TypeExpr::Pointer {
             span: ctx.span(start, close.start + close.len),
             inner,
+        }));
+    }
+
+    if cur.eat(TokenKind::Bang) {
+        return Some(ctx.pool.alloc_type_expr(TypeExpr::Never {
+            span: ctx.span(start, start + 1),
         }));
     }
 

@@ -43,12 +43,18 @@ import std.core.marker as marker
 import std.core.slice as slice
 
 extern "C" {
-    /// Host deallocator for a raw byte buffer.
-    func ar_vec_buf_free(p: ptr[u8], size: usize): void
     /// Allocator for typed buffers using target-provided alignment.
     func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
     /// Matching deallocator for `ar_rt_alloc_aligned`.
     func ar_rt_free_aligned(p: ptr[u8], size: usize, align: usize): void
+}
+
+func vecAllocAlign<T>(): usize {
+    let a = mem.alignOf<T>()
+    if a < (16 as usize) {
+        return 16 as usize
+    }
+    return a
 }
 
 /// Growable contiguous buffer of `T`.
@@ -59,17 +65,16 @@ public struct Vec<T> {
     private len: usize
     /// Allocated capacity in elements or bytes, as defined by this type.
     private capacity: usize
-    /// Adopted byte buffers use the separate `ar_vec_buf_free` ABI.
-    private rawBuffer: bool
 }
 
 /// Adopts an initialized byte buffer without allocating or copying.
 ///
 /// # Safety
-/// `data` must be uniquely owned storage compatible with `ar_vec_buf_free`,
-/// allocated for `bufCap` bytes. `bufLen` must not exceed `bufCap`, and the
-/// first `bufLen` bytes must be initialized. A nil buffer requires zero length
-/// and capacity. Ownership transfers to the returned vector exactly once.
+/// `data` must be uniquely owned storage compatible with the 16-byte-aligned
+/// vector buffer allocator, allocated for `bufCap` bytes. `bufLen` must not
+/// exceed `bufCap`, and the first `bufLen` bytes must be initialized. A nil
+/// buffer requires zero length and capacity. Ownership transfers to the
+/// returned vector exactly once.
 @Unsafe
 public func adoptBytes(data: ptr[u8], bufCap: usize, bufLen: usize): Vec<u8> {
     unsafe { return Vec.adoptBytesImpl(data, bufCap, bufLen) }
@@ -79,7 +84,7 @@ public func adoptBytes(data: ptr[u8], bufCap: usize, bufLen: usize): Vec<u8> {
 // The public raw adoption boundary above transfers exactly this obligation.
 @Unsafe
 func Vec.adoptBytesImpl(data: ptr[u8], bufCap: usize, bufLen: usize): Vec<u8> {
-    return Vec<u8> { data: data, len: bufLen, capacity: bufCap, rawBuffer: true }
+    return Vec<u8> { data: data, len: bufLen, capacity: bufCap }
 }
 
 func Vec.newImpl<T>(): Vec<T> {
@@ -87,7 +92,6 @@ func Vec.newImpl<T>(): Vec<T> {
         data: nil,
         len: 0,
         capacity: 0,
-        rawBuffer: false,
     }
 }
 
@@ -187,7 +191,7 @@ func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): bool {
     let oldBytes = v.capacity * elem
     let newBytes = newCap * elem
     let allocSize = if newBytes == 0 { 1 } else { newBytes }
-    let align = mem.alignOf<T>()
+    let align = vecAllocAlign<T>()
     unsafe {
         let nullp: ptr[u8] = nil
         let p = ar_rt_alloc_aligned(allocSize, align)
@@ -202,16 +206,11 @@ func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): bool {
             index = index + 1
         }
         if v.capacity > 0 {
-            if v.rawBuffer {
-                ar_vec_buf_free(v.data as ptr[u8], oldBytes)
-            } else {
-                let oldAllocSize = if oldBytes == 0 { 1 } else { oldBytes }
-                ar_rt_free_aligned(v.data as ptr[u8], oldAllocSize, align)
-            }
+            let oldAllocSize = if oldBytes == 0 { 1 } else { oldBytes }
+            ar_rt_free_aligned(v.data as ptr[u8], oldAllocSize, align)
         }
         v.data = p as ptr[T]
         v.capacity = newCap
-        v.rawBuffer = false
     }
     return true
 }
@@ -356,16 +355,11 @@ func Vec.destroyImpl<T>(v: mut ref Vec<T>): void {
     if v.capacity > 0 {
         let size = v.capacity * mem.sizeOf<T>()
         unsafe {
-            if v.rawBuffer {
-                ar_vec_buf_free(v.data as ptr[u8], size)
-            } else {
-                let allocSize = if size == 0 { 1 } else { size }
-                ar_rt_free_aligned(v.data as ptr[u8], allocSize, mem.alignOf<T>())
-            }
+            let allocSize = if size == 0 { 1 } else { size }
+            ar_rt_free_aligned(v.data as ptr[u8], allocSize, vecAllocAlign<T>())
         }
         v.data = nil
         v.capacity = 0
-        v.rawBuffer = false
     }
 }
 

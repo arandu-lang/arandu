@@ -282,10 +282,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let operand_ty = self.module.operand_type(operand, self.func);
                 let pointer = self.operand(operand, &operand_ty)?;
                 let pointee = match &operand_ty {
-                    ArType::Ptr(inner)
-                    | ArType::Ref(inner)
-                    | ArType::RefMut(inner)
-                    | ArType::Nullable(inner) => self.module.interner.resolve(*inner),
+                    ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                        self.module.interner.resolve(*inner)
+                    }
                     other => {
                         return Err(ice(format!("LLVM deref requires a pointer, got {other:?}")));
                     }

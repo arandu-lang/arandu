@@ -65,7 +65,7 @@ impl super::LayoutEngine {
             }
             // Error has a recovery-only zero layout for existing IDE callers;
             // executable lowering rejects erroneous type-check results first.
-            ArType::Void | ArType::Error => TypeLayout::simple(0, 1),
+            ArType::Void | ArType::Never | ArType::Error => TypeLayout::simple(0, 1),
             ArType::Ref(inner) | ArType::RefMut(inner)
                 if interner.with_type(*inner, |inner| {
                     matches!(inner, ArType::Slice(_) | ArType::MutSlice(_))
@@ -87,13 +87,6 @@ impl super::LayoutEngine {
                 field_offsets: vec![0, 4],
                 tag_encoding: None,
             },
-            ArType::Nullable(_) => {
-                // Nullable is always a null-or-pointer handle (box for scalars;
-                // heap object pointer for Named/etc.). Never stores the payload
-                // inline — avoids `int? = 0` colliding with `nil`.
-                let p = self.data_layout.pointer;
-                TypeLayout::simple(p.size, p.abi_align)
-            }
             ArType::Slice(_) | ArType::MutSlice(_) => self.fat_pointer_layout(),
             ArType::Array(len, inner) => {
                 let inner_layout = self.layout_of_type_inner(

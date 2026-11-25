@@ -277,7 +277,7 @@ pub fn lower_amir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<LowerAmi
     // The artifacts are part of the composed program, whose identity already
     // determines them.
     let identity = crate::StableHash::stable_hash(composed);
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(test)]
     crate::fingerprint::verify(
         db,
         "lower_amir",

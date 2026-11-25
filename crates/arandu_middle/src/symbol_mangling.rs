@@ -66,10 +66,6 @@ fn mangle_type_into(out: &mut String, ty: &ArType, symbols: &SymbolTable, intern
                 mangle_type_into(out, &interner.resolve(arg), symbols, interner);
             }
         }
-        ArType::Nullable(inner) => {
-            out.push_str("opt_");
-            mangle_type_into(out, &interner.resolve(*inner), symbols, interner);
-        }
         ArType::Ptr(inner) => {
             out.push_str("ptr_");
             mangle_type_into(out, &interner.resolve(*inner), symbols, interner);
@@ -159,6 +155,7 @@ fn mangle_type_into(out: &mut String, ty: &ArType, symbols: &SymbolTable, intern
             mangle_type_into(out, &interner.resolve(*inner), symbols, interner);
         }
         ArType::Void => out.push_str("void"),
+        ArType::Never => out.push_str("never"),
         ArType::Err => out.push_str("err"),
         ArType::IntLiteral => out.push_str("int"),
         ArType::FloatLiteral => out.push_str("float"),

@@ -67,8 +67,8 @@ pub fn check_borrow_across_suspend(
                     "this value contains an absolute reference that is still live when the coroutine suspends",
                 )
                 .with_hint(
-                    "copy the referent before `await`, or use a local-only borrow that \
-                     A3.4 can rewrite to a pin-free LocalId relative ref",
+                    "copy the referent before `await`, or keep the borrow confined to \
+                     a local variable or field that does not escape into a call",
                 ),
             );
         }

@@ -67,10 +67,6 @@ impl HashContext<'_> {
                 self.type_args(*params);
                 self.type_id(*result);
             }
-            ArType::Nullable(inner) => {
-                self.hash.tag(3);
-                self.type_id(*inner);
-            }
             ArType::Slice(inner) => {
                 self.hash.tag(4);
                 self.type_id(*inner);
@@ -124,6 +120,7 @@ impl HashContext<'_> {
             }
             ArType::Err => self.hash.tag(16),
             ArType::Void => self.hash.tag(17),
+            ArType::Never => self.hash.tag(25),
             ArType::IntLiteral => self.hash.tag(18),
             ArType::FloatLiteral => self.hash.tag(19),
             ArType::Error | ArType::Infer(_) => self.hash.tag(20),

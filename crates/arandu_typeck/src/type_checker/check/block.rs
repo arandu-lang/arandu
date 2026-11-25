@@ -65,8 +65,8 @@ fn check_tail_expr(
 ) -> ArType {
     let last_ty_id = super::super::synth::synth_expr_expected(checker, expr, tail_expected);
     let last_ty = checker.resolve(last_ty_id);
-    if allow_void_statement && matches!(last_ty, ArType::Void) {
-        return ArType::Void;
+    if allow_void_statement && matches!(last_ty, ArType::Void | ArType::Never) {
+        return last_ty;
     }
     if let Some(expected_id) = tail_expected {
         let expected = checker.resolve(expected_id);
@@ -128,8 +128,12 @@ pub fn check_block_tail(
                     has_semi,
                 } => {
                     if *has_semi && !tail_non_void {
-                        let _ = super::super::synth::synth_expr(checker, *expr);
-                        last_ty = ArType::Void;
+                        let expr_ty_id = super::super::synth::synth_expr(checker, *expr);
+                        last_ty = if matches!(checker.resolve(expr_ty_id), ArType::Never) {
+                            ArType::Never
+                        } else {
+                            ArType::Void
+                        };
                     } else if tail_is_void {
                         let expr_expected = if matches!(
                             pool.expr(*expr),
@@ -145,7 +149,7 @@ pub fn check_block_tail(
                         if checker.result_ok_err(&ty).is_some() {
                             checker.add_constraint(
                                 ArType::Void,
-                                ty,
+                                ty.clone(),
                                 ConstraintOrigin::ReturnType {
                                     return_span: *span,
                                     declared_span: checker
@@ -155,13 +159,32 @@ pub fn check_block_tail(
                                 },
                             );
                         }
-                        last_ty = ArType::Void;
+                        last_ty = if matches!(ty, ArType::Never) {
+                            ArType::Never
+                        } else {
+                            ArType::Void
+                        };
                     } else {
                         last_ty = check_tail_expr(checker, *expr, *span, tail_expected, false);
                     }
                 }
                 Stmt::Match { expr, span } if tail_non_void => {
                     last_ty = check_tail_expr(checker, *expr, *span, tail_expected, true);
+                }
+                Stmt::Unsafe { block, .. } => {
+                    checker.ctx.enter_unsafe();
+                    let inner_ty = check_block_tail(
+                        checker,
+                        pool,
+                        block,
+                        if tail_non_void { tail_expected } else { None },
+                    );
+                    checker.ctx.exit_unsafe();
+                    last_ty = if matches!(inner_ty, ArType::Never) || tail_non_void {
+                        inner_ty
+                    } else {
+                        ArType::Void
+                    };
                 }
                 _ => {
                     check_stmt(checker, pool, stmt);

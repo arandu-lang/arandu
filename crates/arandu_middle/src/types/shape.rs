@@ -11,7 +11,6 @@ pub enum TypeShape {
     Vector(super::VectorType),
     Named(SymbolId, Vec<Self>),
     Func(Vec<Self>, Box<Self>),
-    Nullable(Box<Self>),
     Slice(Box<Self>),
     MutSlice(Box<Self>),
     Array(u64, Box<Self>),
@@ -31,6 +30,7 @@ pub enum TypeShape {
     Range(Box<Self>),
     Err,
     Void,
+    Never,
     IntLiteral,
     FloatLiteral,
     Error,
@@ -54,7 +54,6 @@ mod tests {
             TypeShape::Primitive(Primitive::Int),
             TypeShape::Named(sym, vec![TypeShape::Const(u64::MAX), *int()]),
             TypeShape::Func(vec![*int()], Box::new(TypeShape::Void)),
-            TypeShape::Nullable(int()),
             TypeShape::Slice(int()),
             TypeShape::Array(u64::MAX, int()),
             TypeShape::ConstArray(sym, int()),
@@ -74,6 +73,7 @@ mod tests {
             TypeShape::Range(int()),
             TypeShape::Err,
             TypeShape::Void,
+            TypeShape::Never,
             TypeShape::IntLiteral,
             TypeShape::FloatLiteral,
             TypeShape::Error,
@@ -237,8 +237,7 @@ impl TypeShape {
                     pending.extend(items);
                     pending.push(result);
                 }
-                Self::Nullable(inner)
-                | Self::Slice(inner)
+                Self::Slice(inner)
                 | Self::MutSlice(inner)
                 | Self::Array(_, inner)
                 | Self::Ptr(inner)
@@ -258,7 +257,8 @@ impl TypeShape {
                 | Self::FrozenConst(_)
                 | Self::GenRef
                 | Self::Err
-                | Self::Void => {}
+                | Self::Void
+                | Self::Never => {}
             }
         }
         true
@@ -295,8 +295,7 @@ impl TypeShape {
                 }
                 result.default_literals(depth + 1, remaining)?;
             }
-            Self::Nullable(inner)
-            | Self::Slice(inner)
+            Self::Slice(inner)
             | Self::MutSlice(inner)
             | Self::Array(_, inner)
             | Self::ConstArray(_, inner)
@@ -319,6 +318,7 @@ impl TypeShape {
             | Self::GenRef
             | Self::Err
             | Self::Void
+            | Self::Never
             | Self::Error => {}
         }
         Ok(())
@@ -369,8 +369,7 @@ impl TypeShape {
                     arg.visit_symbols(depth + 1, remaining, visitor)?;
                 }
             }
-            Self::Nullable(inner)
-            | Self::Slice(inner)
+            Self::Slice(inner)
             | Self::MutSlice(inner)
             | Self::Array(_, inner)
             | Self::Ptr(inner)
@@ -390,6 +389,7 @@ impl TypeShape {
             | Self::GenRef
             | Self::Err
             | Self::Void
+            | Self::Never
             | Self::IntLiteral
             | Self::FloatLiteral
             | Self::Error => {}
@@ -434,7 +434,6 @@ impl TypeShape {
                 ArType::Primitive(p) => Self::Primitive(p),
                 ArType::Named(symbol, args) => Self::Named(symbol, many(args, remaining)?),
                 ArType::Func(args, ret) => Self::Func(many(args, remaining)?, one(ret, remaining)?),
-                ArType::Nullable(id) => Self::Nullable(one(id, remaining)?),
                 ArType::Slice(id) => Self::Slice(one(id, remaining)?),
                 ArType::MutSlice(id) => Self::MutSlice(one(id, remaining)?),
                 ArType::Array(n, id) => Self::Array(n, one(id, remaining)?),
@@ -457,6 +456,7 @@ impl TypeShape {
                 ArType::Range(id) => Self::Range(one(id, remaining)?),
                 ArType::Err => Self::Err,
                 ArType::Void => Self::Void,
+                ArType::Never => Self::Never,
                 ArType::IntLiteral => Self::IntLiteral,
                 ArType::FloatLiteral => Self::FloatLiteral,
                 ArType::Error => Self::Error,
@@ -495,7 +495,6 @@ impl TypeShape {
             Self::Func(args, ret) => {
                 ArType::func(&many(args, remaining)?, one(ret, remaining)?, interner)
             }
-            Self::Nullable(inner) => ArType::Nullable(one(inner, remaining)?),
             Self::Slice(inner) => ArType::Slice(one(inner, remaining)?),
             Self::MutSlice(inner) => ArType::MutSlice(one(inner, remaining)?),
             Self::Array(n, inner) => ArType::Array(*n, one(inner, remaining)?),
@@ -516,6 +515,7 @@ impl TypeShape {
             Self::Range(inner) => ArType::Range(one(inner, remaining)?),
             Self::Err => ArType::Err,
             Self::Void => ArType::Void,
+            Self::Never => ArType::Never,
             Self::IntLiteral => ArType::IntLiteral,
             Self::FloatLiteral => ArType::FloatLiteral,
             Self::Error => ArType::Error,

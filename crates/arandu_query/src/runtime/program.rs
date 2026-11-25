@@ -618,7 +618,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         diagnostics,
     };
     let fingerprint = fingerprint.finalize();
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(test)]
     crate::fingerprint::verify(db, "runtime_program", fingerprint, program.stable_hash());
     // Identity by fingerprint alone: equal fingerprints imply equal content,
     // and comparing content would hash the program on every warm build.

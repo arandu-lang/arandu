@@ -243,7 +243,9 @@ impl super::SymbolTable {
         use crate::types::ArType;
         let pointer = match receiver {
             ArType::Ptr(_) => true,
-            ArType::Nullable(inner) => matches!(interner.resolve(*inner), ArType::Ptr(_)),
+            ArType::Option(inner) => {
+                matches!(interner.resolve(*inner), ArType::Ptr(_))
+            }
             _ => false,
         };
         pointer

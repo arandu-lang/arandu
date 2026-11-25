@@ -179,7 +179,7 @@ impl TargetAbiClassifier {
         provider: &dyn StructLayoutProvider,
     ) -> ArgAbi {
         match ty {
-            ArType::Void | ArType::Error => ArgAbi::ZeroSized,
+            ArType::Void | ArType::Never | ArType::Error => ArgAbi::ZeroSized,
             ArType::Named(sym, _)
                 if provider.get_struct_fields_for_type(ty, interner).is_none() =>
             {

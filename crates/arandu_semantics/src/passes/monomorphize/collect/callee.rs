@@ -22,13 +22,10 @@ pub(crate) fn generic_callee_symbol(
     }
 }
 
-/// Peel Nullable / & / &mut / ptr layers so method mono keys see the Named receiver.
+/// Peel & / &mut / ptr layers so method mono keys see the Named receiver.
 fn peel_recv_base_ty(tc: &TypeCheckResult, base_ty: ArType) -> ArType {
     let interner = &tc.type_info.type_interner;
-    let mut actual = match base_ty {
-        ArType::Nullable(inner) => interner.resolve(inner),
-        other => other,
-    };
+    let mut actual = base_ty;
     for _ in 0..4 {
         actual = match actual {
             ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {

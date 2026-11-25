@@ -7,42 +7,127 @@ use crate::type_checker::constraints::ConstraintOrigin;
 use crate::type_checker::types::{self, ArType, Primitive};
 use arandu_middle::types::type_interner::TypeId;
 
-fn is_equality_comparable(checker: &TypeChecker<'_>, ty: &ArType) -> bool {
+fn is_equality_comparable(checker: &mut TypeChecker<'_>, ty: &ArType) -> bool {
+    let mut visited = rustc_hash::FxHashSet::default();
+    is_equality_comparable_inner(checker, ty, &mut visited)
+}
+
+fn is_equality_comparable_inner(
+    checker: &mut TypeChecker<'_>,
+    ty: &ArType,
+    visited: &mut rustc_hash::FxHashSet<arandu_middle::SymbolId>,
+) -> bool {
     if matches!(
         ty,
         ArType::Primitive(_)
             | ArType::Ptr(_)
             | ArType::Ref(_)
             | ArType::RefMut(_)
-            | ArType::Nullable(_)
-            | ArType::Option(_)
-            | ArType::Result(_, _)
             | ArType::Err
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::GenRef
+            | ArType::Void
+            | ArType::Never
     ) {
         return true;
     }
-    if let ArType::Named(sym, _) = ty
-        && !checker.type_info.struct_fields.contains_key(sym)
-        && checker
-            .symbols
-            .try_get(*sym)
-            .is_some_and(|s| matches!(s.kind, arandu_middle::SymbolKind::Enum))
-    {
-        let mut has_variant = false;
-        for (owner, shape) in checker.type_info.enum_variants.values() {
-            if owner == sym {
-                has_variant = true;
-                if !matches!(shape, crate::type_checker::EnumPayloadShape::Unit) {
-                    return false;
-                }
-            }
+    match ty {
+        ArType::Option(inner) => {
+            let inner_ty = checker.resolve(*inner);
+            is_equality_comparable_inner(checker, &inner_ty, visited)
         }
-        return has_variant;
+        ArType::Result(ok, err) => {
+            let ok_ty = checker.resolve(*ok);
+            let err_ty = checker.resolve(*err);
+            is_equality_comparable_inner(checker, &ok_ty, visited)
+                && is_equality_comparable_inner(checker, &err_ty, visited)
+        }
+        ArType::Tuple(args) => {
+            let items = checker.type_info.type_interner.type_args(*args);
+            items.into_iter().all(|id| {
+                let item_ty = checker.resolve(id);
+                is_equality_comparable_inner(checker, &item_ty, visited)
+            })
+        }
+        ArType::Array(_, elem) | ArType::ConstArray(_, elem) => {
+            let elem_ty = checker.resolve(*elem);
+            is_equality_comparable_inner(checker, &elem_ty, visited)
+        }
+        ArType::Named(sym, args) => {
+            if let Some(eq_sym) = checker
+                .symbols
+                .lang_item_symbol(arandu_middle::symbol_table::LangItem::Eq)
+                && crate::type_checker::types::interfaces::type_satisfies_interface(
+                    checker,
+                    ty,
+                    eq_sym,
+                    &[],
+                    Span::new(0, 0, 0),
+                )
+            {
+                return true;
+            }
+            if !visited.insert(*sym) {
+                return false;
+            }
+            let result = if checker.type_info.destructors.contains_key(sym)
+                || checker.type_info.struct_fields.contains_key(sym)
+            {
+                false
+            } else if checker
+                .symbols
+                .try_get(*sym)
+                .is_some_and(|s| matches!(s.kind, arandu_middle::SymbolKind::Enum))
+            {
+                let args_vec = checker.type_info.type_interner.type_args(*args);
+                let params = checker
+                    .type_info
+                    .generic_params
+                    .get(sym)
+                    .map_or(&[][..], |p| p.as_slice());
+                let subst = if !params.is_empty() && params.len() == args_vec.len() {
+                    Some(arandu_middle::types::build_subst_ids(
+                        params,
+                        &args_vec,
+                        &checker.type_info.type_interner,
+                    ))
+                } else {
+                    None
+                };
+                let variant_shapes: Vec<Vec<TypeId>> = checker
+                    .type_info
+                    .enum_variants
+                    .iter()
+                    .filter(|(_, (owner, _))| owner == sym)
+                    .map(|(_, (_, shape))| match shape {
+                        crate::type_checker::EnumPayloadShape::Unit => Vec::new(),
+                        crate::type_checker::EnumPayloadShape::Tuple(items) => items.clone(),
+                    })
+                    .collect();
+                !variant_shapes.is_empty()
+                    && variant_shapes.into_iter().all(|items| {
+                        items.into_iter().all(|item_id| {
+                            let inst_id = match &subst {
+                                Some(map) => arandu_middle::types::substitute_type_id(
+                                    item_id,
+                                    map,
+                                    &checker.type_info.type_interner,
+                                ),
+                                None => item_id,
+                            };
+                            let item_ty = checker.resolve(inst_id);
+                            is_equality_comparable_inner(checker, &item_ty, visited)
+                        })
+                    })
+            } else {
+                false
+            };
+            visited.remove(sym);
+            result
+        }
+        _ => false,
     }
-    false
 }
 
 pub(super) fn synth_binary_result(
@@ -82,7 +167,7 @@ pub(super) fn synth_binary_result(
                     if !checker.ctx.is_in_unsafe() {
                         checker.diagnostics.push(
                             crate::Diagnostic::error(
-                                crate::DiagCode::O012AllocRequiresUnsafe,
+                                crate::DiagCode::O019RawPtrRequiresUnsafe,
                                 "pointer arithmetic requires an `unsafe` block",
                                 span,
                             )
@@ -111,7 +196,7 @@ pub(super) fn synth_binary_result(
                     if !checker.ctx.is_in_unsafe() {
                         checker.diagnostics.push(
                             crate::Diagnostic::error(
-                                crate::DiagCode::O012AllocRequiresUnsafe,
+                                crate::DiagCode::O019RawPtrRequiresUnsafe,
                                 "pointer arithmetic requires an `unsafe` block",
                                 span,
                             )
@@ -268,7 +353,7 @@ pub(super) fn synth_binary_result(
                 let value_ty = checker.resolve(value_ty_id);
                 let ok = matches!(
                     value_ty,
-                    ArType::Nullable(_) | ArType::Option(_) | ArType::Ptr(_) | ArType::GenRef
+                    ArType::Option(_) | ArType::Ptr(_) | ArType::GenRef
                 ) || value_ty.is_error();
                 if ok {
                     // Re-record nil with the value's type so HIR is consistent.

@@ -339,7 +339,7 @@ pub(crate) fn check_const_value(
             ) && matches!(
                 checker.resolve(declared),
                 crate::type_checker::types::ArType::Ptr(_)
-                    | crate::type_checker::types::ArType::Nullable(_)
+                    | crate::type_checker::types::ArType::Option(_)
             ))
         {
             checker.add_constraint(

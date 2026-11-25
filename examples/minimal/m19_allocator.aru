@@ -14,7 +14,7 @@ func work(): Result<int, aapi.AllocError> {
     let _a = arena.alloc(8, 8)?
     let _b = arena.alloc(8, 8)?
     let rem = arena.remaining() as int
-    arena.reset()
+    unsafe { arena.reset() }
     let rem2 = arena.remaining() as int
     // 48 + 64 = 112
     return Result.Ok(rem + rem2)

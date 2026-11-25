@@ -155,12 +155,6 @@ pub fn expand_named_with_defaults(checker: &mut TypeChecker<'_>, ty: ArType) -> 
             let tid = checker.intern(expanded);
             ArType::ConstArray(param, tid)
         }
-        ArType::Nullable(inner) => {
-            let inner_ty = checker.resolve(inner);
-            let expanded = expand_named_with_defaults(checker, inner_ty);
-            let tid = checker.intern(expanded);
-            ArType::Nullable(tid)
-        }
         ArType::Option(inner) => {
             let inner_ty = checker.resolve(inner);
             let expanded = expand_named_with_defaults(checker, inner_ty);
@@ -562,9 +556,7 @@ fn resolve_generic_callee_symbol(
                 .unwrap_or_else(|| crate::passes::type_checker::synth::synth_expr(checker, *base));
             let base_ty = checker.resolve(base_ty_id);
             let actual_base_ty = match &base_ty {
-                ArType::Nullable(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
-                    checker.resolve(*inner)
-                }
+                ArType::Ref(inner) | ArType::RefMut(inner) => checker.resolve(*inner),
                 other => other.clone(),
             };
             let struct_id = match &actual_base_ty {
@@ -669,11 +661,6 @@ fn expand_aliases_rec(checker: &mut TypeChecker<'_>, ty: ArType, depth: usize) -
                 }
                 ArType::named(symbol_id, &expanded_args, &checker.type_info.type_interner)
             }
-        }
-        ArType::Nullable(inner) => {
-            let inner_ty = checker.resolve(inner);
-            let expanded = expand_aliases_rec(checker, inner_ty, depth + 1);
-            ArType::Nullable(checker.intern(expanded))
         }
         ArType::Option(inner) => {
             let inner_ty = checker.resolve(inner);

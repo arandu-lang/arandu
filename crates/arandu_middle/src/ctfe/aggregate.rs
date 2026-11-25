@@ -241,7 +241,6 @@ pub fn validate_ctfe_type_shape(shape: &TypeShape) -> Result<(), ConstValueError
             // type argument stays outside frozen identity.
             TypeShape::Ptr(_) => !argument,
             TypeShape::Func(..)
-            | TypeShape::Nullable(_)
             | TypeShape::ConstArray(..)
             | TypeShape::ConstParam(_)
             | TypeShape::Ref(_)
@@ -252,6 +251,7 @@ pub fn validate_ctfe_type_shape(shape: &TypeShape) -> Result<(), ConstValueError
             | TypeShape::Poll(_)
             | TypeShape::Range(_)
             | TypeShape::Err
+            | TypeShape::Never
             | TypeShape::IntLiteral
             | TypeShape::FloatLiteral
             | TypeShape::Error => false,
@@ -360,10 +360,6 @@ fn encode_shape(shape: &TypeShape, bytes: &mut Vec<u8>) {
             }
             encode_shape(result, bytes);
         }
-        TypeShape::Nullable(inner) => {
-            bytes.push(7);
-            encode_shape(inner, bytes);
-        }
         TypeShape::Slice(inner) => {
             bytes.push(8);
             encode_shape(inner, bytes);
@@ -421,6 +417,7 @@ fn encode_shape(shape: &TypeShape, bytes: &mut Vec<u8>) {
         TypeShape::IntLiteral => bytes.push(21),
         TypeShape::FloatLiteral => bytes.push(22),
         TypeShape::Error => bytes.push(23),
+        TypeShape::Never => bytes.push(27),
     }
 }
 

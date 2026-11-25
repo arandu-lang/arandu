@@ -8,13 +8,9 @@ pub(super) fn peel_auto_deref_place(
     base_ty_id: TypeId,
 ) -> (TypeId, bool) {
     let mut id = base_ty_id;
-    let mut was_nullable = false;
+    let was_nullable = false;
     for _ in 0..8 {
         match checker.resolve(id) {
-            ArType::Nullable(inner) => {
-                was_nullable = true;
-                id = inner;
-            }
             ArType::Ref(inner) | ArType::RefMut(inner) => {
                 id = inner;
             }
@@ -63,7 +59,7 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     if !checker.ctx.is_in_unsafe() {
                         checker.diagnostics.push(
                             crate::Diagnostic::error(
-                                crate::DiagCode::O012AllocRequiresUnsafe,
+                                crate::DiagCode::O019RawPtrRequiresUnsafe,
                                 "writing through a raw pointer requires an `unsafe` block",
                                 *span,
                             )
@@ -121,6 +117,16 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     }
                     ArType::Ptr(inner) => match interner.resolve(inner) {
                         ArType::Named(id, args) => {
+                            if !checker.ctx.is_in_unsafe() {
+                                checker.diagnostics.push(
+                                    crate::Diagnostic::error(
+                                        crate::DiagCode::O019RawPtrRequiresUnsafe,
+                                        "writing a field through a raw pointer requires an `unsafe` block",
+                                        *span,
+                                    )
+                                    .with_label(*span, "raw `ptr[T]` field access is unsafe"),
+                                );
+                            }
                             let args_vec = interner.type_args(args);
                             Some((id, args_vec))
                         }
@@ -222,7 +228,7 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                         if !checker.ctx.is_in_unsafe() {
                             checker.diagnostics.push(
                                 crate::Diagnostic::error(
-                                    crate::DiagCode::O012AllocRequiresUnsafe,
+                                    crate::DiagCode::O019RawPtrRequiresUnsafe,
                                     "indexing a raw pointer requires an `unsafe` block",
                                     *span,
                                 )

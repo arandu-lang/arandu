@@ -19,7 +19,9 @@ impl LowerCtx<'_> {
                 if bindings_slice.len() == 1 {
                     let b = &bindings_slice[0];
                     let local_id = self.new_local_id(b.ty, b.symbol, b.span);
+                    let val_expr = self.hir.pool.expr(*value);
                     let val_op = self.lower_expr(*value, None, symbols)?;
+                    let val_op = self.coerce_to_option(val_op, val_expr.ty, b.ty);
                     if let AmirOperand::Copy(t) | AmirOperand::Move(t) = &val_op {
                         self.owned_string_temps.remove(t);
                     }
@@ -70,8 +72,13 @@ impl LowerCtx<'_> {
                 }
             }
             HirStmtKind::Set { places, op, value } => {
-                let val_op = self.lower_expr(*value, None, symbols)?;
-                self.lower_set_places(self.hir.pool.places_list(*places), op, &val_op, symbols)?;
+                let val_ty = self.hir.pool.expr(*value).ty;
+                let mut val_op = self.lower_expr(*value, None, symbols)?;
+                let places_slice = self.hir.pool.places_list(*places);
+                if places_slice.len() == 1 && *op == crate::ops::SetOp::Assign {
+                    val_op = self.coerce_to_option(val_op, val_ty, places_slice[0].ty);
+                }
+                self.lower_set_places(places_slice, op, &val_op, symbols)?;
             }
             HirStmtKind::Return { values } => self.lower_return_stmt(values, symbols)?,
 
@@ -249,7 +256,17 @@ impl LowerCtx<'_> {
             let values = self.hir.pool.expr_list(*values);
             match values {
                 [value] => {
-                    self.lower_expr(*value, Some(dest), symbols)?;
+                    let dest_ty = self.temps[dest.as_usize()].ty;
+                    let val_ty = self.hir.pool.expr(*value).ty;
+                    if self.with_ty(dest_ty, crate::passes::type_checker::types::is_option_type)
+                        && !self.with_ty(val_ty, crate::passes::type_checker::types::is_option_type)
+                    {
+                        let op = self.lower_expr(*value, None, symbols)?;
+                        let coerced = self.coerce_to_option(op, val_ty, dest_ty);
+                        self.emit_assign_temp(dest, AmirRvalue::Use(coerced));
+                    } else {
+                        self.lower_expr(*value, Some(dest), symbols)?;
+                    }
                 }
                 [] => self.emit_assign_temp(
                     dest,
@@ -291,7 +308,18 @@ impl LowerCtx<'_> {
                     self.lower_expr(values_slice[0], Some(TempId(0)), symbols)?;
                 }
             } else {
-                self.lower_expr(values_slice[0], Some(TempId(0)), symbols)?;
+                let val_ty = self.hir.pool.expr(values_slice[0]).ty;
+                if self.with_ty(
+                    self.func_return_type,
+                    crate::passes::type_checker::types::is_option_type,
+                ) && !self.with_ty(val_ty, crate::passes::type_checker::types::is_option_type)
+                {
+                    let op = self.lower_expr(values_slice[0], None, symbols)?;
+                    let coerced = self.coerce_to_option(op, val_ty, self.func_return_type);
+                    self.emit_assign_temp(TempId(0), AmirRvalue::Use(coerced));
+                } else {
+                    self.lower_expr(values_slice[0], Some(TempId(0)), symbols)?;
+                }
             }
         } else if values_slice.len() > 1 {
             let mut ops = Vec::new();
@@ -415,6 +443,51 @@ impl LowerCtx<'_> {
                         let start = self.lower_expr(left, None, symbols)?;
                         let bound = self.lower_expr(right, None, symbols)?;
                         (None, start, Some(bound), ty, inclusive)
+                    } else if let Some((elem_ty, inclusive)) =
+                        match self.resolve_ty(self.hir.pool.expr(*iterable).ty) {
+                            ArType::Named(sym, args) => self
+                                .tc
+                                .type_info
+                                .type_interner
+                                .type_args(args)
+                                .first()
+                                .copied()
+                                .zip(symbols.try_get(sym).and_then(|s| s.lang_item).and_then(
+                                    |item| match item {
+                                        arandu_middle::symbol_table::LangItem::Range => Some(false),
+                                        arandu_middle::symbol_table::LangItem::RangeInclusive => {
+                                            Some(true)
+                                        }
+                                        _ => None,
+                                    },
+                                )),
+                            _ => None,
+                        }
+                    {
+                        let range_op = self.lower_expr(*iterable, None, symbols)?;
+                        let start_temp = self.new_temp_id(elem_ty);
+                        self.emit_assign_temp(
+                            start_temp,
+                            AmirRvalue::FieldAccess {
+                                base: range_op,
+                                field: 0,
+                            },
+                        );
+                        let bound_temp = self.new_temp_id(elem_ty);
+                        self.emit_assign_temp(
+                            bound_temp,
+                            AmirRvalue::FieldAccess {
+                                base: range_op,
+                                field: 1,
+                            },
+                        );
+                        (
+                            None,
+                            AmirOperand::Copy(start_temp),
+                            Some(AmirOperand::Copy(bound_temp)),
+                            elem_ty,
+                            inclusive,
+                        )
                     } else {
                         // Only a unit compiled without `std.core.range` has
                         // a built-in range type; its values have no fields.

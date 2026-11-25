@@ -114,22 +114,7 @@ impl<'a> Parser<'a> {
         Ok(ty)
     }
 
-    // Array/slice elements skip nullable postfix parsing, but share the recursion budget.
-    pub(in crate::parser) fn parse_type_primary(&mut self) -> Result<TypeExprId, ParseError> {
-        if self.recursion_depth >= 105 {
-            return Err(ParseError::new(
-                ParseErrorCode::ExpectedType,
-                "type recursion limit exceeded",
-                self.current(),
-                self.file_id,
-                self.source,
-            ));
-        }
-        self.recursion_depth += 1;
-        let result = self.parse_type_primary_inner();
-        self.recursion_depth -= 1;
-        result
-    }
+    // Array/slice elements share the recursion budget via `parse_type`.
 
     fn parse_type_primary_inner(&mut self) -> Result<TypeExprId, ParseError> {
         let start = self.mark();
@@ -193,6 +178,10 @@ impl<'a> Parser<'a> {
         if self.eat_name("LBRACKET") {
             return self.parse_array_type(start);
         }
+        if self.eat_name("BANG") {
+            let span = self.span_from_mark(start);
+            return Ok(self.pool.alloc_type_expr(TypeExpr::Never { span }));
+        }
         if self.eat_name("KW_FUNC") {
             return self.parse_func_type(start);
         }
@@ -229,7 +218,7 @@ impl<'a> Parser<'a> {
         }
         let (size, size_span, size_expression) = self.parse_array_size()?;
         self.expect_name("RBRACKET")?;
-        let elem = self.parse_type_primary()?;
+        let elem = self.parse_type()?;
         let span = self.span_from_mark(start);
         Ok(self.pool.alloc_type_expr(TypeExpr::Array {
             span,
@@ -241,13 +230,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_slice_type(&mut self, start: usize) -> Result<TypeExprId, ParseError> {
-        let inner = self.parse_type_primary()?;
+        let inner = self.parse_type()?;
         let span = self.span_from_mark(start);
         Ok(self.pool.alloc_type_expr(TypeExpr::Slice { span, inner }))
     }
 
     fn parse_mut_slice_type(&mut self, start: usize) -> Result<TypeExprId, ParseError> {
-        let inner = self.parse_type_primary()?;
+        let inner = self.parse_type()?;
         let span = self.span_from_mark(start);
         Ok(self
             .pool

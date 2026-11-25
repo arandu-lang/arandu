@@ -123,20 +123,43 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
         | BinaryOp::Gt
         | BinaryOp::LtEqual
         | BinaryOp::GtEqual => {
-            let mut l_id = synth_expr(checker, left_id);
-            let l_ty = checker.resolve(l_id);
-            // A generic constructor such as `Option.None` takes its type
-            // arguments from the other operand.
-            let r_expected = if (!l_ty.is_literal() && l_ty.is_numeric())
-                || matches!(
-                    l_ty,
-                    ArType::Option(_) | ArType::Result(..) | ArType::Nullable(_)
-                ) {
-                Some(l_id)
+            let left_is_nil = matches!(
+                checker.pool.expr(left_id),
+                arandu_parser::ast_pool::ExprKind::Nil
+            );
+            let right_is_nil = matches!(
+                checker.pool.expr(right_id),
+                arandu_parser::ast_pool::ExprKind::Nil
+            );
+            let (mut l_id, mut r_id) = if left_is_nil && !right_is_nil {
+                let r_id = synth_expr(checker, right_id);
+                let r_ty = checker.resolve(r_id);
+                let l_expected =
+                    if matches!(r_ty, ArType::Option(_) | ArType::Ptr(_) | ArType::GenRef) {
+                        Some(r_id)
+                    } else {
+                        None
+                    };
+                let l_id = synth_expr_expected(checker, left_id, l_expected);
+                (l_id, r_id)
             } else {
-                None
+                let l_id = synth_expr(checker, left_id);
+                let l_ty = checker.resolve(l_id);
+                // A generic constructor such as `Option.None` takes its type
+                // arguments from the other operand.
+                let r_expected = if (!l_ty.is_literal() && l_ty.is_numeric())
+                    || matches!(
+                        l_ty,
+                        ArType::Option(_) | ArType::Result(..) | ArType::Ptr(_) | ArType::GenRef
+                    ) {
+                    Some(l_id)
+                } else {
+                    None
+                };
+                let r_id = synth_expr_expected(checker, right_id, r_expected);
+                (l_id, r_id)
             };
-            let mut r_id = synth_expr_expected(checker, right_id, r_expected);
+            let l_ty = checker.resolve(l_id);
             let r_ty = checker.resolve(r_id);
 
             if l_ty.is_literal() && !r_ty.is_literal() && r_ty.is_numeric() {

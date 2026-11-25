@@ -63,10 +63,18 @@ pub fn is_assignable_return_type(
     skip(interner)
 )]
 fn unify_return_type_inner(expected: &ArType, actual: &ArType, interner: &TypeInterner) -> bool {
+    if matches!(actual, ArType::Never) {
+        return true;
+    }
     if unify_inner(expected, actual, interner) {
         return true;
     }
-    if let ArType::Nullable(inner_exp_id) = expected {
+    if let ArType::Option(inner_exp_id) = expected {
+        if let ArType::Option(inner_act_id) = actual {
+            let inner_exp = interner.resolve(*inner_exp_id);
+            let inner_act = interner.resolve(*inner_act_id);
+            return unify_inner(&inner_act, &inner_exp, interner);
+        }
         let inner_exp = interner.resolve(*inner_exp_id);
         if unify_inner(&inner_exp, actual, interner)
             || is_assignable_inner(actual, &inner_exp, interner)
@@ -81,7 +89,7 @@ fn unify_return_type_inner(expected: &ArType, actual: &ArType, interner: &TypeIn
         }
         // `return nil` on `Result<void, Err>`
         if matches!(ok_exp, ArType::Void)
-            && matches!(actual, ArType::Nullable(inner) if matches!(&interner.resolve(*inner), ArType::Error))
+            && matches!(actual, ArType::Option(inner) if matches!(&interner.resolve(*inner), ArType::Error))
         {
             return true;
         }
@@ -198,14 +206,6 @@ fn unify_inner(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
                         interner,
                     ))
         }
-        (ArType::Nullable(inner_a), ArType::Nullable(inner_b)) => {
-            *inner_a == *inner_b
-                || unify_inner(
-                    &interner.resolve(*inner_a),
-                    &interner.resolve(*inner_b),
-                    interner,
-                )
-        }
 
         (ArType::Slice(inner_a), ArType::Slice(inner_b)) => {
             *inner_a == *inner_b
@@ -317,6 +317,7 @@ fn unify_inner(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
         (ArType::Err, ArType::Err) => true,
         (ArType::Void, ArType::Void) => true,
+        (ArType::Never, ArType::Never) => true,
         _ => false,
     }
 }
@@ -343,6 +344,7 @@ pub fn resolve_literal_pair(a: &ArType, b: &ArType) -> ArType {
         (ArType::IntLiteral, ArType::FloatLiteral) | (ArType::FloatLiteral, ArType::IntLiteral) => {
             ArType::FloatLiteral
         }
+        (ArType::Never, other) | (other, ArType::Never) => other.clone(),
         _ => a.clone(),
     }
 }
@@ -370,6 +372,9 @@ fn is_assignable_inner(actual: &ArType, expected: &ArType, interner: &TypeIntern
     {
         return true;
     }
+    if matches!(actual, ArType::Never) {
+        return true;
+    }
     if let ArType::Infer(var) = expected {
         return infer_accepts(*var, actual, interner);
     }
@@ -380,10 +385,10 @@ fn is_assignable_inner(actual: &ArType, expected: &ArType, interner: &TypeIntern
         return true;
     }
 
-    // T -> T? coercion
-    if let ArType::Nullable(inner_expected_id) = expected {
+    // T -> Option<T> coercion
+    if let ArType::Option(inner_expected_id) = expected {
         let inner_expected = interner.resolve(*inner_expected_id);
-        if let ArType::Nullable(inner_actual_id) = actual {
+        if let ArType::Option(inner_actual_id) = actual {
             let inner_actual = interner.resolve(*inner_actual_id);
             return is_assignable_inner(&inner_actual, &inner_expected, interner);
         }
@@ -394,7 +399,7 @@ fn is_assignable_inner(actual: &ArType, expected: &ArType, interner: &TypeIntern
 
     // nil -> ptr[T] coercion
     if matches!(expected, ArType::Ptr(_))
-        && matches!(actual, ArType::Nullable(inner) if interner.resolve(*inner).is_error())
+        && matches!(actual, ArType::Option(inner) if interner.resolve(*inner).is_error())
     {
         return true;
     }
@@ -624,6 +629,17 @@ fn is_assignable_return_type_inner(
     if is_assignable_inner(actual, expected, interner) {
         return true;
     }
+    if let ArType::Option(inner_exp_id) = expected {
+        if let ArType::Option(inner_act_id) = actual {
+            let inner_exp = interner.resolve(*inner_exp_id);
+            let inner_act = interner.resolve(*inner_act_id);
+            return is_assignable_inner(&inner_act, &inner_exp, interner);
+        }
+        let inner_exp = interner.resolve(*inner_exp_id);
+        if is_assignable_inner(actual, &inner_exp, interner) {
+            return true;
+        }
+    }
     if let Some((ok_exp, err_exp)) = result_ok_err(expected, interner) {
         if let Some((ok_act, err_act)) = result_ok_err(actual, interner) {
             return is_assignable_inner(&ok_act, &ok_exp, interner)
@@ -631,7 +647,7 @@ fn is_assignable_return_type_inner(
         }
         // `return nil` on `Result<void, Err>`
         if matches!(ok_exp, ArType::Void)
-            && matches!(actual, ArType::Nullable(inner) if matches!(&interner.resolve(*inner), ArType::Error))
+            && matches!(actual, ArType::Option(inner) if matches!(&interner.resolve(*inner), ArType::Error))
         {
             return true;
         }

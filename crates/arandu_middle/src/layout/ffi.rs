@@ -114,12 +114,15 @@ pub fn ffi_type_of(
             let pointee = pointer_target(*inner, interner, provider, depth)?;
             Ok(FfiType::Ptr(Box::new(pointee)))
         }
-        ArType::Nullable(inner) => match interner.resolve(*inner) {
+        ArType::Option(inner) => match interner.resolve(*inner) {
             ArType::Ptr(pointee_id) => {
                 let pointee = pointer_target(pointee_id, interner, provider, depth)?;
                 Ok(FfiType::Ptr(Box::new(pointee)))
             }
-            _ => Err(format!("{ty:?} has no C representation")),
+            _ => Err(
+                "the C ABI has no optional values; use a null pointer or a status-code parameter"
+                    .to_owned(),
+            ),
         },
         ArType::Ref(inner) | ArType::RefMut(inner) => {
             let pointee = pointer_target(*inner, interner, provider, depth)?;
@@ -215,10 +218,6 @@ pub fn ffi_type_of(
             "the C ABI has no sum types; return a status code (`u32`) and write the payload through `mut ref T`"
                 .to_owned(),
         ),
-        ArType::Option(_) => Err(
-            "the C ABI has no optional values; use a null pointer or a status-code parameter"
-                .to_owned(),
-        ),
         ArType::Tuple(_) => {
             Err("tuples have no C representation; declare a `@Repr(\"C\")` struct".to_owned())
         }
@@ -251,7 +250,7 @@ fn pointer_target(
             let sub = pointer_target(*sub_inner, interner, provider, depth + 1)?;
             Ok(FfiType::Ptr(Box::new(sub)))
         }
-        ArType::Nullable(sub_inner) => match interner.resolve(*sub_inner) {
+        ArType::Option(sub_inner) => match interner.resolve(*sub_inner) {
             ArType::Ptr(pointee_id) => {
                 let sub = pointer_target(pointee_id, interner, provider, depth + 1)?;
                 Ok(FfiType::Ptr(Box::new(sub)))

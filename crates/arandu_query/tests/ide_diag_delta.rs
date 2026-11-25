@@ -229,3 +229,32 @@ fn ide_diagnostic_preserves_labels_hints_and_replacements() {
         .push('!');
     assert_ne!(fingerprint, ide_diags_fingerprint(&changed));
 }
+
+#[test]
+fn file_ide_diags_reports_closure_body_move_errors() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "closure_move.aru".into(),
+        r#"
+struct Token { raw: ptr[int] }
+func apply(f: (int) -> int): int {
+    return f(1)
+}
+func main(): int {
+    let tok = Token { raw: nil }
+    return apply((x) => {
+        let a = tok
+        let b = tok
+        return x
+    })
+}
+"#
+        .into(),
+    );
+    let diagnostics = file_ide_diagnostics(&db, file);
+    assert!(
+        diagnostics.iter().any(|d| d.code == "O001"),
+        "expected O001 move error inside synthesized closure body, got: {:?}",
+        diagnostics.as_slice()
+    );
+}

@@ -58,7 +58,7 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                         checker.type_info.interior_mutable_types.insert(symbol_id);
                     }
                     let is_repr_c = struct_decl.attrs.iter().any(|attr| {
-                        if attr.name == "Repr" || attr.name == "repr" {
+                        if attr.name == "Repr" {
                             attr.args
                                 .first()
                                 .is_some_and(|arg| match checker.pool.expr(*arg) {
@@ -82,10 +82,7 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                             false
                         }
                     });
-                    let is_union = struct_decl
-                        .attrs
-                        .iter()
-                        .any(|attr| attr.name == "Union" || attr.name == "union");
+                    let is_union = struct_decl.attrs.iter().any(|attr| attr.name == "Union");
                     if is_union {
                         checker.type_info.struct_unions.insert(symbol_id);
                         checker.type_info.struct_repr_c.insert(symbol_id);

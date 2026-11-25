@@ -164,7 +164,7 @@ fn result_error_storage_is_preserved_when_unit_call_arguments_are_erased() {
 #[test]
 fn foreign_calls_use_declared_unit_and_nullable_parameter_types() {
     let bytes = compile_source(
-        "extern \"C\" { func inspect(unit: void, value: ptr[int]?, marker: int): int }\nfunc unit(): void {}\nfunc main(): int { return unsafe { inspect(unit(), nil, 42) } }\n",
+        "extern \"C\" { func inspect(unit: void, value: ptr[int], marker: int): int }\nfunc unit(): void {}\nfunc main(): int { return unsafe { inspect(unit(), nil, 42) } }\n",
     );
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &bytes).expect("valid foreign-call ABI");

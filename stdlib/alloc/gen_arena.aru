@@ -287,6 +287,46 @@ public func GenArena.getRef<T>(self: ref GenArena<T>, r: GenRef): ref T {
     }
 }
 
+/// Mutably borrows the value at a live handle, retaining the arena as its owner.
+/// Out-of-range, removed and stale handles trap. Use `tryGetMut` for non-trapping lookup.
+public func GenArena.getMut<T>(self: mut ref GenArena<T>, r: GenRef): mut ref T {
+    unsafe {
+        let data = checkedPointer<T>(self, r)
+        let view = intrinsics.mutSliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
+        return mut ref view[0 as usize]
+    }
+}
+
+/// Returns `Option.Some(ref T)` when `r` refers to a live slot, or `Option.None` if stale or out of range.
+public func GenArena.tryGet<T>(self: ref GenArena<T>, r: GenRef): Option<ref T> {
+    let idx = r.index as usize
+    if idx >= self.slots { return Option.None }
+    unsafe {
+        let usedPtr = mem.ptrOffset<u8>(self.used, r.index as isize)
+        if mem.ptrRead<u8>(usedPtr) == (0 as u8) { return Option.None }
+        let genPtr = mem.ptrOffset<u32>(self.gen, r.index as isize)
+        if mem.ptrRead<u32>(genPtr) != r.generation { return Option.None }
+        let data = mem.ptrOffset<T>(self.data, r.index as isize)
+        let view = intrinsics.sliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
+        return Option.Some(ref view[0 as usize])
+    }
+}
+
+/// Returns `Option.Some(mut ref T)` when `r` refers to a live slot, or `Option.None` if stale or out of range.
+public func GenArena.tryGetMut<T>(self: mut ref GenArena<T>, r: GenRef): Option<mut ref T> {
+    let idx = r.index as usize
+    if idx >= self.slots { return Option.None }
+    unsafe {
+        let usedPtr = mem.ptrOffset<u8>(self.used, r.index as isize)
+        if mem.ptrRead<u8>(usedPtr) == (0 as u8) { return Option.None }
+        let genPtr = mem.ptrOffset<u32>(self.gen, r.index as isize)
+        if mem.ptrRead<u32>(genPtr) != r.generation { return Option.None }
+        let data = mem.ptrOffset<T>(self.data, r.index as isize)
+        let view = intrinsics.mutSliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
+        return Option.Some(mut ref view[0 as usize])
+    }
+}
+
 func remove<T>(a: mut ref GenArena<T>, r: GenRef): Option<T> {
     let idx = r.index as usize
     if idx >= a.slots {

@@ -68,6 +68,24 @@ public func Option.asRef<T>(self: ref Option<T>): Option<ref T> {
     return asRef<T>(self)
 }
 
+func asMut<T>(value: mut ref Option<T>): Option<mut ref T> {
+    match value {
+        Some(inner) => {
+            return Option.Some(inner)
+        }
+        None => {
+            return Option.None
+        }
+    }
+}
+
+/// Mutably borrows the payload when the option is `Some`.
+///
+/// The returned exclusive reference remains tied to the mutable borrow of `self`.
+public func Option.asMut<T>(self: mut ref Option<T>): Option<mut ref T> {
+    return asMut<T>(self)
+}
+
 /// Returns `true` if the option is the `Some` variant.
 ///
 /// # Examples

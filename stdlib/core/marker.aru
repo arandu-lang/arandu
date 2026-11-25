@@ -42,6 +42,11 @@ public func phantom<T>(): PhantomData<T> {
 /// duplicated without aliasing ownership or requiring destruction.
 public interface Copy {}
 
+/// Interface for types that can create an independent duplicate of themselves.
+public interface Clone {
+    func clone(self: ref Self): Self
+}
+
 /// Compiler-checked transfer bound for owned scalar storage and aggregates.
 /// Views, raw pointers, coroutine state and resources with destructors are
 /// conservatively rejected until their transfer contracts are supported.

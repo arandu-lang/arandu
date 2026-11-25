@@ -204,6 +204,27 @@ pub enum IntrinsicKind {
     OverflowArithmetic(OverflowOp, ArithmeticInt),
     /// Saturating integer arithmetic (`saturatingAdd*`, `saturatingSub*`).
     SaturatingArithmetic(SaturatingOp, ArithmeticInt),
+    /// Bitwise reinterpretation of float as unsigned integer (`f64ToBits`, `f32ToBits`).
+    FloatToBits(FloatWidth),
+    /// Bitwise reinterpretation of unsigned integer as float (`f64FromBits`, `f32FromBits`).
+    FloatFromBits(FloatWidth),
+}
+
+/// Floating-point scalar width for bitcast intrinsics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatWidth {
+    F32,
+    F64,
+}
+
+impl FloatWidth {
+    #[must_use]
+    pub const fn bit_width(self) -> u32 {
+        match self {
+            Self::F32 => 32,
+            Self::F64 => 64,
+        }
+    }
 }
 
 impl IntrinsicKind {
@@ -221,14 +242,16 @@ impl IntrinsicKind {
             | Self::ReverseBits
             | Self::RotateLeft
             | Self::RotateRight
-            | Self::SwapBytes => Some(LangItem::BitIntrinsic),
+            | Self::SwapBytes
+            | Self::FloatToBits(..)
+            | Self::FloatFromBits(..) => Some(LangItem::BitIntrinsic),
             _ => Some(LangItem::CompilerIntrinsic),
         }
     }
 
-    /// Integer operations with no memory, runtime or foreign-code effects.
+    /// Pure integer bit operations with no memory, runtime or foreign-code effects.
     #[must_use]
-    pub const fn is_pure_bit_operation(self) -> bool {
+    pub const fn is_pure_integer_bit_operation(self) -> bool {
         matches!(
             self,
             Self::CountOnes
@@ -239,6 +262,13 @@ impl IntrinsicKind {
                 | Self::RotateRight
                 | Self::SwapBytes
         )
+    }
+
+    /// Integer operations and float bitcasts with no memory, runtime or foreign-code effects.
+    #[must_use]
+    pub const fn is_pure_bit_operation(self) -> bool {
+        self.is_pure_integer_bit_operation()
+            || matches!(self, Self::FloatToBits(..) | Self::FloatFromBits(..))
     }
 
     /// Pure compiler intrinsics admitted inside compile-time evaluation.
@@ -278,6 +308,8 @@ impl IntrinsicKind {
                 | Self::RotateLeft
                 | Self::RotateRight
                 | Self::SwapBytes
+                | Self::FloatToBits(..)
+                | Self::FloatFromBits(..)
                 | Self::Fma
                 | Self::Likely
                 | Self::Unlikely
@@ -325,6 +357,8 @@ impl IntrinsicKind {
                 | Self::RotateLeft
                 | Self::RotateRight
                 | Self::SwapBytes
+                | Self::FloatToBits(..)
+                | Self::FloatFromBits(..)
                 | Self::SpinLoopHint
                 | Self::Likely
                 | Self::Unlikely
@@ -466,6 +500,18 @@ impl IntrinsicKind {
             "likely" => Some(Self::Likely),
             "unlikely" => Some(Self::Unlikely),
             "fma" | "fma32" | "fma64" => Some(Self::Fma),
+            "f64ToBits" | "f64_to_bits" | "floatToBits64" | "float_to_bits64" => {
+                Some(Self::FloatToBits(FloatWidth::F64))
+            }
+            "f32ToBits" | "f32_to_bits" | "floatToBits32" | "float_to_bits32" => {
+                Some(Self::FloatToBits(FloatWidth::F32))
+            }
+            "f64FromBits" | "f64_from_bits" | "floatFromBits64" | "float_from_bits64" => {
+                Some(Self::FloatFromBits(FloatWidth::F64))
+            }
+            "f32FromBits" | "f32_from_bits" | "floatFromBits32" | "float_from_bits32" => {
+                Some(Self::FloatFromBits(FloatWidth::F32))
+            }
             s if s.starts_with("sliceFromRaw") || s.starts_with("mutSliceFromRaw") => {
                 Some(Self::SliceFromRaw)
             }

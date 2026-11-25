@@ -34,5 +34,5 @@ public use std.core.future.{ Poll }
 public use std.core.num.{ checkedAdd, checkedSub, checkedMul, saturatingAdd, saturatingSub }
 public use std.core.cmp.{ Ordering }
 public use std.core.iter.{ Iterator }
-public use std.core.marker.{ Copy, Send, Sync, PhantomData, phantom }
+public use std.core.marker.{ Copy, Clone, Send, Sync, PhantomData, phantom }
 public use std.core.cell.{ Cell, UnsafeCell }

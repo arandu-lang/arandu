@@ -7,10 +7,7 @@ use crate::{SymbolId, SymbolKind};
 pub(crate) fn peel_base_type(checker: &TypeChecker<'_>, mut ty: ArType) -> ArType {
     for _ in 0..4 {
         match ty {
-            ArType::Nullable(inner)
-            | ArType::Ref(inner)
-            | ArType::RefMut(inner)
-            | ArType::Ptr(inner) => {
+            ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
                 ty = checker.resolve(inner);
             }
             other => return other,

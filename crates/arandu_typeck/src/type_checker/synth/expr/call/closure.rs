@@ -662,7 +662,7 @@ fn adapt_function(
             let inferred = generics.iter().all(|param| {
                 bindings
                     .get(param)
-                    .is_some_and(|&ty| !mentions_type_parameter(checker, ty))
+                    .is_some_and(|&ty| !mentions_foreign_type_parameter(checker, ty))
             });
             if !inferred {
                 let interner = &checker.type_info.type_interner;
@@ -1565,7 +1565,7 @@ fn mint(
 
 /// A type parameter that is not one of the enclosing item's, which a
 /// closure environment could not inherit.
-fn mentions_foreign_type_parameter(checker: &TypeChecker<'_>, ty: TypeId) -> bool {
+pub(super) fn mentions_foreign_type_parameter(checker: &TypeChecker<'_>, ty: TypeId) -> bool {
     let owned = checker
         .closure_owner
         .as_ref()

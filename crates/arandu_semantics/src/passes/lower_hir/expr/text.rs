@@ -15,12 +15,9 @@ use arandu_parser::ast_pool::{AstPool, ExprId, ExprKind};
 pub(super) fn peel_named_struct(
     type_check: &TypeCheckResult,
     mut ty: TypeId,
-    include_nullable: bool,
+    _include_nullable: bool,
 ) -> Option<(arandu_middle::SymbolId, Vec<TypeId>)> {
     let interner = &type_check.type_info.type_interner;
-    if include_nullable && let ArType::Nullable(inner) = interner.resolve(ty) {
-        ty = inner;
-    }
     for _ in 0..4 {
         match interner.resolve(ty) {
             ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => ty = inner,
@@ -332,7 +329,7 @@ pub(super) fn owned_literal(
 }
 
 /// `String.from(text)`, copying a `str` into an owned buffer.
-fn string_from(
+pub(super) fn string_from(
     type_check: &mut TypeCheckResult,
     hir_pool: &mut crate::hir::HirPool,
     text: HirExprKind,

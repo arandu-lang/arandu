@@ -93,7 +93,10 @@ impl<'a> CEmitter<'a> {
         for (i, local) in func.locals.iter().enumerate() {
             if used_locals.contains(&i) {
                 let ty = self.interner.resolve(local.ty);
-                if matches!(ty, arandu_middle::types::ArType::Void) {
+                if matches!(
+                    ty,
+                    arandu_middle::types::ArType::Void | arandu_middle::types::ArType::Never
+                ) {
                     continue;
                 }
                 let ty_str = self.format_type(&ty);
@@ -108,7 +111,10 @@ impl<'a> CEmitter<'a> {
         for (i, temp) in func.temps.iter().enumerate() {
             if self.temp_slots[i] == i && used_slots.contains(&i) {
                 let ty = self.interner.resolve(temp.ty);
-                if matches!(ty, arandu_middle::types::ArType::Void) {
+                if matches!(
+                    ty,
+                    arandu_middle::types::ArType::Void | arandu_middle::types::ArType::Never
+                ) {
                     continue;
                 }
                 if let Some(kind) = self.integer_concat_temps[i] {
@@ -132,7 +138,7 @@ impl<'a> CEmitter<'a> {
             if func.params.iter().any(|&p| p.as_usize() == i) {
                 if matches!(
                     self.interner.resolve(func.temps[i].ty),
-                    arandu_middle::types::ArType::Void
+                    arandu_middle::types::ArType::Void | arandu_middle::types::ArType::Never
                 ) {
                     continue;
                 }

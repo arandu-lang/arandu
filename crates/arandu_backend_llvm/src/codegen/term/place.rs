@@ -27,10 +27,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             match projection {
                 AmirProjection::Deref => {
                     let pointee = match &ty {
-                        ArType::Ptr(inner)
-                        | ArType::Ref(inner)
-                        | ArType::RefMut(inner)
-                        | ArType::Nullable(inner) => self.module.interner.resolve(*inner),
+                        ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                            self.module.interner.resolve(*inner)
+                        }
                         other => {
                             return Err(ice(format!(
                                 "deref projection requires a pointer, got {other:?}"

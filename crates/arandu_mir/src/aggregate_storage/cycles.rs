@@ -102,6 +102,7 @@ pub(super) fn block_param_safe(
         ArType::Ptr(_)
         | ArType::Vector(_)
         | ArType::Void
+        | ArType::Never
         | ArType::GenRef
         | ArType::IntLiteral
         | ArType::FloatLiteral => true,
@@ -123,8 +124,7 @@ pub(super) fn block_param_safe(
                     .iter()
                     .all(|&inner| block_param_safe(inner, interner, in_cycle, depth + 1))
         }
-        ArType::Nullable(_)
-        | ArType::Ref(_)
+        ArType::Ref(_)
         | ArType::RefMut(_)
         | ArType::Coroutine(_)
         | ArType::Range(_)

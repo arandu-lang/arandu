@@ -350,7 +350,6 @@ fn demand_shapes(
                 shapes.push(err);
             }
             TypeShape::Array(_, inner)
-            | TypeShape::Nullable(inner)
             | TypeShape::Slice(inner)
             | TypeShape::MutSlice(inner)
             | TypeShape::Ptr(inner)
@@ -369,6 +368,7 @@ fn demand_shapes(
             | TypeShape::GenRef
             | TypeShape::Err
             | TypeShape::Void
+            | TypeShape::Never
             | TypeShape::IntLiteral
             | TypeShape::FloatLiteral
             | TypeShape::Error => {}

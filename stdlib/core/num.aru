@@ -261,6 +261,26 @@ public func fromLittleEndian(value: u32): u32 {
     return value
 }
 
+/// Reinterprets 64-bit IEEE float bits as an unsigned 64-bit integer (zero-cost bitcast).
+public func f64ToBits(value: f64): u64 {
+    return intrinsics.f64ToBits(value)
+}
+
+/// Reinterprets an unsigned 64-bit integer as a 64-bit IEEE float (zero-cost bitcast).
+public func f64FromBits(bits: u64): f64 {
+    return intrinsics.f64FromBits(bits)
+}
+
+/// Reinterprets 32-bit IEEE float bits as an unsigned 32-bit integer (zero-cost bitcast).
+public func f32ToBits(value: f32): u32 {
+    return intrinsics.f32ToBits(value)
+}
+
+/// Reinterprets an unsigned 32-bit integer as a 32-bit IEEE float (zero-cost bitcast).
+public func f32FromBits(bits: u32): f32 {
+    return intrinsics.f32FromBits(bits)
+}
+
 /// Converts `value` to big-endian byte order (network byte order).
 public func toBigEndian64(value: u64): u64 {
     return swapBytes64(value)

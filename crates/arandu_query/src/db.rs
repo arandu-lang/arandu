@@ -93,7 +93,7 @@ pub struct DatabaseImpl {
     resolution_epoch: Arc<RwLock<Option<ResolutionEpoch>>>,
     /// Debug-only identity of this database and its clones for
     /// [`crate::fingerprint`]'s oracle.
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(test)]
     fingerprint_scope: u64,
 }
 
@@ -113,7 +113,7 @@ impl Clone for DatabaseImpl {
             target_config: Arc::clone(&self.target_config),
             ctfe_config: Arc::clone(&self.ctfe_config),
             resolution_epoch: Arc::clone(&self.resolution_epoch),
-            #[cfg(any(test, debug_assertions))]
+            #[cfg(test)]
             fingerprint_scope: self.fingerprint_scope,
         }
     }
@@ -129,7 +129,7 @@ impl Default for DatabaseImpl {
 impl salsa::Database for DatabaseImpl {}
 
 impl DatabaseImpl {
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(test)]
     pub(crate) fn fingerprint_scope(&self) -> u64 {
         self.fingerprint_scope
     }
@@ -160,7 +160,7 @@ impl DatabaseImpl {
             target_config: Arc::new(RwLock::new(None)),
             ctfe_config: Arc::new(RwLock::new(None)),
             resolution_epoch: Arc::new(RwLock::new(None)),
-            #[cfg(any(test, debug_assertions))]
+            #[cfg(test)]
             fingerprint_scope: crate::fingerprint::oracle::next_scope(),
         };
         db.set_target_config(DataLayout::host());
@@ -187,7 +187,7 @@ impl DatabaseImpl {
             target_config: Arc::new(RwLock::new(None)),
             ctfe_config: Arc::new(RwLock::new(None)),
             resolution_epoch: Arc::new(RwLock::new(None)),
-            #[cfg(any(test, debug_assertions))]
+            #[cfg(test)]
             fingerprint_scope: crate::fingerprint::oracle::next_scope(),
         };
         db.set_target_config(DataLayout::host());

@@ -43,7 +43,10 @@ fn needs_dynamic_enum_drop(
 /// Turn dynamic enum cleanup into ordinary discriminant branches plus atomic
 /// `Destroy` places. Backends only read the discriminant and run named
 /// destructors; they do not recurse through sum-type payloads.
-pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
+pub(super) fn expand_dynamic_enum_drops(
+    func: &mut AmirFunc,
+    type_info: &dyn AmirTypeContext,
+) -> bool {
     if func.blocks.is_empty()
         || !func
             .stmts
@@ -52,7 +55,7 @@ pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &dyn Ami
             .iter()
             .any(|stmt| needs_dynamic_enum_drop(stmt, func, type_info))
     {
-        return;
+        return false;
     }
 
     let moved_before = crate::move_checker::move_states_before_statements(func);
@@ -198,6 +201,7 @@ pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &dyn Ami
                         type_info,
                         &enum_move_state,
                         false,
+                        true,
                         &mut payload_drops,
                     );
                 }
@@ -243,4 +247,5 @@ pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &dyn Ami
         .collect();
     func.stmts = statements;
     func.cfg = crate::cfg::compute_cfg_edges(&func.blocks);
+    true
 }

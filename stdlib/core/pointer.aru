@@ -57,7 +57,7 @@ import std.core.mem as mem
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func null<T>(): ptr[T]? {
+public func null<T>(): ptr[T] {
     return nil
 }
 
@@ -71,8 +71,8 @@ public func null<T>(): ptr[T]? {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func isNull<T>(p: ptr[T]?): bool {
-    let nullp: ptr[T]? = nil
+public func isNull<T>(p: ptr[T]): bool {
+    let nullp: ptr[T] = nil
     return p == nullp
 }
 
@@ -83,7 +83,7 @@ public func isNull<T>(p: ptr[T]?): bool {
 // ── Inherent methods on `ptr` ───────────────────────────────────────────────
 
 /// Returns `true` if the pointer is null (`nil`).
-public func ptr.isNull<T>(self: ptr[T]?): bool {
+public func ptr.isNull<T>(self: ptr[T]): bool {
     return isNull<T>(self)
 }
 

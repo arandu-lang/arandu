@@ -98,22 +98,26 @@ pub(crate) fn synth_method_call(
         }
     }
 
-    // Peel Nullable / & / &mut / ptr so `shared value: T` (typed as `&T`) still
-    // resolves methods and `T: Interface` constraints (PROMOTE-L1 family).
-    let actual_base_ty_id = {
-        let mut id = match checker.resolve(base_ty_id) {
-            ArType::Nullable(inner) => inner,
-            _ => base_ty_id,
-        };
+    // Peel `&` / `&mut` / `ptr` so `ref value: T` still resolves methods and
+    // `T: Interface` constraints. Do NOT silently peel `Nullable` (`T?`):
+    // calling a pointee method on `T?` without `?.` is rejected below with T006
+    // (only inherent `ptr` methods on `ptr[T]?`, such as `.isNull()`, remain allowed).
+    let (actual_base_ty_id, peeled_ptr) = {
+        let mut id = base_ty_id;
+        let mut peeled_ptr = false;
         for _ in 0..4 {
             match checker.resolve(id) {
-                ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                ArType::Ref(inner) | ArType::RefMut(inner) => {
+                    id = inner;
+                }
+                ArType::Ptr(inner) => {
+                    peeled_ptr = true;
                     id = inner;
                 }
                 _ => break,
             }
         }
-        id
+        (id, peeled_ptr)
     };
 
     let has_user_to_str = {
@@ -156,15 +160,16 @@ pub(crate) fn synth_method_call(
         let str_id = checker.intern(ArType::Primitive(
             crate::type_checker::types::Primitive::Str,
         ));
+        let ret_id = super::super::expr::text::string_type(checker).unwrap_or(str_id);
         if base_ty.is_to_str_v01() {
             let func_ty = ArType::func(
                 &[actual_base_ty_id],
-                str_id,
+                ret_id,
                 &checker.type_info.type_interner,
             );
             let func_id = checker.intern(func_ty);
             checker.record_expr_type(callee, func_id);
-            return Some(str_id);
+            return Some(ret_id);
         }
         let interner = &checker.type_info.type_interner;
         let found = base_ty.display(&checker.symbols, interner);
@@ -175,7 +180,7 @@ pub(crate) fn synth_method_call(
                 receiver.span(checker),
             )
             .with_note(
-                "only bool, integers, floats, char, and str are supported in v0.1".to_string(),
+                "only bool, integers, floats, char, str, String, and types implementing `toStr` are supported".to_string(),
             )
             .with_label(field_span, "to_str is not available for this type"),
         );
@@ -202,9 +207,6 @@ pub(crate) fn synth_method_call(
         }
         ArType::Slice(_) | ArType::MutSlice(_) => checker.symbols.builtins.slice_type,
         ArType::Ptr(_) => checker.symbols.builtins.ptr_type,
-        ArType::Nullable(inner) if matches!(checker.resolve(*inner), ArType::Ptr(_)) => {
-            checker.symbols.builtins.ptr_type
-        }
         _ => None,
     };
 
@@ -239,6 +241,28 @@ pub(crate) fn synth_method_call(
     };
 
     let method_sym = effective_id.and_then(lookup);
+    let is_inherent_ptr_method = method_sym.is_some()
+        && effective_id.is_some()
+        && effective_id == checker.symbols.builtins.ptr_type;
+    if peeled_ptr
+        && !is_inherent_ptr_method
+        && !checker.ctx.is_in_unsafe()
+        && (method_sym.is_some() || callable_field(checker, actual_base_ty_id, method).is_some())
+    {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::O019RawPtrRequiresUnsafe,
+                format!(
+                    "calling method '{method}' through a raw pointer requires an `unsafe` block"
+                ),
+                call_span,
+            )
+            .with_label(
+                field_span,
+                "dereferencing `ptr[T]` for a method call is unsafe",
+            ),
+        );
+    }
 
     let mut resolved_method = None;
     let mut method_generic_params = Vec::new();
@@ -337,6 +361,40 @@ pub(crate) fn synth_method_call(
         Arc::make_mut(&mut checker.resolved).expr_ref(callee, field);
         return None;
     } else {
+        // If `base` is `Option<T>` (`T?`), check whether the missing method belongs
+        // to `T` so we emit a clear `T006` suggesting `?.` instead of `T018`.
+        if let ArType::Option(inner_id) = base_resolved {
+            let mut inner_peeled = inner_id;
+            for _ in 0..4 {
+                match checker.resolve(inner_peeled) {
+                    ArType::Ref(i) | ArType::RefMut(i) | ArType::Ptr(i) => inner_peeled = i,
+                    _ => break,
+                }
+            }
+            let inner_has_member = match checker.resolve(inner_peeled) {
+                ArType::Named(id, _) => checker
+                    .symbols
+                    .lookup_associated_member(id, method)
+                    .is_some(),
+                _ => false,
+            };
+            if inner_has_member {
+                let interner = &checker.type_info.type_interner;
+                let ty_disp = base_resolved.display(&checker.symbols, interner);
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T006NotNullable,
+                        format!("cannot call method '{method}' on nullable type '{ty_disp}'"),
+                        field_span,
+                    )
+                    .with_label(receiver.span(checker), format!("this has type '{ty_disp}'"))
+                    .with_hint(format!(
+                        "use safe access `?.{method}(...)` or make the value non-nullable"
+                    )),
+                );
+                return Some(checker.intern(ArType::Error));
+            }
+        }
         // Root fix: missing method (including private methods not present in
         // the import export table) must diagnose here. Returning `None` let the
         // Call path fall through without a reliable diagnostic.
@@ -538,10 +596,6 @@ pub(crate) fn synth_method_call(
                 ArType::Option(inner) => vec![inner],
                 ArType::Slice(elem) | ArType::MutSlice(elem) | ArType::Array(_, elem) => vec![elem],
                 ArType::Ptr(inner) => vec![inner],
-                ArType::Nullable(inner) => match checker.resolve(inner) {
-                    ArType::Ptr(elem) => vec![elem],
-                    _ => Vec::new(),
-                },
                 _ => Vec::new(),
             };
         if let Some(sym) = method_sym_recorded

@@ -51,8 +51,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         self.writer.line(format!("{ok} = xor i1 {null}, true"));
         let trap = self.new_block();
         let continue_block = self.new_block();
+        let prof = self.module.require_branch_weights(1048576, 1);
         self.writer.line(format!(
-            "br i1 {ok}, label %{continue_block}, label %{trap}"
+            "br i1 {ok}, label %{continue_block}, label %{trap}, !prof {prof}"
         ));
         self.enter_llvm_label(&trap);
         self.emit_trap(arandu_middle::amir::TrapKind::OutOfMemory);

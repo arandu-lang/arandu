@@ -199,7 +199,7 @@ fn generated_c_udp_socket_table_handles_concurrent_bind_send_close() {
     let (amir, tc) = compile_src(
         r#"
 extern "C" {
-    func ar_net_udp_bind(host: ptr[u8]?, host_len: usize, port: int): int
+    func ar_net_udp_bind(host: ptr[u8], host_len: usize, port: int): int
 }
 func main(): int {
     return unsafe { ar_net_udp_bind(nil, 0 as usize, 0) }
@@ -305,7 +305,7 @@ fn generated_c_udp_accepts_localhost_ipv6_and_more_than_64_sockets() {
     let (amir, tc) = compile_src(
         r#"
 extern "C" {
-    func ar_net_udp_bind(host: ptr[u8]?, host_len: usize, port: int): int
+    func ar_net_udp_bind(host: ptr[u8], host_len: usize, port: int): int
 }
 func main(): int {
     return unsafe { ar_net_udp_bind(nil, 0 as usize, 0) }
@@ -2136,14 +2136,13 @@ fn parity_enum_equality_uses_values_not_padding_or_float_bits() {
     test_zero_result_all_opt_levels(
         "enum_equality_values",
         r#"
-struct Padded { small: u8, wide: i64 }
 func main(): int {
     let a: Option<[3]int> = Option.Some([1, 2, 3])
     let b: Option<[3]int> = Option.Some([1, 2, 3])
     let c: Option<[3]int> = Option.Some([1, 2, 4])
     if a != b || a == c { return 1 }
-    let x: Option<Padded> = Option.Some(Padded { small: 1, wide: 42 })
-    let y: Option<Padded> = Option.Some(Padded { small: 1, wide: 42 })
+    let x: Option<(u8, i64)> = Option.Some((1 as u8, 42 as i64))
+    let y: Option<(u8, i64)> = Option.Some((1 as u8, 42 as i64))
     if x != y { return 2 }
     let plus: Option<f64> = Option.Some(0.0)
     let minus: Option<f64> = Option.Some(-0.0)

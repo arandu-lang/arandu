@@ -269,7 +269,7 @@ fn collect_param_bindings(
             let mut peeled_id = actual_id;
             for _ in 0..4 {
                 match interner.resolve(peeled_id) {
-                    ArType::Ref(i) | ArType::RefMut(i) | ArType::Ptr(i) | ArType::Nullable(i) => {
+                    ArType::Ref(i) | ArType::RefMut(i) | ArType::Ptr(i) => {
                         peeled_id = i;
                     }
                     _ => break,
@@ -301,7 +301,6 @@ fn collect_param_bindings(
             collect_param_bindings(interner, type_params, &fty, act_inner, bindings);
         }
         ArType::Ptr(inner)
-        | ArType::Nullable(inner)
         | ArType::Slice(inner)
         | ArType::Option(inner)
         | ArType::Array(_, inner)
@@ -311,7 +310,6 @@ fn collect_param_bindings(
             let actual = interner.resolve(actual_id);
             let act_inner = match actual {
                 ArType::Ptr(i)
-                | ArType::Nullable(i)
                 | ArType::Slice(i)
                 | ArType::Option(i)
                 | ArType::Array(_, i)

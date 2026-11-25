@@ -82,14 +82,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 if field_layout.size == 0 {
                     continue;
                 }
-                let is_aggregate = matches!(
-                    field_ty,
-                    ArType::Named(..)
-                        | ArType::Array(..)
-                        | ArType::ConstArray(..)
-                        | ArType::Tuple(..)
-                );
-                if is_aggregate {
+                if self.is_inline_aggregate_ty(&field_ty) {
                     let val = self.translate_operand(op, Some(self.ptr_type));
                     let field_dest = if offset != 0 {
                         self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
@@ -157,18 +150,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         .unwrap_or(ArType::Error),
                     _ => ArType::Error,
                 };
-                let is_aggregate = matches!(
-                    elem_ty,
-                    ArType::Named(..)
-                        | ArType::Array(..)
-                        | ArType::ConstArray(..)
-                        | ArType::Tuple(..)
-                );
                 let elem_layout = self.checked_layout(&elem_ty);
                 if elem_layout.size == 0 {
                     continue;
                 }
-                if is_aggregate && elem_layout.size > 0 {
+                if self.is_inline_aggregate_ty(&elem_ty) && elem_layout.size > 0 {
                     let val = self.translate_operand(op, Some(self.ptr_type));
                     let elem_dest = if offset != 0 {
                         self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
@@ -306,10 +292,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let struct_ty = match base_ty {
             arandu_middle::types::ArType::Ptr(inner)
             | arandu_middle::types::ArType::Ref(inner)
-            | arandu_middle::types::ArType::RefMut(inner)
-            | arandu_middle::types::ArType::Nullable(inner) => {
-                self.type_info.resolve_type_id(inner)
-            }
+            | arandu_middle::types::ArType::RefMut(inner) => self.type_info.resolve_type_id(inner),
             other => other,
         };
         let layout = self.checked_layout(&struct_ty);

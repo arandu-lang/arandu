@@ -501,6 +501,9 @@ impl Shift {
                 self.span(span);
                 self.expr_id(expression);
             }
+            TypeExpr::Never { span } => {
+                self.span(span);
+            }
             TypeExpr::Named { span, name, args } => {
                 self.span(span);
                 self.type_name(name);

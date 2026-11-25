@@ -220,7 +220,6 @@ impl<'a> FuncTranslator<'a> {
             ArType::Ptr(_)
                 | ArType::Ref(_)
                 | ArType::RefMut(_)
-                | ArType::Nullable(_)
                 | ArType::Slice(_)
                 | ArType::MutSlice(_)
         );

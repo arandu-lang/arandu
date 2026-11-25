@@ -101,8 +101,11 @@ pub fn lower_to_amir_with_layout(
 ) -> Result<(AmirProgram, Vec<Diagnostic>), Vec<Diagnostic>> {
     let (mut program, mut diagnostics, no_fallback) =
         lower_program(tc, hir, layout, LoweringPurpose::Runtime)?;
-    let solution =
-        arandu_mir::borrow_interface::solve_borrow_interfaces(&mut program, &*tc.type_info);
+    let solution = arandu_mir::borrow_interface::solve_borrow_interfaces_with_layout(
+        &mut program,
+        &*tc.type_info,
+        layout,
+    );
     tc.type_info_mut().return_borrow_summaries = solution.summaries.clone();
 
     validate_borrowed_program(
@@ -137,10 +140,13 @@ pub fn lower_borrow_interfaces(
 ) -> Result<arandu_mir::borrow_interface::BorrowInterfaceSolution, Vec<Diagnostic>> {
     let layout = natural_layout(pointer_width, hir)?;
     let (mut program, _, _) = lower_program(tc, hir, layout, LoweringPurpose::ReturnInterfaces)?;
-    Ok(arandu_mir::borrow_interface::solve_borrow_interfaces(
-        &mut program,
-        &*tc.type_info,
-    ))
+    Ok(
+        arandu_mir::borrow_interface::solve_borrow_interfaces_with_layout(
+            &mut program,
+            &*tc.type_info,
+            layout,
+        ),
+    )
 }
 
 fn natural_layout(pointer_width: u64, hir: &HirProgram) -> Result<DataLayout, Vec<Diagnostic>> {
@@ -298,6 +304,7 @@ fn validate_borrowed_function(
     let options = arandu_mir::escape_analysis::EscapeCheckOptions {
         no_fallback,
         return_borrow,
+        data_layout: layout,
     };
     let escape_diagnostics = arandu_mir::escape_analysis::check_escapes_with_type_info(
         function,
@@ -350,6 +357,7 @@ pub(crate) fn is_memory_type(ty: &ArType) -> bool {
         | ArType::Const(_)
         | ArType::ConstParam(_)
         | ArType::Void
+        | ArType::Never
         | ArType::Err
         | ArType::Error
         | ArType::Infer(_) => false,
@@ -358,7 +366,6 @@ pub(crate) fn is_memory_type(ty: &ArType) -> bool {
         | ArType::Ref(_)
         | ArType::RefMut(_)
         | ArType::GenRef
-        | ArType::Nullable(_)
         | ArType::Func(_, _)
         | ArType::Slice(_)
         | ArType::MutSlice(_) => false,

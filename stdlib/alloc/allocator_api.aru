@@ -52,8 +52,30 @@ public enum AllocError {
     InvalidLayout,
 }
 
+/// Memory allocation contract for pluggable allocators.
+public interface Allocator {
+    func alloc(self: mut ref Self, size: usize, align: usize): Result<ptr[u8], AllocError>
+    func dealloc(self: mut ref Self, p: ptr[u8], size: usize, align: usize): void
+    func realloc(self: mut ref Self, p: ptr[u8], oldSize: usize, newSize: usize, align: usize): Result<ptr[u8], AllocError>
+}
+
 /// Process-global heap tag (POD auto-copy, zero fields).
 public struct GlobalAllocator {}
+
+public func GlobalAllocator.alloc(self: mut ref GlobalAllocator, size: usize, align: usize): Result<ptr[u8], AllocError> {
+    if size == (0 as usize) || align == (0 as usize) {
+        return Result.Err(AllocError.InvalidLayout)
+    }
+    return globalAlloc(size)
+}
+
+public func GlobalAllocator.dealloc(self: mut ref GlobalAllocator, p: ptr[u8], size: usize, align: usize): void {
+    unsafe { globalDealloc(p, size) }
+}
+
+public func GlobalAllocator.realloc(self: mut ref GlobalAllocator, p: ptr[u8], oldSize: usize, newSize: usize, align: usize): Result<ptr[u8], AllocError> {
+    unsafe { return globalRealloc(p, oldSize, newSize) }
+}
 
 /// Returns a zero-sized tag for the process-global allocator.
 ///
@@ -197,6 +219,7 @@ func bumpReset(a: mut ref BumpArena): void {
 ///
 /// This does not free memory or visit previous allocations. All pointers
 /// returned by earlier `alloc` calls become invalid.
+@Unsafe
 public func BumpArena.reset(self: mut ref BumpArena): void {
     bumpReset(self)
 }

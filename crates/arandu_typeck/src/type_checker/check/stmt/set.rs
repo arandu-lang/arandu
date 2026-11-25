@@ -76,16 +76,51 @@ pub(super) fn check_set_stmt(
     let val_ty_id = super::super::super::synth::synth_expr_expected(checker, value, synth_expected);
 
     if places.len() > 1 {
-        let val_tys: Vec<TypeId> =
-            if let Some((ok_id, err_id)) = checker.result_ok_err_ids(val_ty_id) {
-                vec![ok_id, err_id]
-            } else {
-                match checker.resolve(val_ty_id) {
-                    ArType::Tuple(tys) => checker.type_info.type_interner.type_args(tys),
-                    ArType::Error => vec![checker.intern(ArType::Error); places.len()],
-                    _ => vec![val_ty_id; places.len()],
+        let val_tys: Vec<TypeId> = if let Some((ok_id, err_id)) =
+            checker.result_ok_err_ids(val_ty_id)
+        {
+            vec![ok_id, err_id]
+        } else {
+            match checker.resolve(val_ty_id) {
+                ArType::Tuple(tys) => {
+                    let elems = checker.type_info.type_interner.type_args(tys);
+                    if elems.len() != places.len() {
+                        let found_str = checker
+                            .resolve(val_ty_id)
+                            .display(&checker.symbols, &checker.type_info.type_interner);
+                        checker.diagnostics.push(
+                                crate::Diagnostic::error(
+                                    crate::DiagCode::T002IncompatibleAssignment,
+                                    format!(
+                                        "incompatible assignment: expected a tuple with {} elements, found '{found_str}'",
+                                        places.len()
+                                    ),
+                                    checker.pool.expr_span(value),
+                                ),
+                            );
+                        vec![checker.intern(ArType::Error); places.len()]
+                    } else {
+                        elems
+                    }
                 }
-            };
+                ArType::Error => vec![checker.intern(ArType::Error); places.len()],
+                other => {
+                    let found_str =
+                        other.display(&checker.symbols, &checker.type_info.type_interner);
+                    checker.diagnostics.push(
+                            crate::Diagnostic::error(
+                                crate::DiagCode::T002IncompatibleAssignment,
+                                format!(
+                                    "incompatible assignment: expected a tuple with {} elements, found '{found_str}'",
+                                    places.len()
+                                ),
+                                checker.pool.expr_span(value),
+                            ),
+                        );
+                    vec![checker.intern(ArType::Error); places.len()]
+                }
+            }
+        };
 
         for (i, place) in places.iter().enumerate() {
             let expected_ty_id = synth_place(checker, place);
@@ -110,7 +145,10 @@ pub(super) fn check_set_stmt(
         let mut final_val_ty_id = val_ty_id;
 
         if matches!(checker.pool.expr(value), arandu_parser::ExprKind::Nil)
-            && !checker.resolve(expected_ty_id).is_error()
+            && matches!(
+                checker.resolve(expected_ty_id),
+                ArType::Option(_) | ArType::Ptr(_)
+            )
         {
             checker.type_info.record_expr_type(value, expected_ty_id);
             final_val_ty_id = expected_ty_id;
@@ -135,7 +173,7 @@ pub(super) fn check_set_stmt(
             if !checker.ctx.is_in_unsafe() {
                 checker.diagnostics.push(
                     crate::Diagnostic::error(
-                        crate::DiagCode::O012AllocRequiresUnsafe,
+                        crate::DiagCode::O019RawPtrRequiresUnsafe,
                         "pointer arithmetic requires an `unsafe` block",
                         place.span,
                     )
@@ -394,9 +432,6 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                 }
                 ArType::Ref(inner) => {
                     is_mutable = false;
-                    check_id = inner;
-                }
-                ArType::Nullable(inner) => {
                     check_id = inner;
                 }
                 _ => break,

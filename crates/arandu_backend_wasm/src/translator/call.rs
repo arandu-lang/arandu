@@ -291,6 +291,52 @@ impl<'a> FuncTranslator<'a> {
                 // Wasm MVP has no pause instruction; emit a safe no-op.
                 true
             }
+            IntrinsicKind::FloatToBits(width) => {
+                if let Some(argument) = args.first() {
+                    let (arg_ty, inst) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => (
+                            self.interner.intern(ArType::Primitive(Primitive::F64)),
+                            Instruction::I64ReinterpretF64,
+                        ),
+                        arandu_middle::intrinsics::FloatWidth::F32 => (
+                            self.interner.intern(ArType::Primitive(Primitive::F32)),
+                            Instruction::I32ReinterpretF32,
+                        ),
+                    };
+                    self.emit_operand(argument, arg_ty);
+                    self.code.push(inst);
+                    if let Some(destination) = lhs {
+                        let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                        self.code.push(Instruction::LocalSet(local));
+                    } else {
+                        self.code.push(Instruction::Drop);
+                    }
+                }
+                true
+            }
+            IntrinsicKind::FloatFromBits(width) => {
+                if let Some(argument) = args.first() {
+                    let (arg_ty, inst) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => (
+                            self.interner.intern(ArType::Primitive(Primitive::U64)),
+                            Instruction::F64ReinterpretI64,
+                        ),
+                        arandu_middle::intrinsics::FloatWidth::F32 => (
+                            self.interner.intern(ArType::Primitive(Primitive::U32)),
+                            Instruction::F32ReinterpretI32,
+                        ),
+                    };
+                    self.emit_operand(argument, arg_ty);
+                    self.code.push(inst);
+                    if let Some(destination) = lhs {
+                        let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                        self.code.push(Instruction::LocalSet(local));
+                    } else {
+                        self.code.push(Instruction::Drop);
+                    }
+                }
+                true
+            }
             IntrinsicKind::Likely | IntrinsicKind::Unlikely => {
                 if let (Some(argument), Some(destination)) = (args.first(), lhs) {
                     let bool_ty = self.interner.intern(ArType::Primitive(Primitive::Bool));

@@ -116,7 +116,7 @@ impl ValueType {
             }
         }
         match ty {
-            ArType::Void => Ok(Self::Void),
+            ArType::Void | ArType::Never => Ok(Self::Void),
             ArType::Primitive(Primitive::Bool) => Ok(Self::Bool),
             ArType::Primitive(Primitive::Str) => Ok(Self::String),
             ArType::Primitive(primitive) if primitive.is_float() => {

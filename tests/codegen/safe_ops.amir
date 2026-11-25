@@ -35,34 +35,40 @@ Func testTry() -> Result<int, Err>
     _0 = enumConstruct(0, _8)
     return
 
-Func testSafeField(p: Point?) -> int
+Func testSafeField(p: Option<Point>) -> int
   locals:
     _0: int // return
-    _1: Point?
-    _2: int?
-    _3: Point?
-    _4: bool
-    _5: Point
-    _6: int
-    _7: bool
-    s0: Point? // p
+    _1: Option<Point>
+    _2: Option<int>
+    _3: Option<Point>
+    _4: int
+    _5: bool
+    _6: Point
+    _7: int
+    _8: int
+    _9: bool
+    s0: Option<Point> // p
 
   bb0:
-    _4 = eq _1, nil
-    branch _4 => bb1, else bb2
+    s0 = _1
+    _3 = s0
+    _4 = discriminant(_3)
+    _5 = eq _4, 0
+    branch _5 => bb1, else bb2
   bb1:
-    _2 = nil
+    _2 = enumConstruct(0)
     goto bb3
   bb2:
-    _5 = _1
-    _6 = _5.0
-    _2 = _6
+    _6 = _3.1
+    _7 = _6.0
+    _2 = enumConstruct(1, _7)
     goto bb3
   bb3:
-    _7 = ne _2, nil
-    branch _7 => bb4, else bb5
+    _8 = discriminant(_2)
+    _9 = eq _8, 1
+    branch _9 => bb4, else bb5
   bb4:
-    _0 = _2
+    _0 = _2.1
     goto bb6
   bb5:
     _0 = 0
@@ -75,51 +81,50 @@ Func testSafeIndex(arr: []int, idx: int) -> int
     _0: int // return
     _1: []int
     _2: int
-    _3: int?
+    _3: Option<int>
     _4: []int
-    _5: bool
+    _5: int
     _6: int
-    _7: bool
+    _7: int
+    _8: bool
     s0: []int // arr
     s1: int // idx
 
   bb0:
-    _5 = eq _1, nil
-    branch _5 => bb1, else bb2
+    _6 = _1[_2]
+    _3 = enumConstruct(1, _6)
+    _7 = discriminant(_3)
+    _8 = eq _7, 1
+    branch _8 => bb1, else bb2
   bb1:
-    _3 = nil
+    _0 = _3.1
     goto bb3
   bb2:
-    _3 = _1[_2]
+    _0 = neg 1
     goto bb3
   bb3:
-    _7 = ne _3, nil
-    branch _7 => bb4, else bb5
-  bb4:
-    _0 = _3
-    goto bb6
-  bb5:
-    _0 = neg 1
-    goto bb6
-  bb6:
     return
 
-Func testNullCoalesce(a: int?, b: int) -> int
+Func testNullCoalesce(a: Option<int>, b: int) -> int
   locals:
     _0: int // return
-    _1: int?
+    _1: Option<int>
     _2: int
-    _3: int?
-    _4: bool
-    _5: int
-    s0: int? // a
+    _3: Option<int>
+    _4: int
+    _5: bool
+    _6: int
+    s0: Option<int> // a
     s1: int // b
 
   bb0:
-    _4 = ne _1, nil
-    branch _4 => bb1, else bb2
+    s0 = _1
+    _3 = s0
+    _4 = discriminant(_3)
+    _5 = eq _4, 1
+    branch _5 => bb1, else bb2
   bb1:
-    _0 = _1
+    _0 = _3.1
     goto bb3
   bb2:
     _0 = _2

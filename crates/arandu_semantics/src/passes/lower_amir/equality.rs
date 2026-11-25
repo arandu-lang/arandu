@@ -106,7 +106,7 @@ impl LowerCtx<'_> {
                 }
                 Ok(result)
             }
-            ArType::Void => Ok(AmirOperand::Constant(AmirConstant::Bool(true))),
+            ArType::Void | ArType::Never => Ok(AmirOperand::Constant(AmirConstant::Bool(true))),
             _ => Ok(self.equality_binary(BinaryOp::Equal, left, right)),
         }
     }

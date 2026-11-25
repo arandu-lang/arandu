@@ -20,29 +20,9 @@ impl LowerCtx<'_> {
                 ArType::Primitive(primitive) if primitive.is_integer() && *primitive != Primitive::Int))
     }
 
-    /// If `local` is `T?` and `value` is a non-Nil `T`, assign through a
-    /// `T?` temp so codegen boxes it (a bare `0` must not become `nil`, and a
-    /// phi or block parameter of `T?` must not receive a raw `T`).
-    fn materialize_nullable_const(&mut self, local: LocalId, value: AmirOperand) -> AmirOperand {
-        let ty = self.resolve_ty(self.locals[local.as_usize()].ty);
-        if !matches!(ty, ArType::Nullable(_)) {
-            return value;
-        }
-        let needs_box = match &value {
-            AmirOperand::Constant(AmirConstant::Nil) => false,
-            AmirOperand::Constant(_) => true,
-            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => !matches!(
-                self.resolve_ty(self.temps[temp.as_usize()].ty),
-                ArType::Nullable(_)
-            ),
-            AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => false,
-        };
-        if !needs_box {
-            return value;
-        }
-        let t = self.new_temp(ty);
-        self.emit_assign_temp(t, AmirRvalue::Use(value));
-        AmirOperand::Copy(t)
+    /// Pass-through helper retained for variable writes (options are explicit enums).
+    fn materialize_nullable_const(&mut self, _local: LocalId, value: AmirOperand) -> AmirOperand {
+        value
     }
 
     pub(crate) fn write_variable(&mut self, block: BlockId, local: LocalId, value: AmirOperand) {
@@ -139,7 +119,7 @@ impl LowerCtx<'_> {
         let ty_id = self.locals[local.as_usize()].ty;
         let ty = self.resolve_ty(ty_id);
         let is_copy = self.tc.type_info.is_copy(ty_id);
-        let is_nullable = matches!(ty, ArType::Nullable(_));
+        let is_nullable = false;
         let is_mem = super::super::is_memory_type(&ty)
             // F2.0: an address-taken local (`&`/`&mut`, W3.3 out-params) must be
             // re-loaded from its stack home after any call that could have

@@ -63,6 +63,30 @@ public enum Result<T, E> {
     Err(E),
 }
 
+/// Borrows the `Ok` or `Err` payload without copying or consuming `self`.
+public func Result.asRef<T, E>(self: ref Result<T, E>): Result<ref T, ref E> {
+    match self {
+        Ok(v) => {
+            return Result.Ok(v)
+        }
+        Err(e) => {
+            return Result.Err(e)
+        }
+    }
+}
+
+/// Mutably borrows the `Ok` or `Err` payload without consuming `self`.
+public func Result.asMut<T, E>(self: mut ref Result<T, E>): Result<mut ref T, mut ref E> {
+    match self {
+        Ok(v) => {
+            return Result.Ok(v)
+        }
+        Err(e) => {
+            return Result.Err(e)
+        }
+    }
+}
+
 /// Returns `true` if the result is the `Ok` variant.
 ///
 /// # Examples

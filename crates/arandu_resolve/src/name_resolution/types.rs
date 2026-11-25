@@ -29,7 +29,7 @@ impl<'a> Resolver<'a> {
 
     pub(crate) fn resolve_type_expr(&mut self, scope: ScopeId, ty: TypeExprId) {
         match self.pool.type_expr(ty) {
-            TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
+            TypeExpr::Const { .. } | TypeExpr::Primitive { .. } | TypeExpr::Never { .. } => {}
             TypeExpr::ConstExpression { expression, .. } => self.resolve_expr(scope, *expression),
             TypeExpr::Named { name, args, .. } => {
                 self.resolve_type_name(scope, name);

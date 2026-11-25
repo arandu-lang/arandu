@@ -529,7 +529,7 @@ public func UdpSocket.recvFrom(self: mut ref UdpSocket, buf: []u8): Result<usize
             self.id,
             slice.asPtr<u8>(buf),
             len,
-            &mut senderPort
+            mut ref senderPort
         )
         if recvd < 0 {
             return Result.Err(io.IoError.new(io.IoErrorKind.Other, recvd))

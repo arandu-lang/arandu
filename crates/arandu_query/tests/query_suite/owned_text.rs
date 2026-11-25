@@ -69,3 +69,26 @@ fn appending_to_a_str_is_t002() {
     let source = "func main(): int {\n    let mut s = \"a\"\n    s += \"b\"\n    return 0\n}\n";
     assert_eq!(errors(source), vec!["T002".to_string()]);
 }
+
+#[test]
+fn primitive_to_str_produces_owned_string_when_stdlib_loaded() {
+    let source = "from std.alloc.string import { String }\n\
+        func size(text: str): usize { return text.len() }\n\
+        func main(): int {\n\
+            let owned: String = (42).toStr()\n\
+            let opt: String? = (42).toStr()\n\
+            let view: str = (42).toStr()\n\
+            let opt_len: usize = if opt is v { v.len() } else { 0 as usize }\n\
+            return (owned.len() + size(view) + size((7).toStr()) + opt_len) as int\n\
+        }\n";
+    let mut db = DatabaseImpl::default();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../stdlib")
+        .canonicalize()
+        .expect("workspace stdlib");
+    register_stdlib(&mut db, &root, &root);
+    let file = db.new_file("text.aru".to_string(), source.to_string());
+    let all = arandu_query::file_ide_diagnostics(&db, file);
+    let diags: Vec<_> = all.iter().filter(|d| d.severity == 0).collect();
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:#?}");
+}

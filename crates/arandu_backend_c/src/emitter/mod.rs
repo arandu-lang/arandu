@@ -518,10 +518,12 @@ impl<'a> CEmitter<'a> {
             let ret_str = self.format_type(ret);
             let _ = write!(&mut self.output, "{} {}(", ret_str, name);
             let mut emitted = false;
-            for param in fixed_params
-                .iter()
-                .filter(|param| !matches!(param, arandu_middle::types::ArType::Void))
-            {
+            for param in fixed_params.iter().filter(|param| {
+                !matches!(
+                    param,
+                    arandu_middle::types::ArType::Void | arandu_middle::types::ArType::Never
+                )
+            }) {
                 if emitted {
                     let _ = write!(&mut self.output, ", ");
                 }

@@ -507,6 +507,7 @@ func classify(value: Result<strings.String, strings.String>): int {
     match value {
         Result.Ok(payload) if false => { return 0 }
         Result.Ok(payload) if payload.len() > 0 => { return 1 }
+        Result.Ok(_) => { return 3 }
         Result.Err(_) => { return 2 }
     }
 }

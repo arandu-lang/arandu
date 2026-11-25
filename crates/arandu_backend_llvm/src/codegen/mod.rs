@@ -81,6 +81,7 @@ pub(super) struct ModuleEmitter<'a> {
     /// function. The freestanding gate walks this map to reject an `@Export`
     /// whose reachable code needs the host runtime.
     host_runtime_refs: RefCell<BTreeMap<SymbolId, BTreeSet<String>>>,
+    branch_weights: RefCell<Vec<(u32, u32)>>,
 }
 
 pub(super) struct FuncEmitter<'a, 'm> {

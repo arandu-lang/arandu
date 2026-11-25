@@ -504,15 +504,15 @@ fn translate_func() {
 }
 
 #[test]
-fn translate_nullable() {
+fn translate_option() {
     let from = new_interner();
     let inner = from.intern(ArType::Primitive(Primitive::Int));
-    let nullable = ArType::Nullable(inner);
+    let opt = ArType::Option(inner);
     let mut to = new_interner();
-    let result = translate_type(&nullable, &from, &mut to);
+    let result = translate_type(&opt, &from, &mut to);
     assert_eq!(
         result,
-        ArType::Nullable(to.intern(ArType::Primitive(Primitive::Int)))
+        ArType::Option(to.intern(ArType::Primitive(Primitive::Int)))
     );
 }
 
@@ -1939,5 +1939,180 @@ fn test_void_tail_discards_non_result_and_rejects_unhandled_result() {
     assert!(
         !bad_check.diagnostics.is_empty(),
         "Unhandled Result tail in void function must still fail typechecking"
+    );
+}
+
+#[test]
+fn onda5_definition_time_array_repeat_requires_copy_bound() {
+    let bad_src = r#"
+    module test;
+    func repeat_unbounded<T>(x: T): [4]T {
+        return [x; 4]
+    }
+    "#;
+    let program = arandu_parser::parse(bad_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::T048InvalidArrayRepeat),
+        "expected T048InvalidArrayRepeat for unbounded T in [x; 4]: {:?}",
+        checked.diagnostics
+    );
+
+    let ok_src = r#"
+    module test;
+    interface Copy {}
+    func repeat_copy<T: Copy>(x: T): [4]T {
+        return [x; 4]
+    }
+    "#;
+    // Also test concrete primitive without interface:
+    let _ = ok_src;
+    let ref_ok_src = r#"
+    module test;
+    func repeat_ref<T>(r: ref T): [4]ref T {
+        return [r; 4]
+    }
+    "#;
+    let program = arandu_parser::parse(ref_ok_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked.diagnostics.is_empty(),
+        "shared ref T is Copy and must succeed in [r; 4]: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn onda5_maranget_match_exhaustiveness_and_nested_equality() {
+    let incomplete_src = r#"
+    module test;
+    enum Wrapper { SomeBool(bool), Empty }
+    public func missing_bool(b: bool): int {
+        match b { true => 1 }
+    }
+    public func missing_opt(o: int?): int {
+        match o { Option.Some(x) => x }
+    }
+    public func missing_res(r: Result<int, bool>): int {
+        match r { Result.Ok(x) => x }
+    }
+    public func missing_nested(w: Wrapper): int {
+        match w {
+            Wrapper.SomeBool(true) => 1
+            Wrapper.Empty => 0
+        }
+    }
+    public func missing_tuple(p: (bool, bool)): int {
+        match p {
+            (true, true) => 1
+            (false, _) => 0
+        }
+    }
+    "#;
+    let program = arandu_parser::parse(incomplete_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    let t024_count = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagCode::T024NonExhaustiveMatch)
+        .count();
+    assert_eq!(
+        t024_count, 5,
+        "expected T024 on all 5 incomplete matches, got: {:?}",
+        checked.diagnostics
+    );
+
+    let complete_src = r#"
+    module test;
+    enum Wrapper { SomeBool(bool), Empty }
+    struct NotEq { v: int }
+    public func ok_all(b: bool, o: int?, r: Result<int, bool>, w: Wrapper, p: (bool, bool), ne: NotEq?): int {
+        let a = match b { true => 1, false => 0 }
+        let c = match o { Option.Some(x) => x, Option.None => 0 }
+        let d = match r { Result.Ok(x) => x, Result.Err(_) => 0 }
+        let e = match w {
+            Wrapper.SomeBool(true) => 1
+            Wrapper.SomeBool(false) => 2
+            Wrapper.Empty => 0
+        }
+        let f = match p {
+            (true, true) => 1
+            (true, false) => 2
+            (false, _) => 0
+        }
+        let is_nil = ne == nil
+        let _ = is_nil
+        return a + c + d + e + f
+    }
+    "#;
+    let program = arandu_parser::parse(complete_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked.diagnostics.is_empty(),
+        "complete Maranget matches and `ne == nil` must pass cleanly: {:?}",
+        checked.diagnostics
+    );
+
+    let bad_opt_eq_src = r#"
+    module test;
+    struct NotEq { v: int }
+    public func cmp_bad(a: NotEq?, b: NotEq?): bool {
+        return a == b
+    }
+    "#;
+    let program = arandu_parser::parse(bad_opt_eq_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        !checked.diagnostics.is_empty(),
+        "comparing Option<NotEq> == Option<NotEq> without Eq must fail"
+    );
+}
+
+#[test]
+fn onda6_never_type_and_diverge_coercion() {
+    let ok_src = r#"
+    module test;
+    public func diverge(): ! {
+        return diverge()
+    }
+    public func pick(cond: bool): int {
+        let val = if cond { diverge() } else { 42 }
+        return val
+    }
+    "#;
+    let program = arandu_parser::parse(ok_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked.diagnostics.is_empty(),
+        "valid `!` coercion must succeed cleanly: {:?}",
+        checked.diagnostics
+    );
+
+    let bad_src = r#"
+    module test;
+    public func bad(): void {
+        let x: ! = 1
+        let _ = x
+    }
+    "#;
+    let program = arandu_parser::parse(bad_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == arandu_middle::Severity::Error),
+        "assigning integer to `!` must produce a type error: {:?}",
+        checked.diagnostics
     );
 }

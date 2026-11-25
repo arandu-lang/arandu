@@ -73,8 +73,13 @@ fn check_escapes_by_block_impl(
             continue;
         }
         let name = local_name(ev.place_local, func, symbols);
-        let dual_locus =
-            crate::dual_locus::is_dual_locus_promotable(func, ev.place_local, interner, type_info);
+        let dual_locus = crate::dual_locus::is_dual_locus_promotable(
+            func,
+            ev.place_local,
+            interner,
+            type_info,
+            opts.data_layout,
+        );
         match ev.kind {
             EscapeKind::Return => {
                 if return_carrier && dual_locus && !no_fb {
@@ -117,20 +122,8 @@ fn check_escapes_by_block_impl(
                         ),
                     ));
                 } else {
-                    // Controlled fallback path: O004 is Note by default; G2 promotes to Error.
-                    // Projected refs cannot be represented by the current scalar
-                    // handle without either snapshot semantics or losing the base
-                    // owner/path relation. Reject instead of compiling stale data.
+                    // Projected refs and non-dual-locus heap stores stay unpromoted.
                     let projected = has_projected_borrow(func, ev.place_local);
-                    // Runtime references are raw pointers: a promoted handle
-                    // stored in memory would be read back as a pointer.
-                    let promotable = !projected
-                        && crate::gen_promote::would_promote(
-                            func,
-                            interner,
-                            type_info,
-                            ev.place_local,
-                        );
                     diags.push((
                         ev.block,
                         o004_diag(
@@ -138,13 +131,11 @@ fn check_escapes_by_block_impl(
                             ev.span,
                             ev.block,
                             ev.reason,
-                            no_fb || projected || promotable,
+                            no_fb || projected,
                             no_fb,
                         )
                         .with_note(if projected {
                             "projected escaping borrows require a first-class owner/path handle; snapshot promotion is intentionally forbidden"
-                        } else if promotable {
-                            "the reference is stored into an aggregate or memory location; runtime references are raw pointers while GenRef handles are arena indices, so transparent fallback cannot be safely re-read. Store the owned value or use an explicit container instead"
                         } else {
                             "this payload is not promoted: the stored reference keeps its stack provenance"
                         }),

@@ -478,10 +478,7 @@ fn synth_generic_callee_call(
                     && !params.is_empty()
                 {
                     let params = checker.type_info.type_interner.type_args(params);
-                    let actual_base_ty_id = match checker.resolve(base_ty_id) {
-                        ArType::Nullable(inner) => inner,
-                        _ => base_ty_id,
-                    };
+                    let actual_base_ty_id = base_ty_id;
                     let receiver_ty_id = params[0];
                     // Same auto-ref/auto-deref as synth_method_call: formal
                     // `shared`/`mut self` is `&T`/`&mut T`, receiver value is `T`.

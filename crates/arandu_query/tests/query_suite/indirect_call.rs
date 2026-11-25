@@ -60,22 +60,16 @@ fn a_function_value_keeps_its_parameter_types() {
 }
 
 #[test]
-fn unsafe_extern_and_aggregate_exported_functions_are_not_values() {
-    let cases: &[(&str, &str, DiagCode)] = &[
-        (
-            "@Unsafe",
-            "@Unsafe\nfunc raw(): int { return 0 }\nfunc main(): int {\n    let f = raw\n    return 0\n}\n",
-            DiagCode::O013ExternRequiresUnsafe,
-        ),
-        (
-            "@Export with an aggregate",
-            "struct Pair { a: int, b: int }\n@Export(\"api_pair\")\npublic func api(): Pair { return Pair { a: 1, b: 2 } }\nfunc main(): int {\n    let f = api\n    return 0\n}\n",
-            DiagCode::U001FeatureNotSupported,
-        ),
-    ];
-    for (name, source, code) in cases {
-        assert_eq!(errors(source), vec![*code], "{name}");
-    }
+fn unsafe_extern_functions_are_not_values() {
+    let source =
+        "@Unsafe\nfunc raw(): int { return 0 }\nfunc main(): int {\n    let f = raw\n    return 0\n}\n";
+    assert_eq!(errors(source), vec![DiagCode::O013ExternRequiresUnsafe]);
+}
+
+#[test]
+fn exported_functions_with_aggregates_are_values() {
+    let source = "struct Pair { a: int, b: int }\n@Export(\"api_pair\")\npublic func api(p: Pair): Pair { return Pair { a: p.a + 1, b: p.b + 2 } }\nfunc main(): int {\n    let f = api\n    let res = f(Pair { a: 10, b: 20 })\n    return res.a + res.b\n}\n";
+    assert!(errors(source).is_empty(), "{:?}", errors(source));
 }
 
 /// With scalars and thin pointers alone, the C entry point of an `@Export`

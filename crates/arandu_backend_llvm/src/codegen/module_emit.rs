@@ -85,6 +85,7 @@ impl<'a> ModuleEmitter<'a> {
             globals,
             declarations: RefCell::new(BTreeMap::new()),
             host_runtime_refs: RefCell::new(BTreeMap::new()),
+            branch_weights: RefCell::new(Vec::new()),
         }
     }
 
@@ -99,6 +100,24 @@ impl<'a> ModuleEmitter<'a> {
             .borrow_mut()
             .entry(key.to_owned())
             .or_insert_with(|| text.into());
+    }
+
+    pub(super) fn require_branch_weights(&self, w_true: u32, w_false: u32) -> String {
+        let mut weights = self.branch_weights.borrow_mut();
+        if let Some(index) = weights
+            .iter()
+            .position(|&(t, f)| t == w_true && f == w_false)
+        {
+            format!("!{index}")
+        } else {
+            let index = weights.len();
+            weights.push((w_true, w_false));
+            format!("!{index}")
+        }
+    }
+
+    pub(super) fn require_cold_trap_weights(&self) -> String {
+        self.require_branch_weights(1, 1048576)
     }
 
     pub(super) fn require_llvm_trap(&self) {
@@ -304,6 +323,16 @@ impl<'a> ModuleEmitter<'a> {
         }
         output.push('\n');
         output.push_str(&body);
+        let weights = self.branch_weights.borrow();
+        if !weights.is_empty() {
+            output.push('\n');
+            for (index, (w_true, w_false)) in weights.iter().enumerate() {
+                let _ = writeln!(
+                    output,
+                    "!{index} = !{{!\"branch_weights\", i32 {w_true}, i32 {w_false}}}"
+                );
+            }
+        }
         Ok(output)
     }
 
@@ -663,7 +692,6 @@ impl<'a> ModuleEmitter<'a> {
             ArType::Ptr(_)
                 | ArType::Ref(_)
                 | ArType::RefMut(_)
-                | ArType::Nullable(_)
                 | ArType::GenRef
                 | ArType::Coroutine(_)
                 | ArType::Err
@@ -699,7 +727,7 @@ impl<'a> ModuleEmitter<'a> {
     }
 
     pub(super) fn is_void(&self, ty: &ArType) -> bool {
-        matches!(ty, ArType::Void)
+        matches!(ty, ArType::Void | ArType::Never)
     }
 
     pub(super) fn vector_info(&self, ty: &ArType) -> Option<(VectorType, u64, Primitive)> {

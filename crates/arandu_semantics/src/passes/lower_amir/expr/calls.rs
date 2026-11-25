@@ -28,10 +28,9 @@ fn resolve_method_target(
     let mut base_ty = interner.resolve(base_expr.ty);
     for _ in 0..4 {
         base_ty = match base_ty {
-            ArType::Nullable(inner)
-            | ArType::Ref(inner)
-            | ArType::RefMut(inner)
-            | ArType::Ptr(inner) => interner.resolve(inner),
+            ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                interner.resolve(inner)
+            }
             other => other,
         };
         if matches!(
@@ -396,6 +395,9 @@ impl LowerCtx<'_> {
             let arg_op = if let Some(param_ty) = formal {
                 if matches!(param_ty, ArType::Primitive(Primitive::Str)) {
                     self.maybe_to_str(arg_op, arg_expr.ty)?
+                } else if matches!(param_ty, ArType::Option(_)) {
+                    let expected_id = self.intern_ty(param_ty.clone());
+                    self.coerce_to_option(arg_op, arg_expr.ty, expected_id)
                 } else {
                     arg_op
                 }
@@ -682,12 +684,9 @@ impl LowerCtx<'_> {
 /// Named aggregates and tuples stay conservative.
 fn result_may_hold_view(ty: crate::types::TypeId, interner: &crate::types::TypeInterner) -> bool {
     match interner.try_resolve(ty) {
-        Some(
-            ArType::Option(inner)
-            | ArType::Nullable(inner)
-            | ArType::Array(_, inner)
-            | ArType::ConstArray(_, inner),
-        ) => result_may_hold_view(inner, interner),
+        Some(ArType::Option(inner) | ArType::Array(_, inner) | ArType::ConstArray(_, inner)) => {
+            result_may_hold_view(inner, interner)
+        }
         Some(ArType::Result(ok, err)) => {
             result_may_hold_view(ok, interner) || result_may_hold_view(err, interner)
         }

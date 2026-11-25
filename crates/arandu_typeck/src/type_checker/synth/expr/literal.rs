@@ -162,9 +162,15 @@ pub(super) fn synth_literal_expr(
 ) -> Option<TypeId> {
     match kind {
         ExprKind::Int { value, .. } => {
-            if let Some(exp_id) = expected
-                && let ArType::Primitive(p) = checker.resolve(exp_id)
-            {
+            let expected_prim = expected.and_then(|exp_id| match checker.resolve(exp_id) {
+                ArType::Primitive(p) => Some((exp_id, p)),
+                ArType::Option(inner) => match checker.resolve(inner) {
+                    ArType::Primitive(p) => Some((inner, p)),
+                    _ => None,
+                },
+                _ => None,
+            });
+            if let Some((exp_id, p)) = expected_prim {
                 if p.is_float() {
                     return Some(exp_id);
                 }
@@ -235,10 +241,16 @@ pub(super) fn synth_literal_expr(
             Some(checker.intern(ArType::IntLiteral))
         }
         ExprKind::Float { value, .. } => {
-            if let Some(exp_id) = expected
-                && let ArType::Primitive(p) = checker.resolve(exp_id)
-                && p.is_float()
-            {
+            let expected_float = expected.and_then(|exp_id| match checker.resolve(exp_id) {
+                ArType::Primitive(p) if p.is_float() => Some(exp_id),
+                ArType::Option(inner)
+                    if matches!(checker.resolve(inner), ArType::Primitive(p) if p.is_float()) =>
+                {
+                    Some(inner)
+                }
+                _ => None,
+            });
+            if let Some(exp_id) = expected_float {
                 return Some(exp_id);
             }
             let var_id = checker.literal_table.alloc(
@@ -324,7 +336,7 @@ pub(super) fn synth_literal_expr(
                             checker.pool.expr_span(*inner_expr),
                         )
                         .with_note(
-                            "only bool, integers, floats, char, and str are supported in v0.1"
+                            "only bool, integers, floats, char, str, String, and types implementing `toStr` are supported"
                                 .to_string(),
                         ),
                     );
@@ -346,30 +358,48 @@ pub(super) fn synth_literal_expr(
             Some(str_ty)
         }
         ExprKind::Nil => {
-            // SYN.3: `nil` as Option.None / Nullable empty when context is known.
-            // Prefer expected type (assignment, arg, return via synth_expr_expected),
-            // then the current function return type.
-            let context_id = expected.or_else(|| checker.ctx.current_return());
-            if let Some(ctx_id) = context_id {
+            // `nil` requires an expected nullable/optional/pointer type (it does
+            // not fill `Result` or non-nullable types, and does not steal the
+            // enclosing function's return type when unannotated).
+            if let Some(ctx_id) = expected {
                 let ctx = checker.resolve(ctx_id);
-                if types::is_err_type(&ctx, &checker.type_info.type_interner) {
-                    let err_id = checker.intern(ArType::Error);
-                    Some(checker.intern(ArType::Nullable(err_id)))
-                } else if types::is_tryable_type(&ctx, &checker.type_info.type_interner)
+                if ctx.is_error()
+                    || matches!(ctx, ArType::Option(_) | ArType::Ptr(_))
                     || matches!(
                         ctx,
-                        ArType::Option(_) | ArType::Nullable(_) | ArType::Ptr(_)
+                        ArType::Result(ok, _) if matches!(checker.resolve(ok), ArType::Void)
                     )
                 {
-                    // Option / Result / Nullable / tryable → nil fills the context type
-                    // (AMIR lowers Option-typed nil to EnumConstruct None).
                     Some(ctx_id)
+                } else if types::is_err_type(&ctx, &checker.type_info.type_interner) {
+                    let err_id = checker.intern(ArType::Error);
+                    Some(checker.intern(ArType::Option(err_id)))
                 } else {
-                    Some(checker.intern(ArType::Nullable(ctx_id)))
+                    let ty_disp = ctx.display(&checker.symbols, &checker.type_info.type_interner);
+                    checker.diagnostics.push(
+                        crate::Diagnostic::error(
+                            crate::DiagCode::T006NotNullable,
+                            format!("type '{ty_disp}' is not nullable"),
+                            span,
+                        )
+                        .with_label(
+                            span,
+                            format!("cannot assign `nil` to non-nullable type '{ty_disp}'"),
+                        ),
+                    );
+                    Some(checker.intern(ArType::Error))
                 }
             } else {
-                let err_id = checker.intern(ArType::Error);
-                Some(checker.intern(ArType::Nullable(err_id)))
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T001CannotInferType,
+                        "cannot infer type for `nil`",
+                        span,
+                    )
+                    .with_label(span, "type annotation needed for `nil`")
+                    .with_hint("add an explicit optional or pointer type annotation"),
+                );
+                Some(checker.intern(ArType::Error))
             }
         }
         ExprKind::StructLiteral { ty, fields } => {
@@ -515,6 +545,10 @@ pub(super) fn synth_literal_expr(
                         let field_val_ty_id =
                             if matches!(checker.pool.expr(field.value), ExprKind::Nil)
                                 && let Some(expected_id) = expected_id_opt
+                                && matches!(
+                                    checker.resolve(expected_id),
+                                    ArType::Option(_) | ArType::Ptr(_)
+                                )
                             {
                                 checker.type_info.record_expr_type(field.value, expected_id);
                                 expected_id
@@ -545,7 +579,7 @@ pub(super) fn synth_literal_expr(
                                 &field_val_ty,
                                 &checker.type_info.type_interner,
                             ) || match &defined_field_ty {
-                                ArType::Nullable(inner) | ArType::Option(inner) => types::unify(
+                                ArType::Option(inner) => types::unify(
                                     &checker.type_info.type_interner.resolve(*inner),
                                     &field_val_ty,
                                     &checker.type_info.type_interner,
@@ -683,21 +717,59 @@ pub(super) fn synth_literal_expr(
                 && !checker.type_info.is_copy(element)
             {
                 let element_ty = checker.resolve(element);
-                let depends_on_parameter =
-                    checker.type_info.generic_params.values().any(|parameters| {
-                        super::super::method::contains_generic_params(
-                            &element_ty,
-                            parameters,
-                            &checker.type_info.type_interner,
-                        )
+                let generic_params_all: Vec<_> = checker
+                    .type_info
+                    .generic_params
+                    .values()
+                    .flat_map(|p| p.iter().copied())
+                    .collect();
+                let copy_bounded = |sym: arandu_middle::SymbolId| {
+                    checker
+                        .type_info
+                        .param_constraints
+                        .get(&sym)
+                        .is_some_and(|cs| {
+                            cs.iter().any(|b| {
+                                checker.symbols.try_get(b.iface_sym).is_some_and(|s| {
+                                    s.lang_item == Some(arandu_middle::symbol_table::LangItem::Copy)
+                                })
+                            })
+                        })
+                };
+                let all_params_copy_bounded = super::super::method::contains_generic_params(
+                    &element_ty,
+                    &generic_params_all,
+                    &checker.type_info.type_interner,
+                ) && {
+                    let Ok(shape) = arandu_middle::types::TypeShape::from_id(
+                        element,
+                        &checker.type_info.type_interner,
+                    ) else {
+                        return Some(checker.intern(array));
+                    };
+                    let mut all_copy = true;
+                    let _ = shape.for_each_symbol(|sym| {
+                        if checker
+                            .symbols
+                            .try_get(sym)
+                            .is_some_and(|s| s.kind == crate::SymbolKind::TypeParam)
+                            && !copy_bounded(sym)
+                        {
+                            all_copy = false;
+                        }
                     });
-                if !depends_on_parameter {
-                    checker.diagnostics.push(crate::Diagnostic::error(
-                        crate::DiagCode::T048InvalidArrayRepeat,
-                        "repeating this value would duplicate ownership",
-                        span,
-                    ).with_primary_label("this element is not Copy")
-                      .with_note("Construct each owning element independently; no implicit clone is performed."));
+                    all_copy
+                };
+                if !all_params_copy_bounded {
+                    checker.diagnostics.push(
+                        crate::Diagnostic::error(
+                            crate::DiagCode::T048InvalidArrayRepeat,
+                            "repeating this value would duplicate ownership",
+                            span,
+                        )
+                        .with_primary_label("this element is not Copy")
+                        .with_note("Construct each owning element independently or require `T: Copy`; no implicit clone is performed."),
+                    );
                 }
             }
             Some(checker.intern(array))
@@ -796,9 +868,13 @@ pub(super) fn synth_literal_expr(
             if let Some(var_id) = first_var
                 && let Some(concrete_id) = discovered_concrete
             {
+                let literal_target = match checker.resolve(concrete_id) {
+                    ArType::Option(inner) => inner,
+                    _ => concrete_id,
+                };
                 checker.constrain_literal_var(
                     var_id,
-                    concrete_id,
+                    literal_target,
                     ConstraintOrigin::ArrayLiteral {
                         array_span: span,
                         item_span: span,
@@ -814,11 +890,20 @@ pub(super) fn synth_literal_expr(
             for (i, (&item_id, &item_ty_id)) in item_ids.iter().zip(&item_ty_ids).enumerate() {
                 let elem_ty = checker.resolve(elem_ty_id);
                 let item_ty = checker.resolve(item_ty_id);
-                if !array_element_types_compatible(
+                let compatible = array_element_types_compatible(
                     &elem_ty,
                     &item_ty,
                     &checker.type_info.type_interner,
-                ) {
+                ) || matches!(
+                    elem_ty,
+                    ArType::Option(inner_id)
+                        if array_element_types_compatible(
+                            &checker.type_info.type_interner.resolve(inner_id),
+                            &item_ty,
+                            &checker.type_info.type_interner,
+                        )
+                );
+                if !compatible {
                     // A promoted int/float pair was already reported as an
                     // implicit widening when the literal groups were merged.
                     let already_reported = reported_widening

@@ -269,7 +269,9 @@ impl<'a> CEmitter<'a> {
             } else {
                 "int64_t"
             };
-            if matches!(payload_ty, ArType::Void) || self.checked_layout(&payload_ty).size == 0 {
+            if matches!(payload_ty, ArType::Void | ArType::Never)
+                || self.checked_layout(&payload_ty).size == 0
+            {
                 let _ = write!(
                     &mut self.output,
                     "({{ (void)({payload_str}); {expected_c_type} _res = {{0}}; {tag_c} _tag = {}; memcpy(&_res, &_tag, sizeof(_tag) < sizeof(_res) ? sizeof(_tag) : sizeof(_res)); _res; }})",

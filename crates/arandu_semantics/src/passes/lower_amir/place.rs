@@ -97,7 +97,7 @@ impl LowerCtx<'_> {
                 let base_ty = self.resolve_ty(self.hir.pool.expr(*inner).ty);
                 if !matches!(
                     base_ty,
-                    ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
+                    ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                 ) {
                     return Err(self.move_diag(
                         "BC.4a: can only form a place through `ptr[T]`, `&T`, or `&mut T`",
@@ -205,10 +205,7 @@ impl LowerCtx<'_> {
         let interner = &self.tc.type_info.type_interner;
         match base_ty {
             ArType::Named(id, _) => Some(*id),
-            ArType::Nullable(inner)
-            | ArType::Ptr(inner)
-            | ArType::Ref(inner)
-            | ArType::RefMut(inner) => {
+            ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
                 let inner_ty = interner.resolve(*inner);
                 match inner_ty {
                     ArType::Named(id, _) => Some(id),
@@ -374,9 +371,7 @@ impl LowerCtx<'_> {
             let base_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
             let root_ty = self.resolve_ty(self.locals[place.local.as_usize()].ty);
             let through_shared_borrow = matches!(root_ty, ArType::Ref(_));
-            if through_shared_borrow
-                && arandu_mir::drop_elaborate::type_needs_drop(expr_ty, &*self.tc.type_info)
-            {
+            if through_shared_borrow && !self.tc.type_info.is_copy(expr_ty) {
                 return Err(Diagnostic::error(
                     crate::DiagCode::O002MoveWhileBorrowed,
                     "cannot move a non-Copy field out through a borrowed place",
@@ -441,14 +436,50 @@ impl LowerCtx<'_> {
         } = self.hir.pool.expr(index).kind
         {
             let inclusive = op == BinaryOp::RangeInclusive;
-            return self.lower_range_index(base, left, right, inclusive, expr_ty, target, symbols);
+            let bound_ty = self.resolve_ty(self.hir.pool.expr(left).ty);
+            let start = self.lower_expr(left, None, symbols)?;
+            let end = self.lower_expr(right, None, symbols)?;
+            return self.lower_range_index_values(
+                base, start, end, bound_ty, inclusive, expr_ty, target, symbols,
+            );
+        }
+        let index_ty_id = self.hir.pool.expr(index).ty;
+        if let Some((bound_ty_id, inclusive)) = self.range_type_parts(index_ty_id, symbols) {
+            let range_op = self.lower_expr(index, None, symbols)?;
+            let start = self.new_temp_id(bound_ty_id);
+            self.emit_assign_temp(
+                start,
+                AmirRvalue::FieldAccess {
+                    base: range_op,
+                    field: 0,
+                },
+            );
+            let end = self.new_temp_id(bound_ty_id);
+            self.emit_assign_temp(
+                end,
+                AmirRvalue::FieldAccess {
+                    base: range_op,
+                    field: 1,
+                },
+            );
+            let bound_ty = self.resolve_ty(bound_ty_id);
+            return self.lower_range_index_values(
+                base,
+                AmirOperand::Copy(start),
+                AmirOperand::Copy(end),
+                bound_ty,
+                inclusive,
+                expr_ty,
+                target,
+                symbols,
+            );
         }
         // The container keeps owning the element and destroys it later, so a
-        // moved-out copy would be destroyed twice (Rust's E0507).
-        if arandu_mir::drop_elaborate::type_needs_drop(expr_ty, &*self.tc.type_info) {
+        // moved-out copy would duplicate a non-Copy value (Rust's E0507).
+        if !self.tc.type_info.is_copy(expr_ty) {
             return Err(Diagnostic::error(
                 crate::DiagCode::O015MoveOutOfIndex,
-                "cannot move a value with a destructor out of an indexed place",
+                "cannot move a non-Copy value out of an indexed place",
                 self.diag_span(self.current_span),
             )
             .with_note("borrow the element (`ref base[i]`) or remove it with `pop`/`swap`"));
@@ -530,16 +561,40 @@ impl LowerCtx<'_> {
         Ok(AmirOperand::Copy(dest))
     }
 
-    /// Lowers `base[start..end]` (or `..=`) on an array or slice to a checked
-    /// [`AmirRvalue::SliceSubslice`]. Out-of-range bounds reach a
+    fn range_type_parts(
+        &self,
+        ty_id: crate::types::TypeId,
+        symbols: &SymbolTable,
+    ) -> Option<(crate::types::TypeId, bool)> {
+        let ArType::Named(sym, args) = self.resolve_ty(ty_id) else {
+            return None;
+        };
+        let inclusive = match symbols.try_get(sym)?.lang_item? {
+            arandu_middle::symbol_table::LangItem::Range => false,
+            arandu_middle::symbol_table::LangItem::RangeInclusive => true,
+            _ => return None,
+        };
+        let elem = self
+            .tc
+            .type_info
+            .type_interner
+            .type_args(args)
+            .first()
+            .copied()?;
+        Some((elem, inclusive))
+    }
+
+    /// Lowers `base[start..end]` (or `..=`) on an array, slice, or `Vec` to a
+    /// checked [`AmirRvalue::SliceSubslice`]. Out-of-range bounds reach a
     /// [`AmirTerminator::Trap`] block, which reports the failed check and
     /// traps, like an out-of-bounds element index.
     #[allow(clippy::too_many_arguments)]
-    fn lower_range_index(
+    fn lower_range_index_values(
         &mut self,
         base: HirExprId,
-        start: HirExprId,
-        end: HirExprId,
+        start: AmirOperand,
+        end: AmirOperand,
+        bound_ty: ArType,
         inclusive: bool,
         expr_ty: crate::types::TypeId,
         target: Option<TempId>,
@@ -597,17 +652,91 @@ impl LowerCtx<'_> {
                 );
                 (AmirOperand::Copy(slice), len)
             }
+            ref ty
+                if {
+                    let deref_ty = match ty {
+                        ArType::Ref(inner) | ArType::RefMut(inner) => self.resolve_ty(*inner),
+                        other => other.clone(),
+                    };
+                    arandu_middle::types::is_vec_type(&deref_ty, symbols)
+                } =>
+            {
+                let (container_ty, owner_ty_id, through_ref) = match self.resolve_ty(base_ty_id) {
+                    ArType::Ref(inner) | ArType::RefMut(inner) => {
+                        (self.resolve_ty(inner), inner, true)
+                    }
+                    other => (other, base_ty_id, false),
+                };
+                let mut place = if matches!(
+                    self.hir.pool.expr(base).kind,
+                    HirExprKind::Path { .. }
+                        | HirExprKind::Field { .. }
+                        | HirExprKind::SafeField { .. }
+                        | HirExprKind::Index { .. }
+                        | HirExprKind::Unary { .. }
+                ) {
+                    self.lower_expr_to_place(base, symbols)?
+                } else {
+                    let value = self.lower_expr(base, None, symbols)?;
+                    let local = self.new_compiler_local_id(base_ty_id, self.current_span);
+                    self.write_variable_source(local, value)?;
+                    AmirPlace {
+                        local,
+                        projections: smallvec::SmallVec::new(),
+                    }
+                };
+                self.mark_local_materialized(place.local);
+                if through_ref {
+                    place.projections.push(AmirProjection::Deref);
+                }
+                let (Some(data_field), Some(len_field)) = (
+                    self.resolve_field_symbol(&container_ty, "data"),
+                    self.resolve_field_symbol(&container_ty, "len"),
+                ) else {
+                    return Err(Diagnostic::ice(
+                        crate::diagnostics::DiagCode::ICEL001,
+                        "Vec missing `data` or `len` field for range indexing",
+                        self.diag_span(self.current_span),
+                    ));
+                };
+                let mut data_place = place.clone();
+                data_place
+                    .projections
+                    .push(AmirProjection::Field(data_field));
+                let elem_ty = match self.resolve_ty(expr_ty) {
+                    ArType::Slice(e) | ArType::MutSlice(e) => e,
+                    _ => crate::types::TypeInterner::preinterned_primitive(Primitive::U8),
+                };
+                let data_ty = self.intern_ty(ArType::Ptr(elem_ty));
+                let data = self.new_temp_id(data_ty);
+                self.emit_assign_temp(data, AmirRvalue::Load(data_place));
+
+                let mut len_place = place.clone();
+                len_place.projections.push(AmirProjection::Field(len_field));
+                let len = self.new_temp(ArType::Primitive(Primitive::USize));
+                self.emit_assign_temp(len, AmirRvalue::Load(len_place));
+
+                let owner = self.new_temp(ArType::Ref(owner_ty_id));
+                self.emit_assign_temp(owner, AmirRvalue::Borrow(place));
+                let slice = self.new_temp_id(expr_ty);
+                self.emit_assign_temp(
+                    slice,
+                    AmirRvalue::SliceView {
+                        owner: AmirOperand::Copy(owner),
+                        data: AmirOperand::Copy(data),
+                        len: AmirOperand::Copy(len),
+                    },
+                );
+                (AmirOperand::Copy(slice), AmirOperand::Copy(len))
+            }
             _ => {
                 return Err(amir_unsupported(
                     self.diag_span(self.current_span),
-                    "range index outside arrays and slices",
+                    "range index outside arrays, slices, and Vec",
                     "take a slice first, e.g. `v.asSlice()[start..end]`",
                 ));
             }
         };
-        let bound_ty = self.resolve_ty(self.hir.pool.expr(start).ty);
-        let start = self.lower_expr(start, None, symbols)?;
-        let end = self.lower_expr(end, None, symbols)?;
         let trap = self.new_trap_block(arandu_middle::amir::TrapKind::RangeOutOfBounds);
         if bound_ty.is_signed() {
             let zero = AmirOperand::Constant(self.intern_literal_int("0"));

@@ -70,7 +70,7 @@ fn error_unifies_with_everything() {
         ArType::Void,
         ArType::Err,
         ArType::Named(SymbolId::new(0, 42), IndexRange::empty()),
-        ArType::Nullable(int_t(&mut i)),
+        ArType::Option(int_t(&mut i)),
         ArType::Slice(int_t(&mut i)),
         ArType::Array(3, int_t(&mut i)),
         ArType::Ptr(int_t(&mut i)),
@@ -106,7 +106,7 @@ fn any_unifies_with_everything() {
         ArType::Void,
         ArType::Err,
         ArType::Named(SymbolId::new(0, 1), IndexRange::empty()),
-        ArType::Nullable(int_t(&mut i)),
+        ArType::Option(int_t(&mut i)),
         ArType::Slice(int_t(&mut i)),
         ArType::Result(int_t(&mut i), int_t(&mut i)),
         ArType::IntLiteral,
@@ -281,19 +281,15 @@ fn func_different_return() {
 fn nullable_same_inner() {
     let mut i = new_interner();
     let inner = int_t(&mut i);
-    assert!(unify(
-        &ArType::Nullable(inner),
-        &ArType::Nullable(inner),
-        &i
-    ));
+    assert!(unify(&ArType::Option(inner), &ArType::Option(inner), &i));
 }
 
 #[test]
 fn nullable_different_inner() {
     let mut i = new_interner();
     assert!(!unify(
-        &ArType::Nullable(int_t(&mut i)),
-        &ArType::Nullable(bool_t(&mut i)),
+        &ArType::Option(int_t(&mut i)),
+        &ArType::Option(bool_t(&mut i)),
         &i
     ));
 }
@@ -303,17 +299,17 @@ fn nullable_unifies_with_inner_type() {
     let mut i = new_interner();
     let int_id = int_t(&mut i);
     assert!(!unify(
-        &ArType::Nullable(int_id),
+        &ArType::Option(int_id),
         &ArType::Primitive(Primitive::Int),
         &i
     ));
     assert!(is_assignable(
         &ArType::Primitive(Primitive::Int),
-        &ArType::Nullable(int_id),
+        &ArType::Option(int_id),
         &i
     ));
     assert!(!is_assignable(
-        &ArType::Nullable(int_id),
+        &ArType::Option(int_id),
         &ArType::Primitive(Primitive::Int),
         &i
     ));
@@ -548,7 +544,7 @@ fn primitive_does_not_unify_with_named() {
 fn nullablity_unwraps_once_only() {
     let mut i = new_interner();
     let int_id = int_t(&mut i);
-    let null_int = ArType::Nullable(int_id);
+    let null_int = ArType::Option(int_id);
     assert!(!unify(&null_int, &ArType::Primitive(Primitive::Int), &i));
     assert!(is_assignable(
         &ArType::Primitive(Primitive::Int),
@@ -601,7 +597,7 @@ fn return_unifies_result_void_err_with_nil() {
     let void_id = i.intern(ArType::Void);
     let err_type_id = i.intern(ArType::Error);
     let expected = ArType::Result(void_id, i.intern(ArType::Err));
-    let actual = ArType::Nullable(err_type_id);
+    let actual = ArType::Option(err_type_id);
     assert!(unify_return_type(&expected, &actual, &i));
 }
 
@@ -614,7 +610,7 @@ fn return_unifies_both_err() {
     assert!(unify_return_type(&expected, &ArType::Err, &i));
     assert!(unify_return_type(
         &expected,
-        &ArType::Nullable(i.intern(ArType::Error)),
+        &ArType::Option(i.intern(ArType::Error)),
         &i
     ));
 }

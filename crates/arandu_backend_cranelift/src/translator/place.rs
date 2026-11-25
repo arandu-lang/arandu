@@ -15,7 +15,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let base_is_ptr_like = !place.projections.is_empty()
             && matches!(
                 self.local_ar_ty(place.local),
-                ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_) | ArType::Nullable(_)
+                ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_)
             );
         let through_ptr = base_is_ptr_like
             || place
@@ -196,7 +196,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 // After Deref, current_ty may still be Ptr/Ref — unwrap for field layout.
                 if matches!(
                     current_ty,
-                    ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
+                    ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                 ) {
                     current_ty = unwrap_ptr_like(&current_ty, self);
                 }
@@ -213,14 +213,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 (ptr_val, offset)
             }
             AmirProjection::Index(op) => {
-                if matches!(
-                    current_ty,
-                    ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
-                ) || matches!(&current_ty, ArType::Ptr(inner) if {
-                    let inner_ty = self.type_info.resolve_type_id(*inner);
-                    matches!(inner_ty, ArType::Array(_, _) | ArType::ConstArray(_, _) | ArType::Slice(_) | ArType::MutSlice(_))
-                        || is_vec_type(&inner_ty, self.symbol_table)
-                }) {
+                if matches!(current_ty, ArType::Ref(_) | ArType::RefMut(_))
+                    || matches!(&current_ty, ArType::Ptr(inner) if {
+                        let inner_ty = self.type_info.resolve_type_id(*inner);
+                        matches!(inner_ty, ArType::Array(_, _) | ArType::ConstArray(_, _) | ArType::Slice(_) | ArType::MutSlice(_))
+                            || is_vec_type(&inner_ty, self.symbol_table)
+                    })
+                {
                     current_ty = unwrap_ptr_like(&current_ty, self);
                 }
                 let is_vec = is_vec_type(&current_ty, self.symbol_table);
@@ -364,10 +363,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     ) -> i32 {
         // Unwrap one pointer layer for field access on `*p.field` bases.
         let struct_ty = match &*current_ty {
-            ArType::Ptr(inner)
-            | ArType::Ref(inner)
-            | ArType::RefMut(inner)
-            | ArType::Nullable(inner) => self.type_info.resolve_type_id(*inner),
+            ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                self.type_info.resolve_type_id(*inner)
+            }
             other => other.clone(),
         };
 
@@ -472,7 +470,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 AmirProjection::Field(symbol_id) => {
                     if matches!(
                         current_ty,
-                        ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
+                        ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
                         current_ty = unwrap_ptr_like(&current_ty, self);
                     }
@@ -508,14 +506,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     }
                 }
                 AmirProjection::Index(_) | AmirProjection::IndexConstant(_) => {
-                    if matches!(
-                        current_ty,
-                        ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
-                    ) || matches!(&current_ty, ArType::Ptr(inner) if {
-                        let inner_ty = self.type_info.resolve_type_id(*inner);
-                        matches!(inner_ty, ArType::Array(_, _) | ArType::ConstArray(_, _) | ArType::Slice(_) | ArType::MutSlice(_))
-                            || is_vec_type(&inner_ty, self.symbol_table)
-                    }) {
+                    if matches!(current_ty, ArType::Ref(_) | ArType::RefMut(_))
+                        || matches!(&current_ty, ArType::Ptr(inner) if {
+                            let inner_ty = self.type_info.resolve_type_id(*inner);
+                            matches!(inner_ty, ArType::Array(_, _) | ArType::ConstArray(_, _) | ArType::Slice(_) | ArType::MutSlice(_))
+                                || is_vec_type(&inner_ty, self.symbol_table)
+                        })
+                    {
                         current_ty = unwrap_ptr_like(&current_ty, self);
                     }
                     let is_vec = is_vec_type(&current_ty, self.symbol_table);
@@ -544,10 +541,9 @@ fn unwrap_ptr_like<M: cranelift_module::Module>(
     this: &FunctionTranslator<'_, '_, M>,
 ) -> ArType {
     match ty {
-        ArType::Ptr(inner)
-        | ArType::Ref(inner)
-        | ArType::RefMut(inner)
-        | ArType::Nullable(inner) => this.type_info.resolve_type_id(*inner),
+        ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+            this.type_info.resolve_type_id(*inner)
+        }
         other => other.clone(),
     }
 }

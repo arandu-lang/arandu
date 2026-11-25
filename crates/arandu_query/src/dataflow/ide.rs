@@ -398,6 +398,7 @@ pub(super) fn collect_item_flow(
     let no_fallback = arandu_base::NO_GENERATIONAL_FALLBACK
         .load(std::sync::atomic::Ordering::Relaxed)
         || item_forbids_fallback(db, file, item_sym);
+    let data_layout = *db.target_config().data_layout(db);
     for (bid, d) in arandu_mir::escape_analysis::check_escapes_by_block(
         amir,
         context.symbols.as_ref(),
@@ -416,6 +417,7 @@ pub(super) fn collect_item_flow(
                         .get(&item_sym)
                         .cloned()
                 }),
+            data_layout,
         },
     ) {
         if d.code == DiagCode::O004GenerationalFallback

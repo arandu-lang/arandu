@@ -327,7 +327,7 @@ fn find_escapes_impl(
                         || func.locals.get(lhs.local.as_usize()).is_some_and(|l| {
                             match interner.resolve(l.ty) {
                                 ArType::Ref(_) | ArType::RefMut(_) => true,
-                                ArType::Option(inner) | ArType::Nullable(inner) => {
+                                ArType::Option(inner) => {
                                     matches!(
                                         interner.resolve(inner),
                                         ArType::Ref(_) | ArType::RefMut(_)

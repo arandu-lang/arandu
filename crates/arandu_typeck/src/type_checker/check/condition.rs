@@ -32,7 +32,7 @@ pub fn check_condition(checker: &mut TypeChecker<'_>, condition: &Condition) {
             let bind_ty_id = if matches!(
                 checker.pool.pattern(*pattern),
                 arandu_parser::Pattern::Bind { .. }
-            ) && let ArType::Nullable(inner) = checker.resolve(cond_ty_id)
+            ) && let ArType::Option(inner) = checker.resolve(cond_ty_id)
             {
                 inner
             } else {

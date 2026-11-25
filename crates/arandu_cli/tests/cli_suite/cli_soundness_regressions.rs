@@ -244,7 +244,7 @@ func main(): int {
     let i: Inner? = mk()
     let o = Outer { inner: i }
     let j: Inner? = o.inner
-    if i == j { return 77 }
+    if i != nil && j != nil && (i?.v ?? 0) == (j?.v ?? 1) { return 77 }
     return 78
 }
 "#,
@@ -444,11 +444,6 @@ const REJECTS: &[(&str, &str, &str)] = &[
         "field_of_immutable",
         "struct P { x: int }\nfunc bump(p: ref P): void { p.x = 5 }\nfunc P.sneak(shared self): void { self.x = 1 }\nfunc main(): int {\n    let p = P { x: 1 }\n    p.x = 4\n    return p.x\n}\n",
         "T026",
-    ),
-    (
-        "owned_nullable",
-        "import std.alloc.string as strings\nfunc eat(s: strings.String?): int { return 0 }\nfunc main(): int { return 0 }\n",
-        "T006",
     ),
     (
         "move_out_of_index",

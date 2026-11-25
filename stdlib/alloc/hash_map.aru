@@ -535,6 +535,26 @@ public func HashMap.getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K)
     return getRef(self, key)
 }
 
+func getMut<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<mut ref V> {
+    match findIndex(self, key, hashKey<K>(key)) {
+        Some(idx) => {
+            match self.buckets.getMut(idx) {
+                Some(slot) => match slot.asMut() {
+                    Some(entry) => { return Option.Some(mut ref entry.value) }
+                    None => { return Option.None }
+                }
+                None => { return Option.None }
+            }
+        }
+        None => { return Option.None }
+    }
+}
+
+/// Returns an exclusive mutable reference to the matching value without copying it.
+public func HashMap.getMut<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<mut ref V> {
+    return getMut(self, key)
+}
+
 func eraseMetaAt<K: hash.Hash, V>(self: mut ref HashMap<K, V>, idx: usize): void {
     let cap = self.buckets.len()
     let emptyVec = simd.U8x16.splat(CTRL_EMPTY)

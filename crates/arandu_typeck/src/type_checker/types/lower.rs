@@ -89,6 +89,7 @@ pub fn lower_type_expr_ctx(
                 None => ArType::Error,
             }
         }
+        TypeExpr::Never { .. } => ArType::Never,
         TypeExpr::Named { span, name, args } => {
             let arg_ids = ctx.pool.type_expr_list(*args);
             lower_named_type(*span, name, arg_ids, ctx, interner)
@@ -96,7 +97,7 @@ pub fn lower_type_expr_ctx(
         TypeExpr::Nullable { inner, .. } => {
             let inner_ty = lower_type_expr_ctx(*inner, ctx, interner);
             let id = interner.intern(inner_ty);
-            ArType::Nullable(id)
+            ArType::Option(id)
         }
         TypeExpr::Pointer { inner, .. } => {
             let inner_ty = lower_type_expr_ctx(*inner, ctx, interner);
@@ -518,7 +519,7 @@ mod tests {
         };
         let result = lower_type_expr_ctx(id, &ctx, &mut i);
         let expected_inner = i.intern(ArType::Primitive(Primitive::Int));
-        assert_eq!(result, ArType::Nullable(expected_inner));
+        assert_eq!(result, ArType::Option(expected_inner));
     }
 
     // ── Pointer ──

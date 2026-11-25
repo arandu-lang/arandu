@@ -50,7 +50,7 @@ pub(crate) fn check_call_arg(
                 arg_span,
             )
             .with_note(
-                "only bool, integers, floats, char, and str are supported in v0.1".to_string(),
+                "only bool, integers, floats, char, str, String, and types implementing `toStr` are supported".to_string(),
             )
             .with_label(param_span, "parameter expects `str`"),
         );

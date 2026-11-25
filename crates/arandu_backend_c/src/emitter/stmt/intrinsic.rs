@@ -134,6 +134,8 @@ impl<'a> CEmitter<'a> {
                 | arandu_middle::IntrinsicKind::RotateLeft
                 | arandu_middle::IntrinsicKind::RotateRight
                 | arandu_middle::IntrinsicKind::SwapBytes
+                | arandu_middle::IntrinsicKind::FloatToBits(..)
+                | arandu_middle::IntrinsicKind::FloatFromBits(..)
                 | arandu_middle::IntrinsicKind::Fma
                 | arandu_middle::IntrinsicKind::SpinLoopHint
                 | arandu_middle::IntrinsicKind::Likely
@@ -234,6 +236,40 @@ impl<'a> CEmitter<'a> {
                             if operation == "popcount" { 0 } else { bits }
                         );
                     }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::FloatToBits(width)) => {
+                if let Some(argument) = args.first()
+                    && let Some(destination) = lhs
+                {
+                    let (in_ty, out_ty) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => ("double", "uint64_t"),
+                        arandu_middle::intrinsics::FloatWidth::F32 => ("float", "uint32_t"),
+                    };
+                    let value = self.format_operand(argument, func);
+                    let slot = self.temp_slots[destination.as_usize()];
+                    let _ = writeln!(
+                        self.output,
+                        "    {{ {out_ty} ar_bits; {in_ty} ar_val = ({value}); memcpy(&ar_bits, &ar_val, sizeof(ar_bits)); t{slot} = ar_bits; }}"
+                    );
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::FloatFromBits(width)) => {
+                if let Some(argument) = args.first()
+                    && let Some(destination) = lhs
+                {
+                    let (in_ty, out_ty) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => ("uint64_t", "double"),
+                        arandu_middle::intrinsics::FloatWidth::F32 => ("uint32_t", "float"),
+                    };
+                    let value = self.format_operand(argument, func);
+                    let slot = self.temp_slots[destination.as_usize()];
+                    let _ = writeln!(
+                        self.output,
+                        "    {{ {out_ty} ar_val; {in_ty} ar_bits = ({value}); memcpy(&ar_val, &ar_bits, sizeof(ar_val)); t{slot} = ar_val; }}"
+                    );
                 }
                 true
             }
@@ -373,7 +409,9 @@ impl<'a> CEmitter<'a> {
                 let p = self.format_operand(&args[0], func);
                 if let Some(dest) = lhs {
                     let dest_ty = self.temp_ty(func, *dest);
-                    if matches!(dest_ty, ArType::Void) || self.checked_layout(&dest_ty).size == 0 {
+                    if matches!(dest_ty, ArType::Void | ArType::Never)
+                        || self.checked_layout(&dest_ty).size == 0
+                    {
                         let _ = writeln!(&mut self.output, "    (void)({p});");
                     } else {
                         let _ = writeln!(
@@ -395,7 +433,9 @@ impl<'a> CEmitter<'a> {
                 let p = self.format_operand(&args[0], func);
                 let v = self.format_operand(&args[1], func);
                 let val_ty = self.operand_ty(func, &args[1]);
-                if matches!(val_ty, ArType::Void) || self.checked_layout(&val_ty).size == 0 {
+                if matches!(val_ty, ArType::Void | ArType::Never)
+                    || self.checked_layout(&val_ty).size == 0
+                {
                     let _ = writeln!(&mut self.output, "    (void)({p}); (void)({v});");
                 } else {
                     let _ = writeln!(&mut self.output, "    *({}) = {};", p, v);

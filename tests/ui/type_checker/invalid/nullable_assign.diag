@@ -1,6 +1,6 @@
-T002: incompatible type in assignment: expected 'int', found 'int?'
+T002: incompatible type in assignment: expected 'int', found 'Option<int>'
   --> tests/ui/type_checker/invalid/nullable_assign.aru:3:18
   label: 3:9-3:15 type 'int' declared here
-  label: 3:18-3:19 value has type 'int?'
+  label: 3:18-3:19 value has type 'Option<int>'
   note: flow: declaration → value
-  hint: convert with 'int? as int' or change the declaration type
+  hint: convert with 'Option<int> as int' or change the declaration type

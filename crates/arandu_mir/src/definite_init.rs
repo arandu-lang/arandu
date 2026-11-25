@@ -290,7 +290,7 @@ fn compute_init_in(func: &AmirFunc) -> Option<Vec<BitSet<LocalId>>> {
     Some(block_in)
 }
 
-fn transfer_init_stmt(stmt: &AmirStmt, initialized: &mut BitSet<LocalId>) {
+pub(crate) fn transfer_init_stmt(stmt: &AmirStmt, initialized: &mut BitSet<LocalId>) {
     match stmt {
         AmirStmt::Store { lhs, .. } if lhs.projections.is_empty() => {
             initialized.insert(lhs.local);
@@ -312,8 +312,15 @@ fn check_stmt_loads(
     diagnostics: &mut Vec<(BlockId, Diagnostic)>,
 ) {
     match stmt {
-        AmirStmt::Assign { rhs, .. } => {
-            check_rvalue_loads(rhs, current, func, symbols, block, diagnostics);
+        AmirStmt::Assign { lhs, rhs } => {
+            let is_synthesized_drop_borrow = matches!(rhs, AmirRvalue::Borrow(_))
+                && func
+                    .temps
+                    .get(lhs.as_usize())
+                    .is_some_and(|temp| temp.span == crate::Span::new(0, 0, 0));
+            if !is_synthesized_drop_borrow {
+                check_rvalue_loads(rhs, current, func, symbols, block, diagnostics);
+            }
         }
         AmirStmt::Store { rhs, lhs, .. } => {
             // If storing to a projection (e.g. x.field), the base must be initialized
@@ -326,7 +333,12 @@ fn check_stmt_loads(
         }
         AmirStmt::Call { .. } | AmirStmt::Free(_) | AmirStmt::ArenaRewind(_) => {}
         AmirStmt::Destroy(place) => {
-            if !current.contains(place.local) {
+            if place
+                .projections
+                .iter()
+                .any(|projection| matches!(projection, crate::amir::AmirProjection::Deref))
+                && !current.contains(place.local)
+            {
                 emit_uninit_diag(place.local, func, symbols, block, diagnostics);
             }
         }

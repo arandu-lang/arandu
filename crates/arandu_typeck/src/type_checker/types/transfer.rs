@@ -38,6 +38,7 @@ fn scalar(ty: &ArType) -> Option<bool> {
         // Literal inference can still be pending at bound checking; every
         // numeric representation it can select has scalar storage.
         ArType::Void
+        | ArType::Never
         | ArType::IntLiteral
         | ArType::FloatLiteral
         | ArType::FrozenConst(_)
@@ -169,7 +170,7 @@ pub(crate) fn satisfies(
                     }
                     _ => {}
                 }
-                if info.destructors.contains_key(&symbol) {
+                if capability == LangItem::Copy && info.destructors.contains_key(&symbol) {
                     return false;
                 }
                 // Include phantom arguments: an empty wrapper must not launder
@@ -247,7 +248,6 @@ pub(crate) fn satisfies(
             | ArType::RefMut(_)
             | ArType::Slice(_)
             | ArType::MutSlice(_)
-            | ArType::Nullable(_)
             | ArType::Coroutine(_)
             | ArType::Poll(_)
             | ArType::Func(_, _)
@@ -261,6 +261,7 @@ pub(crate) fn satisfies(
             ArType::Vector(_)
             | ArType::Primitive(_)
             | ArType::Void
+            | ArType::Never
             | ArType::FrozenConst(_)
             | ArType::Const(_) => {} // handled by scalar above
         }

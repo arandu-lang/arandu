@@ -236,8 +236,7 @@ pub fn implicit_destructors(
                 types.push(result);
             }
             ArType::Tuple(arguments) => types.extend(interner.type_args(arguments)),
-            ArType::Nullable(inner)
-            | ArType::Slice(inner)
+            ArType::Slice(inner)
             | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
@@ -257,6 +256,7 @@ pub fn implicit_destructors(
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::Error

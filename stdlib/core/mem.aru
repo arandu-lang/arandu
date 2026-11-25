@@ -85,7 +85,7 @@ extern "arandu-intrinsic" {
 /// ```arandu
 /// let mut a: int = 100
 /// let mut b: int = 200
-/// mem.swap(&mut a, &mut b)
+/// mem.swap(mut ref a, mut ref b)
 /// assert(a == 200)
 /// assert(b == 100)
 /// ```
@@ -105,7 +105,7 @@ public func swap<T>(x: mut ref T, y: mut ref T): void {
 /// # Examples
 /// ```arandu
 /// let mut buffer: int = 50
-/// let old = mem.replace(&mut buffer, 100)
+/// let old = mem.replace(mut ref buffer, 100)
 /// assert(old == 50)
 /// assert(buffer == 100)
 /// ```
@@ -124,7 +124,7 @@ public func replace<T>(dest: mut ref T, src: T): T {
 /// # Examples
 /// ```arandu
 /// let mut opt = Option.Some(42)
-/// let prev = mem.take(&mut opt)
+/// let prev = mem.take(mut ref opt)
 /// assert(prev.isSome())
 /// assert(opt.isNone())
 /// ```

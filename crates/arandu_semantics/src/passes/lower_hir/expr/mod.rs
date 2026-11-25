@@ -145,7 +145,7 @@ fn expr_type_for_kind(
         HirExprKind::Nil => {
             if fallback == error_ty() {
                 let err_id = interner.intern(ArType::Error);
-                interner.intern(ArType::Nullable(err_id))
+                interner.intern(ArType::Option(err_id))
             } else {
                 fallback
             }

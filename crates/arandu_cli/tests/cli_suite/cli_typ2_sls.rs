@@ -172,14 +172,14 @@ extern "C" {
 struct SyncExecutor { flags: int }
 struct TaskHandle { id: int }
 
-func spawn<T>(shared ex: SyncExecutor, job: Coroutine<T>): TaskHandle {
+func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle {
     unsafe {
         let id = ar_rt_spawn_i64(job as ptr[u8])
         return TaskHandle { id: id }
     }
 }
 
-func join<T>(shared ex: SyncExecutor, handle: TaskHandle): T {
+func join<T>(ex: ref SyncExecutor, handle: TaskHandle): T {
     unsafe {
         let v = ar_rt_join_i64(handle.id)
         return v as T
@@ -263,14 +263,14 @@ extern "C" {
 struct SyncExecutor { flags: int }
 struct TaskHandle { id: int }
 
-func spawn<T>(shared ex: SyncExecutor, job: Coroutine<T>): TaskHandle {
+func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle {
     unsafe {
         let id = ar_rt_spawn_i64(job as ptr[u8])
         return TaskHandle { id: id }
     }
 }
 
-func join<T>(shared ex: SyncExecutor, handle: TaskHandle): T {
+func join<T>(ex: ref SyncExecutor, handle: TaskHandle): T {
     unsafe {
         let v = ar_rt_join_i64(handle.id)
         return v as T

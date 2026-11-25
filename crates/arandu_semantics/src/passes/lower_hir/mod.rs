@@ -159,6 +159,7 @@ pub fn lower_to_hir(
         &program.decls,
         &mut decls,
     )?;
+    decls.extend(std::mem::take(&mut hir_pool.synthetic_decls));
     let module = program.module.as_ref().map(|m| m.path.join("."));
     Ok(HirProgram {
         span: program.span,
@@ -240,10 +241,12 @@ fn lower_selected_declaration(
         return Ok(None);
     };
     let declaration = pool.alloc_decl(declaration);
+    let mut decls = vec![declaration];
+    decls.extend(std::mem::take(&mut pool.synthetic_decls));
     Ok(Some(HirProgram {
         span: crate::item_source_span(item),
         module: program.module.as_ref().map(|module| module.path.join(".")),
-        decls: vec![declaration],
+        decls,
         pool,
     }))
 }

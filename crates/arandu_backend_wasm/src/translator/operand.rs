@@ -345,10 +345,7 @@ impl<'a> FuncTranslator<'a> {
     /// Strip one pointer/ref layer from a `TypeId`.
     pub(super) fn strip_ref(&self, ty: TypeId) -> Option<TypeId> {
         match self.interner.resolve(ty) {
-            ArType::Ptr(inner)
-            | ArType::Ref(inner)
-            | ArType::RefMut(inner)
-            | ArType::Nullable(inner) => Some(inner),
+            ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => Some(inner),
             _ => None,
         }
     }

@@ -77,34 +77,41 @@ impl LowerCtx<'_> {
             HirCondition::Is { expr, pattern } => {
                 let scrutinee = self.lower_expr(*expr, None, symbols)?;
                 let pat = self.hir.pool.pattern(*pattern);
-                if let crate::hir::HirPattern::Bind { symbol, span, .. } = pat
-                    && let crate::passes::type_checker::types::ArType::Nullable(inner) =
-                        self.resolve_ty(self.hir.pool.expr(*expr).ty)
-                {
-                    let is_non_null =
-                        self.new_temp(crate::passes::type_checker::types::ArType::Primitive(
-                            crate::passes::type_checker::types::Primitive::Bool,
-                        ));
-                    self.emit_assign_temp(
-                        is_non_null,
-                        crate::amir::AmirRvalue::Binary {
-                            op: crate::ops::BinaryOp::NotEqual,
-                            left: scrutinee,
-                            right: AmirOperand::Constant(crate::amir::AmirConstant::Nil),
-                        },
-                    );
-                    let bb_bind = self.new_block();
-                    if self.builder.current_block.is_some() {
-                        self.set_bool_branch(AmirOperand::Copy(is_non_null), bb_bind, if_false);
+                if let crate::hir::HirPattern::Bind { symbol, span, .. } = pat {
+                    let expr_ty = self.resolve_ty(self.hir.pool.expr(*expr).ty);
+                    if let crate::passes::type_checker::types::ArType::Option(inner) = expr_ty {
+                        let matches_some = self.lower_option_variant_test(
+                            scrutinee,
+                            arandu_middle::amir::OPTION_SOME_TAG as i128,
+                        );
+                        let bb_bind = self.new_block();
+                        if self.builder.current_block.is_some() {
+                            self.set_bool_branch(matches_some, bb_bind, if_false);
+                        }
+                        self.seal_block(bb_bind);
+                        self.builder.current_block = Some(bb_bind);
+                        let local_id = self.new_local_id(inner, *symbol, *span);
+                        let unwrapped = self.new_temp_id(inner);
+                        self.emit_assign_temp(
+                            unwrapped,
+                            crate::amir::AmirRvalue::EnumPayload {
+                                value: scrutinee,
+                                variant: arandu_middle::SymbolId::DUMMY,
+                                variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
+                                index: 0,
+                                field_ty: inner,
+                                tuple_ty: None,
+                            },
+                        );
+                        let binding_value = if self.temps[unwrapped.as_usize()].is_copy {
+                            AmirOperand::Copy(unwrapped)
+                        } else {
+                            AmirOperand::Move(unwrapped)
+                        };
+                        self.write_variable_source(local_id, binding_value)?;
+                        self.emit_goto(if_true);
+                        return Ok(());
                     }
-                    self.seal_block(bb_bind);
-                    self.builder.current_block = Some(bb_bind);
-                    let local_id = self.new_local_id(inner, *symbol, *span);
-                    let unwrapped = self.new_temp_id(inner);
-                    self.emit_assign_temp(unwrapped, crate::amir::AmirRvalue::Use(scrutinee));
-                    self.write_variable_source(local_id, AmirOperand::Copy(unwrapped))?;
-                    self.emit_goto(if_true);
-                    return Ok(());
                 }
 
                 let has_bindings = self.pattern_has_bindings(pat);

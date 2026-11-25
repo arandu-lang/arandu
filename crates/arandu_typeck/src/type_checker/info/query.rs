@@ -60,7 +60,6 @@ impl TypeInfo {
                 | ArType::RefMut(inner)
                 | ArType::Ptr(inner)
                 | ArType::Option(inner)
-                | ArType::Nullable(inner)
                 | ArType::Poll(inner)
                 | ArType::Coroutine(inner)
                 | ArType::Range(inner) => pending.push(inner),
@@ -76,6 +75,7 @@ impl TypeInfo {
                 | ArType::GenRef
                 | ArType::Err
                 | ArType::Void
+                | ArType::Never
                 | ArType::Error
                 | ArType::Infer(_)
                 | ArType::IntLiteral
@@ -269,7 +269,6 @@ impl TypeInfo {
                         .into_iter()
                         .any(|item| visit(info, item, visiting, leaf)),
                     ArType::Option(inner)
-                    | ArType::Nullable(inner)
                     | ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)
                     | ArType::Poll(inner)
@@ -449,11 +448,6 @@ impl TypeInfo {
                 self.collect_borrow_paths(inner, prefix, visiting, output)?;
                 prefix.pop();
             }
-            ArType::Nullable(inner) => {
-                prefix.push(BorrowPathSegment::NullableValue);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
-                prefix.pop();
-            }
             ArType::Coroutine(inner) => {
                 prefix.push(BorrowPathSegment::CoroutinePayload);
                 self.collect_borrow_paths(inner, prefix, visiting, output)?;
@@ -491,6 +485,7 @@ impl TypeInfo {
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::Error
@@ -578,12 +573,12 @@ impl TypeInfo {
             | ArType::ConstParam(_)
             | ArType::RefMut(_)
             | ArType::MutSlice(_)
-            | ArType::Nullable(_)
             | ArType::Coroutine(_)
             | ArType::Poll(_)
             | ArType::Range(_)
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::Error
             | ArType::Infer(_) => false,
         }

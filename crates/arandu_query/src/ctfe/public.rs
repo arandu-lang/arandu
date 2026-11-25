@@ -270,7 +270,7 @@ pub(crate) fn stage_public_roots_in_context(
         };
         let ty = ty.default_literal();
         let expected = match ty {
-            ArType::Void => RootExpectedType::Unit,
+            ArType::Void | ArType::Never => RootExpectedType::Unit,
             ArType::Primitive(Primitive::Bool) => RootExpectedType::Primitive(Primitive::Bool),
             ArType::Primitive(primitive) if primitive.is_integer() => {
                 RootExpectedType::Primitive(primitive)

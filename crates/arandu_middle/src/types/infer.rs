@@ -106,14 +106,13 @@ fn bind(a: &ArType, b: &ArType, interner: &TypeInterner, depth: usize) {
         | (ArType::Ptr(x), ArType::Ptr(y))
         | (ArType::Ref(x) | ArType::RefMut(x), ArType::Ref(y) | ArType::RefMut(y))
         | (ArType::Option(x), ArType::Option(y))
-        | (ArType::Nullable(x), ArType::Nullable(y))
         | (ArType::Coroutine(x), ArType::Coroutine(y))
         | (ArType::Poll(x), ArType::Poll(y))
         | (ArType::Range(x), ArType::Range(y)) => pair(*x, *y),
-        // Coercions the checks accept: `T` into `T?`, and a value into the
+        // Coercions the checks accept: `T` into `Option<T>`, and a value into the
         // reference that borrows it.
-        (ArType::Nullable(x) | ArType::Ref(x) | ArType::RefMut(x), other)
-        | (other, ArType::Nullable(x) | ArType::Ref(x) | ArType::RefMut(x)) => {
+        (ArType::Option(x) | ArType::Ref(x) | ArType::RefMut(x), other)
+        | (other, ArType::Option(x) | ArType::Ref(x) | ArType::RefMut(x)) => {
             bind(&interner.resolve(*x), other, interner, depth + 1);
         }
         _ => {}
@@ -247,7 +246,6 @@ fn deep(id: TypeId, interner: &TypeInterner, depth: usize) -> TypeId {
         }
         ArType::Tuple(items) => ArType::tuple(&many(interner.type_args(*items)), interner),
         ArType::Result(ok, err) => ArType::Result(one(*ok), one(*err)),
-        ArType::Nullable(inner) => ArType::Nullable(one(*inner)),
         ArType::Slice(inner) => ArType::Slice(one(*inner)),
         ArType::MutSlice(inner) => ArType::MutSlice(one(*inner)),
         ArType::Array(len, inner) => ArType::Array(*len, one(*inner)),
@@ -267,6 +265,7 @@ fn deep(id: TypeId, interner: &TypeInterner, depth: usize) -> TypeId {
         | ArType::GenRef
         | ArType::Err
         | ArType::Void
+        | ArType::Never
         | ArType::IntLiteral
         | ArType::FloatLiteral
         | ArType::Error => return interner.intern(ty),
@@ -283,8 +282,7 @@ fn children(ty: &ArType, interner: &TypeInterner) -> Vec<TypeId> {
             all
         }
         ArType::Result(ok, err) => vec![*ok, *err],
-        ArType::Nullable(inner)
-        | ArType::Slice(inner)
+        ArType::Slice(inner)
         | ArType::MutSlice(inner)
         | ArType::Array(_, inner)
         | ArType::ConstArray(_, inner)
@@ -303,6 +301,7 @@ fn children(ty: &ArType, interner: &TypeInterner) -> Vec<TypeId> {
         | ArType::GenRef
         | ArType::Err
         | ArType::Void
+        | ArType::Never
         | ArType::IntLiteral
         | ArType::FloatLiteral
         | ArType::Infer(_)

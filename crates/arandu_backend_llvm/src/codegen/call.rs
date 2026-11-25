@@ -337,6 +337,48 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             | IntrinsicKind::RotateLeft
             | IntrinsicKind::RotateRight
             | IntrinsicKind::SwapBytes => self.emit_bit_intrinsic(result, kind, args),
+            IntrinsicKind::FloatToBits(width) => {
+                let Some(argument) = args.first() else {
+                    return Err(ice("floatToBits requires one argument"));
+                };
+                let (src_ty, src_text, dst_text) = match width {
+                    arandu_middle::intrinsics::FloatWidth::F64 => {
+                        (ArType::Primitive(Primitive::F64), "double", "i64")
+                    }
+                    arandu_middle::intrinsics::FloatWidth::F32 => {
+                        (ArType::Primitive(Primitive::F32), "float", "i32")
+                    }
+                };
+                let val = self.operand(argument, &src_ty)?;
+                if let Some(res) = result {
+                    self.writer.line(format!(
+                        "{res} = bitcast {src_text} {} to {dst_text}",
+                        val.value
+                    ));
+                }
+                Ok(())
+            }
+            IntrinsicKind::FloatFromBits(width) => {
+                let Some(argument) = args.first() else {
+                    return Err(ice("floatFromBits requires one argument"));
+                };
+                let (src_ty, src_text, dst_text) = match width {
+                    arandu_middle::intrinsics::FloatWidth::F64 => {
+                        (ArType::Primitive(Primitive::U64), "i64", "double")
+                    }
+                    arandu_middle::intrinsics::FloatWidth::F32 => {
+                        (ArType::Primitive(Primitive::U32), "i32", "float")
+                    }
+                };
+                let val = self.operand(argument, &src_ty)?;
+                if let Some(res) = result {
+                    self.writer.line(format!(
+                        "{res} = bitcast {src_text} {} to {dst_text}",
+                        val.value
+                    ));
+                }
+                Ok(())
+            }
             IntrinsicKind::Fma => {
                 let Some(argument) = args.first() else {
                     return Err(ice("fma requires three arguments"));

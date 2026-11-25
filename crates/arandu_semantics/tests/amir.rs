@@ -319,6 +319,38 @@ func main() {
 }
 
 #[test]
+fn move_non_copy_struct_without_destructor_out_of_index_is_rejected() {
+    let src = r#"
+struct Handle {
+    ptr_val: ptr[u8],
+    tag: int,
+}
+
+func main(): int {
+    let arr = [Handle { ptr_val: nil, tag: 1 }, Handle { ptr_val: nil, tag: 2 }]
+    let h = arr[0]
+    return h.tag
+}
+"#;
+    let program = arandu_parser::parse(src).expect("parse");
+    let resolution = resolve_for_test(0, &program);
+    let mut tc = type_check(
+        resolution,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
+    let hir = lower_to_hir(&mut tc, &program).expect("HIR");
+    let diagnostics = lower_to_amir(&tc, &hir, 8).expect_err("non-Copy index move must fail");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagCode::O015MoveOutOfIndex),
+        "expected O015 for moving non-Copy value out of array index: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn non_copy_local_use_after_move_fails_during_amir_analysis() {
     let src = r#"
 struct Boxed {
@@ -402,8 +434,8 @@ func main(cond: bool) {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == DiagCode::O007InconsistentMoveBetweenBranches),
-        "expected O007 inconsistent move diagnostic, got {diagnostics:?}"
+            .any(|diagnostic| diagnostic.code == DiagCode::O001UseAfterMove),
+        "expected O001 use-after-move diagnostic for conditional move, got {diagnostics:?}"
     );
 }
 
@@ -1583,5 +1615,77 @@ func unwrap_or_abort(ok: bool): Result<Boxed, int> {
     return Ok(val2)
 }
 "#,
+    );
+}
+
+#[test]
+fn onda2_optional_resource_lowering_emits_option_enum_and_drop() {
+    let amir = lower_valid_amir_for_test(
+        r#"
+struct Guard {
+    id: int
+}
+
+@Destructor
+func Guard.destroy(own self): void {}
+
+func make_opt(some: bool): Guard? {
+    if some {
+        return Guard { id: 7 }
+    }
+    return nil
+}
+
+func use_opt(some: bool): int {
+    let g: Guard? = make_opt(some)
+    if g is val {
+        return val.id
+    }
+    return 0
+}
+"#,
+    );
+    let has_enum_construct = amir.funcs.iter().any(|f| {
+        f.stmts.payloads.raw.iter().any(|s| {
+            matches!(
+                s,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::EnumConstruct { .. },
+                    ..
+                }
+            )
+        })
+    });
+    assert!(has_enum_construct, "T? must lower as Option enum in AMIR");
+    let has_destructor_drop = amir.funcs.iter().any(|f| {
+        f.stmts
+            .payloads
+            .raw
+            .iter()
+            .any(|s| matches!(s, AmirStmt::Destroy(_)))
+    });
+    assert!(
+        has_destructor_drop,
+        "Guard? (Option<Guard>) must participate in scope Destroy lowering"
+    );
+}
+
+#[test]
+fn onda5_nested_guarded_or_pattern_lowers_to_amir() {
+    let amir = lower_valid_amir_for_test(
+        r#"
+enum Node { Left(int), Right(int) }
+
+public func score(opt: Option<Node>): int {
+    return match opt {
+        Option.Some(Node.Left(v) | Node.Right(v)) if v > 0 => v
+        Option.Some(_) | Option.None => 0
+    }
+}
+"#,
+    );
+    assert!(
+        amir.funcs.iter().any(|f| !f.blocks.is_empty()),
+        "expected lowered score() function in AMIR"
     );
 }

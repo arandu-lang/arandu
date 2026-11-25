@@ -318,7 +318,6 @@ pub(crate) fn bind_type_params(
             );
         }
         ArType::Ptr(inner)
-        | ArType::Nullable(inner)
         | ArType::Slice(inner)
         | ArType::MutSlice(inner)
         | ArType::Option(inner)
@@ -327,7 +326,6 @@ pub(crate) fn bind_type_params(
         | ArType::Poll(inner) => {
             let act_inner = match interner.resolve(actual_id) {
                 ArType::Ptr(i)
-                | ArType::Nullable(i)
                 | ArType::Slice(i)
                 | ArType::MutSlice(i)
                 | ArType::Option(i)

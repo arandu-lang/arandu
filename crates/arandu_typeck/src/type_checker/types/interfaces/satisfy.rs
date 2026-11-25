@@ -89,27 +89,47 @@ pub(crate) fn type_satisfies_interface(
             return false;
         }
     }
-    if let Some(
-        capability @ (arandu_middle::symbol_table::LangItem::Send
-        | arandu_middle::symbol_table::LangItem::Sync
-        | arandu_middle::symbol_table::LangItem::Copy),
-    ) = checker
+    if let Some(lang_item) = checker
         .symbols
         .try_get(iface_sym)
         .and_then(|symbol| symbol.lang_item)
-    {
-        return bound_type_args.is_empty()
-            && super::super::transfer::satisfies(checker, concrete, capability);
-    }
-    if checker
-        .symbols
-        .try_get(iface_sym)
-        .and_then(|symbol| symbol.lang_item)
-        == Some(arandu_middle::symbol_table::LangItem::Ord)
         && bound_type_args.is_empty()
-        && concrete.is_orderable()
     {
-        return true;
+        match lang_item {
+            capability @ (arandu_middle::symbol_table::LangItem::Send
+            | arandu_middle::symbol_table::LangItem::Sync
+            | arandu_middle::symbol_table::LangItem::Copy) => {
+                return super::super::transfer::satisfies(checker, concrete, capability);
+            }
+            arandu_middle::symbol_table::LangItem::Clone
+                if super::super::transfer::satisfies(
+                    checker,
+                    concrete,
+                    arandu_middle::symbol_table::LangItem::Copy,
+                ) =>
+            {
+                return true;
+            }
+            arandu_middle::symbol_table::LangItem::Ord if concrete.is_orderable() => {
+                return true;
+            }
+            arandu_middle::symbol_table::LangItem::Eq => {
+                let copy_eq = matches!(
+                    concrete,
+                    ArType::Primitive(_)
+                        | ArType::IntLiteral
+                        | ArType::FloatLiteral
+                        | ArType::Ptr(_)
+                        | ArType::Ref(_)
+                        | ArType::RefMut(_)
+                        | ArType::GenRef
+                );
+                if copy_eq {
+                    return true;
+                }
+            }
+            _ => {}
+        }
     }
     let Some(type_id) = concrete_type_id(concrete) else {
         return false;

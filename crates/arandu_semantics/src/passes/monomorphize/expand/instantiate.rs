@@ -219,8 +219,7 @@ pub fn instantiate_function(
             ArType::Tuple(args) => {
                 observed.extend_from_slice(&tc.type_info.type_interner.type_args(*args))
             }
-            ArType::Nullable(inner)
-            | ArType::Slice(inner)
+            ArType::Slice(inner)
             | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
@@ -240,6 +239,7 @@ pub fn instantiate_function(
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::Error

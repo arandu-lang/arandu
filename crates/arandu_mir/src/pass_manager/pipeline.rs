@@ -181,6 +181,23 @@ impl FunctionPass for SimplifyCfgPass {
     }
 }
 
+/// Demotes last-use `Copy(t)` operands to `Move(t)` using temp liveness.
+struct LastUseMovePass;
+
+impl FunctionPass for LastUseMovePass {
+    fn name(&self) -> &'static str {
+        "last_use_move"
+    }
+
+    fn run(
+        &self,
+        func: &mut AmirFunc,
+        _resources: &mut PassResources<'_>,
+    ) -> Result<bool, Diagnostic> {
+        Ok(crate::copy_elision::demote_last_use_copies(func))
+    }
+}
+
 /// Builds the standard pass sequence for `level`.
 ///
 /// O1 runs baseline simplification (SCCP → bounds-check elimination → loop
@@ -202,6 +219,7 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(LoopDeletionPass),
             Box::new(MarkSweepDcePass),
             Box::new(SimplifyCfgPass),
+            Box::new(LastUseMovePass),
         ],
         OptLevel::Os => vec![
             Box::new(SccpPass),
@@ -210,6 +228,7 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(MarkSweepDcePass),
             Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
+            Box::new(LastUseMovePass),
         ],
         OptLevel::O2 => vec![
             Box::new(SroaPass),
@@ -221,6 +240,7 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(MarkSweepDcePass),
             Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
+            Box::new(LastUseMovePass),
         ],
     }
 }

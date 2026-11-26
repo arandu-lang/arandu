@@ -530,6 +530,7 @@ impl Frame<'_> {
             struct_fields: _,
             private_fields: _,
             interior_mutable_types: _,
+            non_copy_types: _,
             enum_variants: _,
             enum_variant_tags: _,
             destructors: _,
@@ -649,6 +650,7 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
         &mut local.interior_mutable_types,
         &signatures.interior_mutable_types,
     );
+    same_set(&mut local.non_copy_types, &signatures.non_copy_types);
     same_set(&mut local.unsafe_functions, &signatures.unsafe_functions);
     same_set(
         &mut local.exported_functions,

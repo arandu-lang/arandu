@@ -550,6 +550,13 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    let mut non_copy: Vec<_> = info.non_copy_types.iter().copied().collect();
+    non_copy.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(non_copy.len() as u64));
+    for symbol in non_copy {
+        hash_symbol_id(&mut h, symbol);
+    }
+
     let mut repr_c: Vec<_> = info.struct_repr_c.iter().copied().collect();
     repr_c.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(repr_c.len() as u64));

@@ -97,6 +97,7 @@ ou a sintaxe de array `[comptime]u8` à linguagem.
 | `@Deny` | implementada em funções e métodos | — |
 | `@Forbid` | implementada em funções e métodos | — |
 | `@NoFallback` | implementada | `@no_fallback`, `@no_generational_fallback` |
+| `@NoCopy` | implementada em structs e enums (opt-out explícito de `Copy` estrutural) | — |
 | `@NoSuspend` | implementada: equivale a `@Effects(NoSuspend)` | `@nosuspend` |
 | `@Specialize` | planejada | `@specialize` |
 | `@Repr` | planejada | `@repr` |

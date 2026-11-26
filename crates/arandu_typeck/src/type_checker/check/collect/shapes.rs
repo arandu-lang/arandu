@@ -90,6 +90,9 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                     if is_repr_c {
                         checker.type_info.struct_repr_c.insert(symbol_id);
                     }
+                    if struct_decl.attrs.iter().any(|attr| attr.name == "NoCopy") {
+                        checker.type_info.non_copy_types.insert(symbol_id);
+                    }
                     checker.type_info.struct_fields.insert(
                         symbol_id,
                         std::sync::Arc::new(arandu_middle::layout::StructFields::from_entries(
@@ -122,6 +125,9 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                 else {
                     return;
                 };
+                if enum_decl.attrs.iter().any(|attr| attr.name == "NoCopy") {
+                    checker.type_info.non_copy_types.insert(enum_symbol_id);
+                }
                 let params = super::super::super::types::extract_generic_param_symbols(
                     checker,
                     &enum_decl.generic_params,

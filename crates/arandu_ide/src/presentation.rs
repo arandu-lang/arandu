@@ -36,6 +36,7 @@ pub struct ParameterPresentation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SymbolPresentation {
     pub signature: String,
+    pub capabilities: Vec<String>,
     pub documentation: Option<String>,
     pub parameters: Vec<ParameterPresentation>,
 }
@@ -116,10 +117,43 @@ pub fn symbol_presentation(
             Vec::new(),
         ),
     };
+    let capabilities = nominal_capabilities(tc, symbol);
     SymbolPresentation {
         signature,
+        capabilities,
         documentation: symbol_documentation(snap, source, symbol),
         parameters,
+    }
+}
+
+fn nominal_capabilities(tc: &TypeCheckResult, symbol: &Symbol) -> Vec<String> {
+    if !matches!(symbol.kind, SymbolKind::Struct | SymbolKind::Enum) {
+        return Vec::new();
+    }
+    if tc.type_info.non_copy_types.contains(&symbol.id) {
+        return vec!["Move (@NoCopy)".to_string()];
+    }
+    if tc.type_info.destructors.contains_key(&symbol.id) {
+        return vec!["Move (@Destructor)".to_string()];
+    }
+    if tc
+        .type_info
+        .generic_params
+        .get(&symbol.id)
+        .is_none_or(|params| params.is_empty())
+    {
+        let ty_id = tc.type_info.type_interner.intern(ArType::named(
+            symbol.id,
+            &[],
+            &tc.type_info.type_interner,
+        ));
+        if tc.type_info.is_copy(ty_id) {
+            vec!["Copy".to_string()]
+        } else {
+            vec!["Move".to_string()]
+        }
+    } else {
+        Vec::new()
     }
 }
 

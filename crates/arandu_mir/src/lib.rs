@@ -5,6 +5,7 @@ pub mod borrow_check;
 pub mod borrow_facts;
 pub mod borrow_interface;
 pub(crate) mod bounds_check_elim;
+pub mod copy_elision;
 pub mod ctfe;
 pub(crate) mod dce;
 pub mod definite_init;

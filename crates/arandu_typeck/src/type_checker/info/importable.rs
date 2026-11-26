@@ -43,6 +43,7 @@ impl TypeInfo {
         view.struct_fields.retain(|symbol, _| kept(symbol));
         view.private_fields.retain(kept);
         view.interior_mutable_types.retain(kept);
+        view.non_copy_types.retain(kept);
         view.enum_variants.retain(|symbol, _| kept(symbol));
         view.enum_variant_tags.retain(|symbol, _| kept(symbol));
         view.destructors.retain(|symbol, _| kept(symbol));

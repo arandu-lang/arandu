@@ -455,6 +455,74 @@ fn type_info_pod_struct_is_copy_vec_like_is_not() {
         !info.is_copy(mut_view_ty),
         "exclusive-ref carrier must remain move-only"
     );
+
+    // `@Repr(C)` and `@Union` are layout contracts, not ownership overrides:
+    // scalar fields remain Copy, while pointer/resource fields remain Move.
+    let repr_c_pod_sym = SymbolId::new(0, 15);
+    info.struct_repr_c.insert(repr_c_pod_sym);
+    info.struct_fields.insert(
+        repr_c_pod_sym,
+        Arc::new(StructFields::from_entries([StructFieldInfo {
+            name: "x".into(),
+            symbol: None,
+            ty: u32_ty,
+            index: 0,
+        }])),
+    );
+    let repr_c_pod_ty =
+        info.type_interner
+            .intern(ArType::named(repr_c_pod_sym, &[], &info.type_interner));
+    assert!(
+        info.is_copy(repr_c_pod_ty),
+        "@Repr(C) struct with only scalar fields should remain Copy"
+    );
+
+    let repr_c_ptr_sym = SymbolId::new(0, 16);
+    info.struct_repr_c.insert(repr_c_ptr_sym);
+    info.struct_fields.insert(
+        repr_c_ptr_sym,
+        Arc::new(StructFields::from_entries([StructFieldInfo {
+            name: "raw".into(),
+            symbol: None,
+            ty: ptr_ty,
+            index: 0,
+        }])),
+    );
+    let repr_c_ptr_ty =
+        info.type_interner
+            .intern(ArType::named(repr_c_ptr_sym, &[], &info.type_interner));
+    assert!(
+        !info.is_copy(repr_c_ptr_ty),
+        "@Repr(C) struct with ptr field must not bypass Copy checks"
+    );
+
+    let union_ptr_sym = SymbolId::new(0, 17);
+    info.struct_unions.insert(union_ptr_sym);
+    info.struct_repr_c.insert(union_ptr_sym);
+    info.struct_fields.insert(
+        union_ptr_sym,
+        Arc::new(StructFields::from_entries([
+            StructFieldInfo {
+                name: "raw".into(),
+                symbol: None,
+                ty: ptr_ty,
+                index: 0,
+            },
+            StructFieldInfo {
+                name: "bits".into(),
+                symbol: None,
+                ty: u64_ty,
+                index: 1,
+            },
+        ])),
+    );
+    let union_ptr_ty =
+        info.type_interner
+            .intern(ArType::named(union_ptr_sym, &[], &info.type_interner));
+    assert!(
+        !info.is_copy(union_ptr_ty),
+        "@Union with ptr field must not bypass Copy checks"
+    );
 }
 
 #[test]

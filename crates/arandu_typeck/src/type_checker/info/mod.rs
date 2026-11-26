@@ -176,6 +176,8 @@ pub struct TypeInfo {
     pub private_fields: FxHashSet<SymbolId>,
     /// Canonical interior-mutable owners must never gain structural Copy.
     pub interior_mutable_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols explicitly opted out of structural Copy via `@NoCopy`.
+    pub non_copy_types: FxHashSet<SymbolId>,
     pub enum_variants: FxHashMap<SymbolId, (SymbolId, EnumPayloadShape)>,
     /// Pre-computed discriminant tag for each enum variant symbol.
     pub enum_variant_tags: FxHashMap<SymbolId, usize>,
@@ -295,6 +297,7 @@ impl TypeInfo {
             struct_fields: FxHashMap::default(),
             private_fields: FxHashSet::default(),
             interior_mutable_types: FxHashSet::default(),
+            non_copy_types: FxHashSet::default(),
             enum_variants: FxHashMap::default(),
             enum_variant_tags: FxHashMap::default(),
             destructors: FxHashMap::default(),

@@ -386,6 +386,17 @@ pub(super) fn collect_item_flow(
     ) {
         out.push(IdeDiagnostic::from_diag(&d, Some(item_sym), Some(bid)));
     }
+    let data_layout = *db.target_config().data_layout(db);
+    for (bid, d) in arandu_mir::copy_elision::check_large_implicit_copies_by_block(
+        amir,
+        context.symbols.as_ref(),
+        &context.type_info.type_interner,
+        &*context.type_info,
+        data_layout,
+        arandu_mir::copy_elision::DEFAULT_LARGE_COPY_THRESHOLD_BYTES,
+    ) {
+        out.push(IdeDiagnostic::from_diag(&d, Some(item_sym), Some(bid)));
+    }
     for (bid, d) in arandu_mir::borrow_check::check_borrows_by_block_with_types(
         amir,
         context.symbols.as_ref(),
@@ -398,7 +409,6 @@ pub(super) fn collect_item_flow(
     let no_fallback = arandu_base::NO_GENERATIONAL_FALLBACK
         .load(std::sync::atomic::Ordering::Relaxed)
         || item_forbids_fallback(db, file, item_sym);
-    let data_layout = *db.target_config().data_layout(db);
     for (bid, d) in arandu_mir::escape_analysis::check_escapes_by_block(
         amir,
         context.symbols.as_ref(),

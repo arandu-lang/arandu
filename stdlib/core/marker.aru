@@ -28,6 +28,10 @@ module std.core.marker
 /// Zero-sized type used to mark that a struct logically owns or refers to `T`.
 public struct PhantomData<T> {}
 
+/// Zero-sized marker that opts a containing struct or enum out of implicit `Copy`.
+@NoCopy
+public struct NonCopy {}
+
 /// Creates a new `PhantomData` instance.
 public func PhantomData.new<T>(): PhantomData<T> {
     return PhantomData<T> {}

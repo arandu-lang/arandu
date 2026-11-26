@@ -198,6 +198,8 @@ pub enum DiagCode {
     /// An owning closure assigns to its copy of a captured `Copy` local and
     /// never reads it: the original is unchanged.
     W009CapturedCopyNeverRead,
+    /// A large `Copy` value is implicitly duplicated while still live.
+    W010LargeImplicitCopy,
 
     // ── Unimplemented (U) ──
     U001FeatureNotSupported,
@@ -337,6 +339,7 @@ impl DiagCode {
             W007UnusedImport,
             W008Reserved,
             W009CapturedCopyNeverRead,
+            W010LargeImplicitCopy,
             U001FeatureNotSupported,
             ICELX001,
             ICEP001,
@@ -392,6 +395,7 @@ impl DiagCode {
             DiagCode::W006UnhandledResult => Some("unhandled_result"),
             DiagCode::W007UnusedImport => Some("unused_import"),
             DiagCode::W009CapturedCopyNeverRead => Some("captured_copy_never_read"),
+            DiagCode::W010LargeImplicitCopy => Some("large_implicit_copy"),
             _ => None,
         }
     }
@@ -524,6 +528,7 @@ impl DiagCode {
             DiagCode::W007UnusedImport => "W007",
             DiagCode::W008Reserved => "W008",
             DiagCode::W009CapturedCopyNeverRead => "W009",
+            DiagCode::W010LargeImplicitCopy => "W010",
             DiagCode::U001FeatureNotSupported => "U001",
             DiagCode::ICELX001 => "ICE-LX-001",
             DiagCode::ICEP001 => "ICE-P-001",

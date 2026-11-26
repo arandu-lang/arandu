@@ -299,6 +299,12 @@ mod tests {
             .insert(symbol);
         assert_ne!(baseline_hash, with_interior_mutability.stable_hash());
 
+        let mut with_non_copy = baseline.clone();
+        Arc::make_mut(&mut with_non_copy.type_info)
+            .non_copy_types
+            .insert(symbol);
+        assert_ne!(baseline_hash, with_non_copy.stable_hash());
+
         let mut with_repr_c = baseline.clone();
         Arc::make_mut(&mut with_repr_c.type_info)
             .struct_repr_c

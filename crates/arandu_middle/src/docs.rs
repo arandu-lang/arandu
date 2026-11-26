@@ -136,6 +136,8 @@ pub struct DocItem {
     pub kind: DocItemKind,
     pub signature: String,
     pub effect_badges: Vec<EffectBadge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
     pub summary: Option<String>,
     pub sections: DocSections,
     pub fields: Vec<DocField>,

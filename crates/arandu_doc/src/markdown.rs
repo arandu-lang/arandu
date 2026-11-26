@@ -75,6 +75,16 @@ fn render_category(out: &mut String, title: &str, items: &[&DocItem]) {
             out.push_str(&format!("**Efeitos**: {badges}\n\n"));
         }
 
+        if !item.capabilities.is_empty() {
+            let caps = item
+                .capabilities
+                .iter()
+                .map(|c| format!("`[{c}]`"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push_str(&format!("**Capacidades**: {caps}\n\n"));
+        }
+
         out.push_str("```arandu\n");
         out.push_str(&item.signature);
         out.push_str("\n```\n\n");
@@ -164,6 +174,7 @@ mod tests {
                 kind: DocItemKind::Function,
                 signature: "func abs(val: int): int".to_string(),
                 effect_badges: vec![EffectBadge::Pure, EffectBadge::ZeroAlloc],
+                capabilities: vec![],
                 summary: Some("Returns the absolute value.".to_string()),
                 sections: DocSections {
                     description: None,

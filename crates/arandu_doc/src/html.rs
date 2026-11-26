@@ -228,7 +228,7 @@ fn render_main_category(out: &mut String, title: &str, items: &[&DocItem]) {
             escape_html(&item.name)
         ));
 
-        if !item.effect_badges.is_empty() {
+        if !item.effect_badges.is_empty() || !item.capabilities.is_empty() {
             out.push_str("<div class=\"effect-badges-strip\">\n");
             for badge in &item.effect_badges {
                 out.push_str(&format!(
@@ -236,6 +236,12 @@ fn render_main_category(out: &mut String, title: &str, items: &[&DocItem]) {
                     badge.css_class(),
                     badge.description(),
                     badge.label()
+                ));
+            }
+            for cap in &item.capabilities {
+                out.push_str(&format!(
+                    "<span class=\"effect-badge badge-capability\">[{}]</span>\n",
+                    escape_html(cap)
                 ));
             }
             out.push_str("</div>\n");
@@ -629,6 +635,7 @@ mod tests {
                 kind: DocItemKind::Function,
                 signature: "func copy(dst: ptr[u8], src: ptr[u8], count: uint)".to_string(),
                 effect_badges: vec![EffectBadge::Pure, EffectBadge::ZeroAlloc],
+                capabilities: vec![],
                 summary: Some("Copies memory buffer.".to_string()),
                 sections: DocSections {
                     description: None,

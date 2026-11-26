@@ -111,6 +111,9 @@ pub fn symbol_surface(
                     .interior_mutable_types
                     .contains(&symbol),
             )]);
+            hasher.update(&[u8::from(
+                signatures.type_info.non_copy_types.contains(&symbol),
+            )]);
             if let Some(dtor) = signatures.type_info.destructors.get(&symbol) {
                 hasher.update(&[1]);
                 hasher.update(&dtor.file_id.to_le_bytes());
@@ -152,6 +155,11 @@ pub fn symbol_surface(
                 hasher.update(&(tag as u64).to_le_bytes());
             } else {
                 hasher.update(&[0]);
+            }
+            if sym.kind == SymbolKind::Enum {
+                hasher.update(&[u8::from(
+                    signatures.type_info.non_copy_types.contains(&symbol),
+                )]);
             }
         }
 

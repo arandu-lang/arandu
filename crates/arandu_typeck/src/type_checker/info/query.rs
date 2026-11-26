@@ -584,19 +584,27 @@ impl TypeInfo {
         }
     }
 
+    /// Whether a nominal type is blocked from structural `Copy` by its own
+    /// declaration-level ownership obligations (destructor, interior
+    /// mutability, or explicit `@NoCopy`). Shared between local `is_copy` and
+    /// transfer `Copy` proofs so both agree on nominal eligibility.
+    #[must_use]
+    pub fn is_nominal_copy_blocked(&self, sym: SymbolId) -> bool {
+        self.destructors.contains_key(&sym)
+            || self.interior_mutable_types.contains(&sym)
+            || self.non_copy_types.contains(&sym)
+    }
+
     fn is_named_struct_pod_copy(
         &self,
         sym: SymbolId,
         args: &[TypeId],
         visiting: &mut FxHashMap<TypeId, bool>,
     ) -> bool {
-        // A destructor is an ownership obligation even for empty/scalar storage.
-        // Copying such a value would duplicate that obligation.
-        if self.destructors.contains_key(&sym) || self.interior_mutable_types.contains(&sym) {
+        // A destructor or interior mutability is an ownership obligation even
+        // for empty/scalar storage. Copying such a value would duplicate it.
+        if self.is_nominal_copy_blocked(sym) {
             return false;
-        }
-        if self.struct_repr_c.contains(&sym) || self.struct_unions.contains(&sym) {
-            return true;
         }
         let mut variants: Vec<_> = self
             .enum_variants

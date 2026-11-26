@@ -100,6 +100,7 @@ O lint é nomeado pelo nome `snake_case` ou pelo código (`"W006"`); a precedên
 | `W006` | `unhandled_result` |
 | `W007` | `unused_import` |
 | `W009` | `captured_copy_never_read` |
+| `W010` | `large_implicit_copy` |
 
 ```arandu
 @Suppress("shadowing")
@@ -349,6 +350,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **W007** | `unused import: '{name}'` | Warning | `0.1.0` | Um módulo ou símbolo foi importado no topo do arquivo mas nunca foi referenciado ou consumido no código. |
 | **W008** | *[Reservado / Obsoleto]* | - | `0.1.0` | *Avisava grafias legadas de anotações até a 0.2.0; desde então elas são `N012` com replacement para o nome canônico.* |
 | **W009** | `the closure assigns to its own copy of '{name}' and never reads it` | Warning | `0.3.0` | Uma closure com dono (`own`) copia os locais `Copy` que captura; atribuir à cópia sem lê-la não altera o local de fora nem é observado pela closure. Passe o bloco onde um callback emprestado `() -> R` é esperado, ou devolva o valor. |
+| **W010** | `implicit copy of large '{ty}' value ({size} bytes)` | Warning | `0.3.0` | Um valor `Copy` grande (>= 256 bytes no `DataLayout` do alvo) foi duplicado implicitamente enquanto ainda está vivo. Prefira passar por `ref T`, usar `@NoCopy`, ou silenciar com `@Suppress("large_implicit_copy")`. |
 
 > [!NOTE]
 > **Decisão de Design sobre Shadows (`W004`)**: O shadowing de variáveis é classificado como um `Warning` (e não `Error`) no Arandu para permitir flexibilidade de escrita em escopos muito curtos de closures e lambdas iteradoras. No entanto, é fortemente alertado por padrão para evitar que desenvolvedores ocultem nomes acidentais em escopos maiores do compilador. Pode ser silenciado localmente com `@Suppress("shadowing")`.

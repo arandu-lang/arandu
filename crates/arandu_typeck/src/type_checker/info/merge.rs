@@ -512,6 +512,8 @@ impl TypeInfo {
         }
         self.interior_mutable_types
             .extend(other.interior_mutable_types.iter().copied().map(&remap));
+        self.non_copy_types
+            .extend(other.non_copy_types.iter().copied().map(&remap));
     }
 
     fn merge_expression_tables(
@@ -594,5 +596,6 @@ fn context_shard_is_empty(other: &TypeInfo) -> bool {
         && other.interfaces.is_empty()
         && other.struct_repr_c.is_empty()
         && other.struct_unions.is_empty()
+        && other.non_copy_types.is_empty()
         && other.expr_types.iter().all(|s| s.is_none())
 }

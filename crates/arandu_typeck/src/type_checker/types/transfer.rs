@@ -170,7 +170,7 @@ pub(crate) fn satisfies(
                     }
                     _ => {}
                 }
-                if capability == LangItem::Copy && info.destructors.contains_key(&symbol) {
+                if capability == LangItem::Copy && info.is_nominal_copy_blocked(symbol) {
                     return false;
                 }
                 // Include phantom arguments: an empty wrapper must not launder

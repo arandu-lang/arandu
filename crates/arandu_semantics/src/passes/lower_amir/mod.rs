@@ -296,6 +296,14 @@ fn validate_borrowed_function(
 ) {
     // M2 and escape validation intentionally run only after calls carry
     // the converged interprocedural interface.
+    diagnostics.extend(arandu_mir::copy_elision::check_large_implicit_copies(
+        function,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        &*tc.type_info,
+        layout,
+        arandu_mir::copy_elision::DEFAULT_LARGE_COPY_THRESHOLD_BYTES,
+    ));
     diagnostics.extend(arandu_mir::borrow_check::check_borrows_with_types(
         function,
         &tc.symbols,

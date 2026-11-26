@@ -582,6 +582,21 @@ public func Vec.filter<T>(self: ref Vec<T>, f: (ref T) -> bool): Vec<T> where T:
     return out
 }
 
+/// Returns the first element matching `f`, or `None` if none matches.
+public func Vec.find<T>(self: ref Vec<T>, f: (ref T) -> bool): Option<ref T> {
+    let len = self.len()
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = self.get(i) {
+            if f(item) {
+                return Option.Some(item)
+            }
+        }
+        i += 1
+    }
+    return Option.None
+}
+
 /// Releases the owned buffer and resets the vector to empty.
 ///
 /// Borrowed slices into that buffer become invalid. The destructor consumes

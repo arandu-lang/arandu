@@ -199,6 +199,7 @@ impl TypeInfo {
                 },
                 super::AdjustmentKind::Unsize => super::AdjustmentKind::Unsize,
                 super::AdjustmentKind::TextView => super::AdjustmentKind::TextView,
+                super::AdjustmentKind::VecView => super::AdjustmentKind::VecView,
             };
             let adjusted = Adjustment {
                 kind,

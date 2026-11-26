@@ -166,6 +166,8 @@ pub const AMBIENT_PRIMITIVE_MODULES: &[(&str, &str)] = &[
     ("stdlib/core/char.aru", "std.core.char"),
     ("stdlib/core/num.aru", "std.core.num"),
     ("stdlib/core/pointer.aru", "std.core.pointer"),
+    ("stdlib/core/option.aru", "std.core.option"),
+    ("stdlib/core/result.aru", "std.core.result"),
 ];
 
 /// The module defining the owning closure types behind `own (A) -> R`

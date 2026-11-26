@@ -332,6 +332,24 @@ pub(crate) fn bind_type_params(
                 | ArType::Array(_, i)
                 | ArType::Coroutine(i)
                 | ArType::Poll(i) => Some(i),
+                // A `Vec<T>` (or `ref Vec<T>`) passed where `[]T` is expected
+                // binds `T` via `VecView` coercion.
+                other if matches!(formal, ArType::Slice(_)) => {
+                    let unwrapped = match other {
+                        ArType::Ref(i) | ArType::RefMut(i) => interner.resolve(i),
+                        x => x,
+                    };
+                    if let ArType::Named(sym, args) = unwrapped
+                        && checker
+                            .symbols
+                            .lang_item_symbol(arandu_middle::symbol_table::LangItem::Vec)
+                            == Some(sym)
+                    {
+                        interner.type_args(args).first().copied()
+                    } else {
+                        None
+                    }
+                }
                 _ => None,
             };
             if let Some(ai) = act_inner {

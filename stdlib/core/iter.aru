@@ -356,3 +356,84 @@ public func nth<I: Iterator<Item>, Item>(mut it: I, n: uint): Option<Item> {
     }
     return it.next()
 }
+
+/// Folds every element of `it` into an accumulator starting from `initial`.
+public func fold<I: Iterator<Item>, Item, Acc>(mut it: I, initial: Acc, f: (Acc, Item) -> Acc): Acc {
+    let mut acc = initial
+    while true {
+        match it.next() {
+            Some(val) => {
+                acc = f(acc, val)
+            }
+            None => {
+                return acc
+            }
+        }
+    }
+    return acc
+}
+
+/// Returns `true` if any element produced by `it` satisfies `pred`.
+public func anyMatch<I: Iterator<Item>, Item>(mut it: I, pred: (Item) -> bool): bool {
+    while true {
+        match it.next() {
+            Some(val) => {
+                if pred(val) {
+                    return true
+                }
+            }
+            None => {
+                return false
+            }
+        }
+    }
+    return false
+}
+
+/// Returns `true` if all elements produced by `it` satisfy `pred`.
+public func allMatch<I: Iterator<Item>, Item>(mut it: I, pred: (Item) -> bool): bool {
+    while true {
+        match it.next() {
+            Some(val) => {
+                if !pred(val) {
+                    return false
+                }
+            }
+            None => {
+                return true
+            }
+        }
+    }
+    return true
+}
+
+/// Returns the first element of `it` satisfying `pred`, or `Option.None`.
+public func find<I: Iterator<Item>, Item>(mut it: I, pred: (ref Item) -> bool): Option<Item> {
+    while true {
+        match it.next() {
+            Some(val) => {
+                if pred(ref val) {
+                    return Option.Some(val)
+                }
+            }
+            None => {
+                return Option.None
+            }
+        }
+    }
+    return Option.None
+}
+
+/// Invokes `f` on every element produced by `it`.
+public func forEach<I: Iterator<Item>, Item>(mut it: I, f: (Item) -> void): void {
+    while true {
+        match it.next() {
+            Some(val) => {
+                f(val)
+            }
+            None => {
+                return
+            }
+        }
+    }
+}

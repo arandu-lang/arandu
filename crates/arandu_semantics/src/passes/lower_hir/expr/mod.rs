@@ -444,6 +444,17 @@ fn lower_expr_here(
         arandu_typeck::type_checker::info::AdjustmentKind::Unsize => {
             return Ok(unsize_array(type_check, hir_pool, value, &adjustment, span));
         }
+        // A `Vec<T>` where a `[]T` slice is expected is read through `Vec.asSlice`.
+        arandu_typeck::type_checker::info::AdjustmentKind::VecView => {
+            return text::vec_slice_view(type_check, hir_pool, value, adjustment.to, span)
+                .ok_or_else(|| {
+                    Diagnostic::ice(
+                        crate::DiagCode::ICEL001,
+                        "`Vec` has no `asSlice` view",
+                        span,
+                    )
+                });
+        }
         // A `String` where a `str` is expected is read through its view.
         arandu_typeck::type_checker::info::AdjustmentKind::TextView => {
             let borrowed = matches!(

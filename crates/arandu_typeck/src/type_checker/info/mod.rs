@@ -261,6 +261,8 @@ pub enum AdjustmentKind {
     Unsize,
     /// A `String` (or a reference to one) viewed as `str`.
     TextView,
+    /// A `Vec<T>` (or a reference to one) viewed as `[]T`.
+    VecView,
 }
 
 impl Default for TypeInfo {

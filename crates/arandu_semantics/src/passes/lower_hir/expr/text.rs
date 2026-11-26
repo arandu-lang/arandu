@@ -225,6 +225,63 @@ fn call(
     })
 }
 
+/// `Vec.asSlice<T>(ref value)`: a `[]T` slice borrowing the buffer of `value`.
+pub(super) fn vec_slice_view(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    value: HirExprId,
+    target_slice_ty: TypeId,
+    span: Span,
+) -> Option<HirExprId> {
+    let vec_sym = type_check.symbols.lang_item_symbol(LangItem::Vec)?;
+    let as_slice = *type_check
+        .symbols
+        .associated_members
+        .get(&(vec_sym, "asSlice".into()))?;
+    let ArType::Slice(elem_ty) = type_check.type_info.type_interner.resolve(target_slice_ty) else {
+        return None;
+    };
+    let interner = &type_check.type_info.type_interner;
+    let vec_ty = interner.intern(ArType::named(vec_sym, &[elem_ty], interner));
+    let ref_vec = interner.intern(ArType::Ref(vec_ty));
+    let as_slice_ty = interner.intern(ArType::func(&[ref_vec], target_slice_ty, interner));
+    let value_ty = hir_pool.expr(value).ty;
+    let borrowed = if matches!(
+        interner.resolve(value_ty),
+        ArType::Ref(_) | ArType::RefMut(_)
+    ) {
+        value
+    } else {
+        hir_pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Unary {
+                op: arandu_middle::ops::UnaryOp::Ref,
+                expr: value,
+            },
+            ty: ref_vec,
+            span,
+        })
+    };
+    let path = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol: as_slice },
+        ty: as_slice_ty,
+        span,
+    });
+    let callee = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Generic {
+            callee: path,
+            args: vec![elem_ty],
+        },
+        ty: as_slice_ty,
+        span,
+    });
+    let args = hir_pool.alloc_expr_list(&[borrowed]);
+    Some(hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call { callee, args },
+        ty: target_slice_ty,
+        span,
+    }))
+}
+
 /// `*String.asStr(ref value)`: the `str` view of a `String`, or of a
 /// reference to one.
 pub(super) fn string_view(

@@ -72,3 +72,48 @@ pub(crate) fn adjust_text_view(
     );
     Some(expected)
 }
+
+/// The slice view of a `Vec<T>` (or `ref Vec<T>` / `mut ref Vec<T>`) where `[]T`
+/// is expected, at a site where the borrowed slice cannot outlive the vector.
+pub(crate) fn adjust_vec_view(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    actual: TypeId,
+    expected: TypeId,
+) -> Option<TypeId> {
+    if !checker.text_view_sites.contains(&expr) {
+        return None;
+    }
+    let ArType::Slice(slice_elem) = checker.resolve(expected) else {
+        return None;
+    };
+    let unwrapped = match checker.resolve(actual) {
+        ArType::Ref(inner) | ArType::RefMut(inner) => checker.resolve(inner),
+        other => other,
+    };
+    let ArType::Named(symbol, args) = unwrapped else {
+        return None;
+    };
+    let is_vec = checker.symbols.lang_item_symbol(LangItem::Vec) == Some(symbol)
+        || checker.symbols.try_get(symbol).and_then(|s| s.lang_item) == Some(LangItem::Vec);
+    if !is_vec {
+        return None;
+    }
+    let type_args = checker.type_info.type_interner.type_args(args);
+    let &[vec_elem] = type_args.as_slice() else {
+        return None;
+    };
+    if vec_elem != slice_elem && !checker.unify_ids(slice_elem, vec_elem) {
+        return None;
+    }
+    let span = checker.pool.expr_span(expr);
+    checker.type_info.adjustments.insert(
+        span,
+        crate::type_checker::info::Adjustment {
+            kind: crate::type_checker::info::AdjustmentKind::VecView,
+            from: actual,
+            to: expected,
+        },
+    );
+    Some(expected)
+}

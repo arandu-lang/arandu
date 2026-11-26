@@ -413,10 +413,19 @@ impl super::SymbolTable {
     /// global scope without triggering `N006ImportConflict`.
     pub fn insert_prelude_imported(&mut self, mut symbol: Symbol) {
         let prelude_scope = ScopeId(0);
-        symbol.scope = prelude_scope;
         let id = symbol.id;
         let name = symbol.name.clone();
-        self.imported_symbols_mut().insert(id, symbol);
+        match self.imported_symbols.get(&id) {
+            // An explicit named import already registered this symbol under an
+            // alias. Both name lookup and typeck read `imported_symbols[id].name`,
+            // so overwriting it here would make the alias undeclared.
+            Some(existing) if existing.name != name => return,
+            Some(_) => {}
+            None => {
+                symbol.scope = prelude_scope;
+                self.imported_symbols_mut().insert(id, symbol);
+            }
+        }
         if self.find_in_scope(prelude_scope, &name).is_none() {
             self.scope_mut(prelude_scope).symbols.push(id);
         }

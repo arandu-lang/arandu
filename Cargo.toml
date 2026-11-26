@@ -69,13 +69,19 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 
 
+# Incremental compilation is disabled for dev/test: each rebuild leaves another
+# session under target/debug/incremental and orphans .o/.dwo files. Measured on
+# 2026-11-11: one edit in arandu_base added ~2 GB and ~59k files to target/debug.
+# Override locally with CARGO_INCREMENTAL=1 when an incremental rebuild pays off.
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+incremental = false
 
 [profile.test]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 2

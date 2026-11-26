@@ -122,8 +122,8 @@ camadas é uma regressão arquitetural.
 
 ## Diagnósticos e testes dourados
 
-- Os prefixos são `LX`, `P`, `N`, `T`, `O`, `W` e `ICE`. `DiagCode` é a fonte
-  única da verdade para códigos voltados ao usuário.
+- Os prefixos são `LX`, `P`, `N`, `T`, `O`, `W`, `M`, `L`, `G`, `U` e `ICE`.
+  `DiagCode` é a fonte única da verdade para códigos voltados ao usuário.
 - Todo código novo voltado ao usuário exige entrada em `DiagCode`, mapeamento,
   catálogo em `docs/diagnostics/SPEC.md` e `docs/errors/<CODIGO>.md` em inglês.
   ICEs não exigem documento em `docs/errors/`.

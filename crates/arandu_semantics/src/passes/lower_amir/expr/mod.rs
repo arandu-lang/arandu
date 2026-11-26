@@ -115,7 +115,7 @@ impl LowerCtx<'_> {
                         amir_unsupported(
                             expr.span,
                             "invalid target float format",
-                            "CT.2 deterministic floats",
+                            "run 'arandu explain U001' for details",
                         )
                     })?;
                 let value = arandu_middle::ctfe::ConstFloat::parse(ty, v).map_err(|error| {
@@ -131,7 +131,7 @@ impl LowerCtx<'_> {
                         amir_unsupported(
                             expr.span,
                             "invalid typed float literal",
-                            "CT.2 deterministic floats",
+                            "run 'arandu explain U001' for details",
                         )
                     }
                 })?;
@@ -173,14 +173,14 @@ impl LowerCtx<'_> {
                     amir_unsupported(
                         expr.span,
                         "frozen slice offset exceeds usize",
-                        "CT.2 frozen slices",
+                        "run 'arandu explain U001' for details",
                     )
                 })?;
                 let len = u64::try_from(value.len()).map_err(|_| {
                     amir_unsupported(
                         expr.span,
                         "frozen slice length exceeds usize",
-                        "CT.2 frozen slices",
+                        "run 'arandu explain U001' for details",
                     )
                 })?;
                 let usize_ty = arandu_middle::ctfe::IntegerType::new(Primitive::USize, self.layout)
@@ -188,7 +188,7 @@ impl LowerCtx<'_> {
                         amir_unsupported(
                             expr.span,
                             "invalid target usize format",
-                            "CT.2 frozen slices",
+                            "run 'arandu explain U001' for details",
                         )
                     })?;
                 arandu_middle::ctfe::ConstInt::new(usize_ty, i128::from(start))
@@ -197,7 +197,7 @@ impl LowerCtx<'_> {
                         amir_unsupported(
                             expr.span,
                             "frozen slice exceeds target usize",
-                            "CT.2 frozen slices",
+                            "run 'arandu explain U001' for details",
                         )
                     })?;
                 let start = AmirOperand::Constant(self.intern_literal_int(start.to_string()));
@@ -547,7 +547,7 @@ impl LowerCtx<'_> {
             HirExprKind::Lambda { .. } => Err(amir_unsupported(
                 expr.span,
                 "lambda/closure",
-                "v0.3 LAMBDA: closure lowering",
+                "run 'arandu explain U001' for details",
             )),
             // A3.0/A3.1/A3.3: evaluate block as coroutine body (Suspend on nested await),
             // wrap payload as Coroutine[T]. Stack-first when not the function return slot.

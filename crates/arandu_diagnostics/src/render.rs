@@ -144,7 +144,7 @@ impl miette::Diagnostic for Diagnostic {
             None
         } else {
             Some(Box::new(format!(
-                "https://arandu-lang.dev/docs/errors/{}",
+                "https://github.com/arandu-lang/arandu/blob/main/docs/errors/{}.md",
                 self.code.as_str()
             )))
         }

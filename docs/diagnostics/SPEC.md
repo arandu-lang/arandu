@@ -112,17 +112,19 @@ func exemplo() {
 ```
 
 ### 2.3 Estrutura Programática Interna (Diagnostic Model)
-Para garantir que renderizadores de terminal, exportadores de arquivo JSON/SARIF e servidores LSP consumam a mesma fonte de verdade, o compilador Arandu utiliza a seguinte estrutura interna tipada no crate `arandu_diagnostics`:
+A fonte de verdade é `Diagnostic` em `crates/arandu_diagnostics/src/lib.rs`. Renderizadores de terminal, exportadores estruturados e servidores LSP consomem a mesma struct:
 
 ```rust
 pub struct Diagnostic {
-    pub code: String,                // Ex: "T018", "ICE-T-001"
-    pub severity: Severity,          // Error, Warning, Note, Hint
-    pub kind: DiagnosticKind,        // User, InternalCompilerError
-    pub message: String,             // Mensagem textual de cabeçalho
-    pub labels: Vec<Label>,          // Spans de código destacados com texto
-    pub notes: Vec<String>,          // Notas adicionais de contexto
-    pub hints: Vec<Hint>,            // Sugestões inteligentes de correção
+    pub code: DiagCode,                     // Variante tipada; as_str() produce "T018"
+    pub severity: Severity,                 // Error, Warning, Note, Hint
+    pub kind: DiagnosticKind,               // User, InternalCompilerError
+    pub message: String,                    // Mensagem textual de cabeçalho
+    pub span: arandu_base::Span,            // Span real no arquivo-fonte
+    pub primary_label: Option<Label>,       // Label principal do renderer
+    pub labels: Vec<Label>,                 // Spans adicionais destacados
+    pub notes: Vec<String>,                 // Contexto adicional
+    pub hints: Vec<Hint>,                   // Sugestões e quick fixes
 }
 
 pub enum Severity {
@@ -138,50 +140,32 @@ pub enum DiagnosticKind {
 }
 
 pub struct Label {
-    pub span: arandu_lexer::Span,
+    pub span: arandu_base::Span,
     pub message: String,
 }
 
 pub struct Hint {
     pub message: String,
-    pub replacement: Option<CodeReplacement>, // Dica de autocorreção rápida (Quick-fix)
+    pub replacement: Option<CodeReplacement>, // Quick fix estruturado, nunca parseado de texto
 }
 ```
 
 > [!NOTE]
-> **ICE (Internal Compiler Error)**: Um ICE é classificado internamente como `DiagnosticKind::InternalCompilerError`, mas herda logicamente a severidade `Severity::Error` de forma a abortar imediatamente a execução, além de imprimir informações detalhadas de diagnóstico de infraestrutura.
+> **ICE (Internal Compiler Error)**: Um ICE é classificado como `DiagnosticKind::InternalCompilerError` e herda severidade `Error`, mas não exige documento em `docs/errors/`. A lista autoritativa de códigos é `DiagCode::ALL`.
 
-### 2.4 Registro Verificado Automaticamente via Build Script (`build.rs`)
-Para garantir escalabilidade e impedir que a documentação longa dos erros fique fora de sincronia ou que braços manuais gigantescos poluam a crate `arandu_diagnostics`, adotamos uma arquitetura automatizada baseada em `build.rs`:
+### 2.4 Registro de Explicações e Bijeção
+`build.rs` apenas incorpora os arquivos `docs/errors/*.md` existentes em `registry_gen.rs` e expõe `get_explanation(code) -> Option<&'static str>`. Ele **não valida** a bijeção; a variável `ARANDU_VALIDATE_DOCS` está deprecada.
+
+A validação 1:1 entre `DiagCode::ALL` (exceto ICEs) e `docs/errors/*.md` é feita por:
 
 ```text
-crates/arandu_diagnostics/
-  ├── build.rs             ← Escaneia docs/errors/ e gera registry_gen.rs em build-time
-  └── src/
-      ├── lib.rs
-      └── registry.rs      ← Inclui o arquivo gerado contendo o mapeamento de explicações
+cargo run --locked -p xtask -- check-diag-docs
 ```
 
-#### Mecanismo de Validação e Geração:
-1.  Durante a etapa de build, o `build.rs` lê o diretório `docs/errors/` e extrai todos os códigos documentados (arquivos no formato `[CÓDIGO].md`).
-2.  O script valida a **bijetividade (sincronia 1:1)** entre as variantes do enum `DiagCode` e os arquivos `.md` existentes. Se houver algum código declarado sem sua respectiva documentação em inglês (ou vice-versa), o build **falha imediatamente**, exibindo uma mensagem limpa:
-    ```text
-    error: missing documentation file docs/errors/T018.md for declared diagnostic code T018
-    ```
-3.  Se a validação passar, o script gera automaticamente o arquivo `registry_gen.rs` na pasta `OUT_DIR` com o seguinte padrão:
-    ```rust
-    // Código gerado automaticamente pelo build.rs - Não edite manualmente
-    pub fn get_explanation(code: &str) -> Option<&'static str> {
-        match code {
-            "T018" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/errors/T018.md"))),
-            "O001" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/errors/O001.md"))),
-            _ => None,
-        }
-    }
-    ```
+Um código declarado sem documento, ou um documento sem código correspondente, falha esse check — não o build. O comando `arandu explain <CODE>` consome o registry gerado e é a forma canônica de ler a explicação longa offline.
 
 ### 2.5 Extensões e Melhorias Futuras Planejadas
-*   **Recovery Diagnostics (Autocorreção)**: Sugestões acionáveis estruturadas no tipo `Hint::replacement` contendo as coordenadas exatas do código a ser alterado, permitindo que LSPs em editores apliquem quick-fixes automáticos.
+*   **Recovery Diagnostics (Autocorreção)**: Implementado. Sugestões acionáveis usam `Hint::replacement` com o span exato do token a ser alterado; CLI, miette e LSP compartilham a mesma apresentação e o editor aplica o quick fix sem parsear a mensagem.
 *   **Sinks SARIF / JSON**: Exportação estruturada para integração contínua (CI) e integração direta com o VS Code.
 *   **Ciclo de Vida de Códigos**: Introdução formal de atributos no catálogo para controlar a obsolescência de erros (`introduced_in`, `deprecated_in`, `removed_in`), impedindo que modificações quebrem parsers de logs legados.
 
@@ -361,7 +345,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **W003** | `unreachable code after statement` | Warning | `0.1.0` | Trechos de código localizados logo após instruções de terminação incondicional (como `return`, `break` ou `continue`). |
 | **W004** | `variable shadowing: '{name}' shadows a variable defined in an outer scope` | Warning | `0.1.0` | Re-declaração de uma variável em um escopo filho que oculta a variável homônima do escopo pai. |
 | **W005** | `unnecessary mutability: variable '{name}' does not need to be mutable` | Warning | `0.1.0` | Variável declarada como `mut` mas que nunca sofreu reatribuições ou modificações mutáveis. |
-| **W006** | `unhandled result: value of type 'Result' must be checked or propagated` | Warning | `0.1.0` | Uma chamada que retorna `Result<T, E>` foi descartada silenciosamente. (Movido do antigo `T019`). |
+| **W006** | `Result value must be handled with \`?\` or \`value, err = f()\`` | Warning | `0.1.0` | Uma chamada que retorna `Result<T, E>` foi descartada silenciosamente. (Movido do antigo `T019`). |
 | **W007** | `unused import: '{name}'` | Warning | `0.1.0` | Um módulo ou símbolo foi importado no topo do arquivo mas nunca foi referenciado ou consumido no código. |
 | **W008** | *[Reservado / Obsoleto]* | - | `0.1.0` | *Avisava grafias legadas de anotações até a 0.2.0; desde então elas são `N012` com replacement para o nome canônico.* |
 | **W009** | `the closure assigns to its own copy of '{name}' and never reads it` | Warning | `0.3.0` | Uma closure com dono (`own`) copia os locais `Copy` que captura; atribuir à cópia sem lê-la não altera o local de fora nem é observado pela closure. Passe o bloco onde um callback emprestado `() -> R` é esperado, ou devolva o valor. |

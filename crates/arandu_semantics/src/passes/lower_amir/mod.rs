@@ -424,13 +424,13 @@ pub fn prune_dummy_loads_stores(func: &mut AmirFunc) {
     func.cfg = crate::cfg::compute_cfg_edges(&func.blocks);
 }
 
-pub(crate) fn amir_unsupported(span: Span, feature: &str, roadmap: &str) -> Diagnostic {
+pub(crate) fn amir_unsupported(span: Span, feature: &str, hint: &str) -> Diagnostic {
     Diagnostic::error(
         DiagCode::U001FeatureNotSupported,
-        format!("AMIR v0.1: {feature} is not supported yet ({roadmap})"),
+        format!("{feature} is not supported yet"),
         span,
     )
-    .with_hint("see docs/arandu-compiler-roadmap-v0.1.md for the planned milestone")
+    .with_hint(hint)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

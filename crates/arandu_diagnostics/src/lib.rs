@@ -665,7 +665,7 @@ mod tests {
 
         assert_eq!(
             user_diag.url().map(|u| u.to_string()),
-            Some("https://arandu-lang.dev/docs/errors/T002".to_string())
+            Some("https://github.com/arandu-lang/arandu/blob/main/docs/errors/T002.md".to_string(),)
         );
 
         let help_text = user_diag.help().map(|h| h.to_string()).expect("help text");

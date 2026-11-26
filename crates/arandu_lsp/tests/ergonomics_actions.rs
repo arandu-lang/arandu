@@ -115,10 +115,9 @@ fn apply_workspace_edit(text: &str, edit: &lsp_types::WorkspaceEdit, uri: &Uri) 
     // Apply single edit using line/utf-16 coordinates.
     let e = edits[0];
     let to_byte = |pos: Position| -> usize {
-        let mut line = 0u32;
         let mut offset = 0usize;
-        for segment in text.split_inclusive('\n') {
-            if line == pos.line {
+        for (line, segment) in text.split_inclusive('\n').enumerate() {
+            if line == pos.line as usize {
                 let mut col_u16 = 0u32;
                 for (bidx, ch) in segment.char_indices() {
                     if col_u16 >= pos.character {
@@ -129,7 +128,6 @@ fn apply_workspace_edit(text: &str, edit: &lsp_types::WorkspaceEdit, uri: &Uri) 
                 return offset + segment.len();
             }
             offset += segment.len();
-            line += 1;
         }
         text.len()
     };

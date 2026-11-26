@@ -283,7 +283,7 @@ pub fn organize_imports(
         });
     }
 
-    if new_text == &text[first_start..last_end] {
+    if new_text == text[first_start..last_end] {
         return None;
     }
 

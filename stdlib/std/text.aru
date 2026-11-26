@@ -178,7 +178,7 @@ public func repeat(s: str, count: usize): string.String {
     return res
 }
 
-/// Pads `s` on the left with `fill` until it reaches `width` characters.
+/// Pads `s` on the left with `fill` until it reaches `width` UTF-8 bytes.
 public func padLeft(s: str, width: usize, fill: char): string.String {
     let slen = core_str.len(s)
     if slen >= width {
@@ -195,7 +195,7 @@ public func padLeft(s: str, width: usize, fill: char): string.String {
     return res
 }
 
-/// Pads `s` on the right with `fill` until it reaches `width` characters.
+/// Pads `s` on the right with `fill` until it reaches `width` UTF-8 bytes.
 public func padRight(s: str, width: usize, fill: char): string.String {
     let slen = core_str.len(s)
     if slen >= width {
@@ -212,7 +212,7 @@ public func padRight(s: str, width: usize, fill: char): string.String {
     return res
 }
 
-/// Centers `s` in a string of `width` characters, padding with `fill`.
+/// Centers `s` in a string of `width` UTF-8 bytes, padding with `fill`.
 public func center(s: str, width: usize, fill: char): string.String {
     let slen = core_str.len(s)
     if slen >= width {

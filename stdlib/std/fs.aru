@@ -4,9 +4,10 @@
 //!
 //! `readToString` reads a whole file into an owned buffer; `readDir` returns a
 //! directory snapshot whose names borrow its storage. `fileExists` performs a
-//! boolean existence check. `OpenOptions`, `File`, and `Metadata` describe
-//! handles and file properties, but this module does not yet expose public
-//! functions to open, write, create, remove, or query metadata.
+//! boolean existence check. `OpenOptions` and `File` describe handles, while
+//! `Dir` exposes `openFile`, `openDir`, `createDir`, `removeFile`, `removeDir`,
+//! and `writeFile`. `Metadata` defines property accessors, but there is no
+//! public operation that queries metadata for an arbitrary path.
 //!
 //! Reading operations report host errors as `Result<T, io.IoError>`. The
 //! boolean `fileExists` does not distinguish a missing path from other host

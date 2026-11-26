@@ -71,13 +71,6 @@ public func Duration.fromMillis(ms: int): Duration {
 }
 
 /// Converts signed seconds to nanoseconds by multiplying by 1,000,000,000.
-///
-/// The multiplication is widened to nanoseconds before it is performed.
-public func Duration.fromSecs(s: int): Duration {
-    return Duration { nanos: (s as i64) * 1000000000 }
-}
-
-/// Converts signed seconds to nanoseconds by multiplying by 1,000,000,000.
 public func Duration.fromSeconds(s: int): Duration {
     return Duration { nanos: (s as i64) * 1000000000 }
 }

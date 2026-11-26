@@ -91,11 +91,12 @@ pub(super) fn code_actions(
 ) {
     let uri = params.text_document.uri;
     let context = params.context;
-    dispatcher::spawn_json(ctx.state, ctx.pool, ctx.job_tx, id, move |_snap, docs| {
-        let Some(_info) = docs.get(uri.as_str()) else {
+    dispatcher::spawn_json(ctx.state, ctx.pool, ctx.job_tx, id, move |snap, docs| {
+        let Some(info) = docs.get(uri.as_str()) else {
             return serde_json::Value::Null;
         };
-        let actions = ide::code_actions(&uri, &context);
+        let text = info.source.text(&snap.db);
+        let actions = ide::code_actions_with_snapshot(&snap, info.source, text, &uri, &context);
         serde_json::to_value(actions).unwrap_or(serde_json::Value::Null)
     });
 }

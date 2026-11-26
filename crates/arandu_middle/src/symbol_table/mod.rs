@@ -84,6 +84,7 @@ impl SymbolKind {
                 | SymbolKind::Local
                 | SymbolKind::EnumVariant
                 | SymbolKind::ConstParam
+                | SymbolKind::NamespaceMember
         )
     }
 

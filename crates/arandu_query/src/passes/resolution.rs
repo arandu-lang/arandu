@@ -538,7 +538,7 @@ pub(super) fn signatures_with_imports(
     };
 
     for import in program.imports.iter().filter(|_| include_imports) {
-        if let Some(path) = arandu_resolve::canonicalize_import_path(import) {
+        for path in arandu_resolve::canonicalize_import_paths(import) {
             if let Some(imported_file) = db.as_source_db().resolve_module_path(&path) {
                 merge_imported_module(imported_file, &path);
             }
@@ -571,30 +571,29 @@ pub(super) fn merge_imported_borrow_interfaces(
     result: &mut Arc<TypeCheckResult>,
 ) {
     for import in &program.imports {
-        db.unwind_if_revision_cancelled();
-        let Some(path) = arandu_resolve::canonicalize_import_path(import) else {
-            continue;
-        };
-        let Some(imported_file) = db.as_source_db().resolve_module_path(&path) else {
-            continue;
-        };
-        if super::symbols::exported_symbols(db, imported_file).is_cycle {
-            continue;
-        }
-        let signatures = super::signatures::declaration_signatures(db, imported_file);
-        if signatures
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("cyclic"))
-        {
-            continue;
-        }
-        let interfaces = super::lower::borrow_interfaces(db, imported_file);
-        for (symbol, summary) in &interfaces.entries {
-            let checked = Arc::make_mut(result);
-            Arc::make_mut(&mut checked.type_info)
-                .return_borrow_summaries
-                .insert(*symbol, summary.clone());
+        for path in arandu_resolve::canonicalize_import_paths(import) {
+            db.unwind_if_revision_cancelled();
+            let Some(imported_file) = db.as_source_db().resolve_module_path(&path) else {
+                continue;
+            };
+            if super::symbols::exported_symbols(db, imported_file).is_cycle {
+                continue;
+            }
+            let signatures = super::signatures::declaration_signatures(db, imported_file);
+            if signatures
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("cyclic"))
+            {
+                continue;
+            }
+            let interfaces = super::lower::borrow_interfaces(db, imported_file);
+            for (symbol, summary) in &interfaces.entries {
+                let checked = Arc::make_mut(result);
+                Arc::make_mut(&mut checked.type_info)
+                    .return_borrow_summaries
+                    .insert(*symbol, summary.clone());
+            }
         }
     }
 }

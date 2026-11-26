@@ -63,6 +63,12 @@ pub enum ImportDecl {
         path: SmallVec<[SmolStr; 3]>,
         alias: SmolStr,
     },
+    /// `import path.to.{ mod_a, mod_b as b }`
+    ModuleGroup {
+        span: Span,
+        prefix: SmallVec<[SmolStr; 3]>,
+        items: Vec<ImportItem>,
+    },
     /// `from path.to.module import { Item, Other }`
     Named {
         span: Span,
@@ -95,6 +101,7 @@ impl ImportDecl {
     pub fn span(&self) -> Span {
         match self {
             ImportDecl::ModuleAlias { span, .. }
+            | ImportDecl::ModuleGroup { span, .. }
             | ImportDecl::Named { span, .. }
             | ImportDecl::ReExport { span, .. }
             | ImportDecl::ExternalNamed { span, .. }

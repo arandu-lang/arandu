@@ -884,7 +884,12 @@ impl Shift {
                 self.span(span);
                 return;
             }
-            ImportDecl::Named {
+            ImportDecl::ModuleGroup {
+                span,
+                prefix: _,
+                items,
+            }
+            | ImportDecl::Named {
                 span,
                 items,
                 path: _,

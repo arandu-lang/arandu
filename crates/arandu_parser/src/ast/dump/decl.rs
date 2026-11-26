@@ -233,6 +233,25 @@ pub(super) fn dump_import(_pool: &AstPool, import: &ImportDecl) -> String {
         ImportDecl::ModuleAlias { span, path, alias } => {
             format!("Import {} {} as {alias}", dump_span(*span), path.join("."))
         }
+        ImportDecl::ModuleGroup {
+            span,
+            prefix,
+            items,
+        } => {
+            let items = items
+                .iter()
+                .map(|item| match &item.alias {
+                    Some(alias) => format!("{} {} as {alias}", dump_span(item.span), item.name),
+                    None => format!("{} {}", dump_span(item.span), item.name),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "ImportGroup {} {}.{{ {items} }}",
+                dump_span(*span),
+                prefix.join(".")
+            )
+        }
         ImportDecl::Named { span, items, path } => {
             let items = items
                 .iter()

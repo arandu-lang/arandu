@@ -15,7 +15,7 @@ pub mod signature_help;
 pub mod symbols;
 pub mod types;
 
-pub use code_actions::code_actions;
+pub use code_actions::code_actions_with_snapshot;
 pub use completion::completions;
 pub use formatting::{format_document, format_range};
 pub use hover::hover;

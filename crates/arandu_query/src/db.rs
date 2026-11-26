@@ -588,6 +588,19 @@ impl DatabaseImpl {
         reg.by_id.get(&file_id).copied()
     }
 
+    /// Deterministically sorted snapshot of all registered `(path, SourceFile)` entries.
+    #[must_use]
+    pub fn registered_source_files(&self) -> Vec<(String, SourceFile)> {
+        let reg = self.files.read().unwrap_or_else(|e| e.into_inner());
+        let mut entries: Vec<(String, SourceFile)> = reg
+            .by_path
+            .iter()
+            .map(|(path, &file)| (path.clone(), file))
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
+
     /// Build or reuse CST for `file_id`/`text` via [`arandu_parser::reparse_subtree`] when possible.
     /// Shares the `Arc<str>` buffer with the tree (no extra text copy).
     pub(crate) fn syntax_tree_for_arc(

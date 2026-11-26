@@ -162,12 +162,34 @@ impl<'a> Resolver<'a> {
 
     pub(crate) fn define_prelude(&mut self, _program: Option<&Program>) {
         let span = Span::new(0, 0, 0);
+        let global_scope = self.symbols.global_scope();
         for (module, members) in super::PRELUDE_MODULE_MEMBERS {
+            let _ = self.symbols.define_with_visibility(
+                global_scope,
+                module,
+                SymbolKind::Module,
+                span,
+                arandu_parser::Visibility::Public,
+            );
             for member in *members {
                 let _ = self.symbols.define_module_member(module, member, span);
             }
         }
-        let global_scope = self.symbols.global_scope();
+        // Direct prelude I/O helpers (`println`, `print`, `eprint`) in `ScopeId(0)`.
+        // Any local declaration or import in `ScopeId(1)` shadows them cleanly.
+        for io_fn in ["println", "print", "eprint"] {
+            if let Ok(sym) = self.symbols.define_with_visibility(
+                global_scope,
+                io_fn,
+                SymbolKind::NamespaceMember,
+                span,
+                arandu_parser::Visibility::Public,
+            ) {
+                self.symbols
+                    .host_function_names
+                    .insert(sym, SmolStr::new(format!("io.{io_fn}")));
+            }
+        }
         // Prelude builtins are always public (language surface).
         self.symbols.builtin_alloc = self
             .symbols

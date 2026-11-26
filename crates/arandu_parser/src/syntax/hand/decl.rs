@@ -409,7 +409,37 @@ pub fn try_hand_lower_import(
                 alias,
             });
         }
-        let path = parse_dotted_ident_path(&ctx, &mut cur)?;
+        let mut path = smallvec::SmallVec::new();
+        let first = cur.peek().filter(|t| {
+            matches!(
+                t.kind,
+                TokenKind::IdentValue | TokenKind::IdentType | TokenKind::KwSelf
+            )
+        })?;
+        path.push(SmolStr::new(ctx.text(first)?));
+        cur.bump();
+        while cur.peek_kind() == Some(TokenKind::Dot) {
+            cur.bump();
+            if cur.peek_kind() == Some(TokenKind::LBrace) {
+                let items = parse_import_brace_list(&mut ctx, &mut cur)?;
+                if !cur.at_end() {
+                    return None;
+                }
+                return Some(ImportDecl::ModuleGroup {
+                    span,
+                    prefix: path,
+                    items,
+                });
+            }
+            let seg = cur.peek().filter(|t| {
+                matches!(
+                    t.kind,
+                    TokenKind::IdentValue | TokenKind::IdentType | TokenKind::KwSelf
+                )
+            })?;
+            path.push(SmolStr::new(ctx.text(seg)?));
+            cur.bump();
+        }
         let alias = if cur.eat(TokenKind::KwAs) {
             let alias_tok = cur
                 .peek()

@@ -181,10 +181,14 @@ impl<'a> Resolver<'a> {
         // because their spelling is globally reserved. Let a local declaration
         // or an explicit stdlib import shadow the ambient compatibility binding.
         let is_reserved = scope != ScopeId(0)
+            && !matches!(name, "io" | "err" | "println" | "print" | "eprint")
             && self
                 .symbols
                 .find_in_scope(ScopeId(0), name)
-                .is_some_and(|id| self.symbols.get(id).lang_item.is_none());
+                .is_some_and(|id| {
+                    let sym = self.symbols.get(id);
+                    sym.lang_item.is_none() && sym.id.file_id == self.symbols.file_id
+                });
         if is_reserved {
             let is_std = self
                 .current_module

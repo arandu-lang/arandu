@@ -504,6 +504,11 @@ public func String.clone(self: ref String): String {
     return from(asStr(self))
 }
 
+/// Allocates an owned `String` copy of this borrowed `str` slice (`"hello".toString()`).
+public func str.toString(self: str): String {
+    return from(self)
+}
+
 /// Consumes this String and releases its owned byte buffer automatically at scope exit.
 ///
 /// Borrowed views into the buffer become invalid.

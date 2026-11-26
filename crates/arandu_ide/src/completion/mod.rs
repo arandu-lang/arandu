@@ -17,10 +17,14 @@ use serde::{Deserialize, Serialize};
 use crate::presentation::{prefix_at, typecheck};
 
 mod annotation;
+mod auto_import;
 mod general;
 mod member;
 
 use annotation::{annotation_completions, is_annotation_completion};
+pub use auto_import::{
+    AutoImportCandidate, auto_import_candidates_for_name, import_insertion_point,
+};
 use general::{general_completions, type_position_completions};
 use member::member_completions;
 
@@ -47,6 +51,15 @@ pub enum CompletionKind {
     Text,
 }
 
+/// Byte-offset text replacement attached to a completion item (e.g. auto-import).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextEdit {
+    pub start: u32,
+    pub end: u32,
+    pub new_text: String,
+}
+
 /// Editor-neutral completion item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +78,8 @@ pub struct CompletionItem {
     pub filter_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_text_edits: Vec<TextEdit>,
 }
 
 impl CompletionItem {
@@ -78,6 +93,7 @@ impl CompletionItem {
             is_snippet: false,
             filter_text: None,
             sort_text: None,
+            additional_text_edits: Vec::new(),
         }
     }
 }
@@ -88,7 +104,8 @@ const RANK_MEMBER: u8 = 0;
 const RANK_VALUE: u8 = 1;
 const RANK_TYPE: u8 = 2;
 const RANK_MODULE: u8 = 3;
-const RANK_KEYWORD: u8 = 4;
+const RANK_AUTO_IMPORT: u8 = 4;
+const RANK_KEYWORD: u8 = 5;
 
 /// Keywords offered at statement/expression positions, with a one-line hint.
 const KEYWORDS: &[(&str, &str)] = &[
@@ -153,7 +170,31 @@ const IMPORT_ROOTS: &[&str] = &["std", "io", "err"];
 
 /// Segments under `std.` that exist in the tree.
 const STD_CHILDREN: &[(&str, &[&str])] = &[
-    ("std", &["core", "alloc"]),
+    (
+        "std",
+        &[
+            "core",
+            "alloc",
+            "math",
+            "collections",
+            "crypto",
+            "env",
+            "fs",
+            "io",
+            "net",
+            "parallel",
+            "path",
+            "process",
+            "random",
+            "runtime",
+            "sync",
+            "target",
+            "testing",
+            "text",
+            "thread",
+            "time",
+        ],
+    ),
     (
         "std.core",
         &[
@@ -171,11 +212,31 @@ const STD_CHILDREN: &[(&str, &[&str])] = &[
             "num",
             "slice",
             "iter",
+            "marker",
+            "range",
+            "cell",
+            "fmt",
+            "hash",
+            "math",
         ],
     ),
     (
         "std.alloc",
-        &["vec", "allocator_api", "gen_arena", "string"],
+        &[
+            "vec",
+            "allocator_api",
+            "arena",
+            "bitset",
+            "boxed",
+            "deque",
+            "gen_arena",
+            "hash_map",
+            "rc",
+            "arc",
+            "slab",
+            "smallvec",
+            "string",
+        ],
     ),
 ];
 
@@ -213,7 +274,7 @@ pub fn completions(
         return items;
     }
 
-    general_completions(snap, source, &tc, offset, &prefix, &prefix_l)
+    general_completions(snap, source, &tc, text, offset, &prefix, &prefix_l)
 }
 
 #[inline]

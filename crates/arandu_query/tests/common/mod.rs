@@ -183,6 +183,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/std/fs.aru"),
     ),
     (
+        "stdlib/std/collections.aru",
+        include_str!("../../../../stdlib/std/collections.aru"),
+    ),
+    (
         "stdlib/std/io.aru",
         include_str!("../../../../stdlib/std/io.aru"),
     ),

@@ -15,6 +15,14 @@ impl<'a> Resolver<'a> {
                     self.record_import_symbol(sym, alias.clone(), *span);
                 }
             }
+            ImportDecl::ModuleGroup { items, .. } => {
+                for item in items {
+                    let alias = item.alias.as_ref().unwrap_or(&item.name);
+                    if let Some(sym) = self.define(scope, alias, SymbolKind::Module, item.span) {
+                        self.record_import_symbol(sym, alias.clone(), item.span);
+                    }
+                }
+            }
             ImportDecl::Named { items, .. } => {
                 for item in items {
                     let name = item.alias.as_ref().unwrap_or(&item.name);

@@ -42,13 +42,13 @@ pub(crate) fn module_import_edges(
     let mut edges: Vec<_> = program
         .imports
         .iter()
-        .filter_map(|import| {
-            let path = arandu_resolve::canonicalize_import_path(import)?;
+        .flat_map(arandu_resolve::canonicalize_import_paths)
+        .map(|path| {
             let file_id = db
                 .as_source_db()
                 .resolve_module_path(&path)
                 .map(|imported| *imported.file_id(db));
-            Some((path, file_id))
+            (path, file_id)
         })
         .collect();
 

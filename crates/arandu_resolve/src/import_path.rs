@@ -4,6 +4,63 @@
 //! cannot drift (RC-PATH-TRIPLE).
 
 use arandu_parser::ImportDecl;
+use smallvec::SmallVec;
+
+/// Expands a `ModuleGroup` import (`import std.{env, fs as f}`) into individual
+/// `ModuleAlias` imports preserving each item's span. For all other variants,
+/// returns a single-element list containing a clone of `import`.
+#[must_use]
+pub fn expand_module_group(import: &ImportDecl) -> SmallVec<[ImportDecl; 1]> {
+    match import {
+        ImportDecl::ModuleGroup { prefix, items, .. } => items
+            .iter()
+            .map(|item| {
+                let mut path = prefix.clone();
+                path.push(item.name.clone());
+                let alias = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                ImportDecl::ModuleAlias {
+                    span: item.span,
+                    path,
+                    alias,
+                }
+            })
+            .collect(),
+        other => smallvec::smallvec![other.clone()],
+    }
+}
+
+/// Canonical on-disk / registry keys for all modules referenced by `import`.
+/// For single-module imports returns 0 or 1 key; for `ModuleGroup` returns one
+/// key per grouped item.
+#[must_use]
+pub fn canonicalize_import_paths(import: &ImportDecl) -> SmallVec<[String; 1]> {
+    match import {
+        ImportDecl::ModuleGroup { prefix, items, .. } => items
+            .iter()
+            .filter_map(|item| {
+                let mut path = prefix.clone();
+                path.push(item.name.clone());
+                canonicalize_dotted_path(&path)
+            })
+            .collect(),
+        other => canonicalize_import_path(other).into_iter().collect(),
+    }
+}
+
+fn canonicalize_dotted_path(path: &[smol_str::SmolStr]) -> Option<String> {
+    let path_str = path.join("/");
+    if let Some(stripped) = path_str.strip_prefix("std/core/") {
+        Some(format!("stdlib/core/{stripped}.aru"))
+    } else if let Some(stripped) = path_str.strip_prefix("std/alloc/") {
+        Some(format!("stdlib/alloc/{stripped}.aru"))
+    } else if let Some(stripped) = path_str.strip_prefix("std/math/") {
+        Some(format!("stdlib/math/{stripped}.aru"))
+    } else if let Some(stripped) = path_str.strip_prefix("std/") {
+        Some(format!("stdlib/std/{stripped}.aru"))
+    } else {
+        Some(format!("{path_str}.aru"))
+    }
+}
 
 /// Transport-free import identity. Package discovery supplies its mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +85,19 @@ pub fn logical_import(import: &ImportDecl) -> Option<LogicalImport> {
                 "std" => Some(LogicalImport::Std { module: rest }),
                 "self" if !rest.is_empty() => Some(LogicalImport::SelfModule { module: rest }),
                 _ if rest.is_empty() => Some(LogicalImport::LegacyLocal { module: first }),
+                _ => Some(LogicalImport::DependencyModule {
+                    alias: first,
+                    module: rest,
+                }),
+            }
+        }
+        ImportDecl::ModuleGroup { prefix, .. } => {
+            let mut segments = prefix.iter().map(ToString::to_string);
+            let first = segments.next()?;
+            let rest = segments.collect::<Vec<_>>().join("/");
+            match first.as_str() {
+                "std" => Some(LogicalImport::Std { module: rest }),
+                "self" => Some(LogicalImport::SelfModule { module: rest }),
                 _ => Some(LogicalImport::DependencyModule {
                     alias: first,
                     module: rest,
@@ -68,21 +138,8 @@ pub fn canonicalize_import_path(import: &ImportDecl) -> Option<String> {
     match import {
         ImportDecl::ModuleAlias { path, .. }
         | ImportDecl::Named { path, .. }
-        | ImportDecl::ReExport { path, .. } => {
-            let path_str = path.join("/");
-            if let Some(stripped) = path_str.strip_prefix("std/core/") {
-                Some(format!("stdlib/core/{stripped}.aru"))
-            } else if let Some(stripped) = path_str.strip_prefix("std/alloc/") {
-                Some(format!("stdlib/alloc/{stripped}.aru"))
-            } else if let Some(stripped) = path_str.strip_prefix("std/math/") {
-                Some(format!("stdlib/math/{stripped}.aru"))
-            } else if let Some(stripped) = path_str.strip_prefix("std/") {
-                // SL_S thin: `import std.io as io` → `stdlib/std/io.aru`
-                Some(format!("stdlib/std/{stripped}.aru"))
-            } else {
-                Some(format!("{path_str}.aru"))
-            }
-        }
+        | ImportDecl::ReExport { path, .. } => canonicalize_dotted_path(path),
+        ImportDecl::ModuleGroup { .. } => None,
         ImportDecl::ExternalAlias { source, .. } | ImportDecl::ExternalNamed { source, .. } => {
             if let Some(stripped) = source.strip_prefix("std.core.") {
                 Some(format!("stdlib/core/{stripped}.aru"))
@@ -117,21 +174,31 @@ pub const AMBIENT_PRIMITIVE_MODULES: &[(&str, &str)] = &[
 /// compiler reaches them, through their lang items.
 pub const AMBIENT_CLOSURE_MODULE: (&str, &str) = ("stdlib/alloc/closure.aru", "std.alloc.closure");
 
-/// The module defining the owned `String`, the type of an interpolation with
-/// expressions and of `a + b` on text. Linked like the closure module: only
-/// the compiler reaches it, through the `String` lang item; naming the type
-/// still takes an import.
+/// The module defining the owned `String` and `str.toString()`, exposed in the
+/// layered `alloc` prelude outside `std.*`.
 pub const AMBIENT_STRING_MODULE: (&str, &str) = ("stdlib/alloc/string.aru", "std.alloc.string");
 
-/// The module defining `Range<T>` and `RangeInclusive<T>`, the types of
-/// `a..b` and `a..=b` as values, linked into every other module; only the
-/// compiler reaches it, through the lang items. It imports `std.core.cmp`
-/// for the `Ord` bound of `contains`, a cycle import resolution converges.
+/// The module defining `Vec<T>`, exposed in the layered `alloc` prelude outside `std.*`.
+pub const AMBIENT_VEC_MODULE: (&str, &str) = ("stdlib/alloc/vec.aru", "std.alloc.vec");
+
+/// The module defining `Box<T>`, exposed in the layered `alloc` prelude outside `std.*`.
+pub const AMBIENT_BOX_MODULE: (&str, &str) = ("stdlib/alloc/boxed.aru", "std.alloc.boxed");
+
+/// The module defining `Range<T>` and `RangeInclusive<T>`, exposed in the
+/// prelude scope for `a..b` / `a..=b` and named references.
 pub const AMBIENT_RANGE_MODULE: (&str, &str) = ("stdlib/core/range.aru", "std.core.range");
 
+/// Core prelude modules whose foundational traits/enums (`Ordering`, `Iterator`,
+/// `Copy`, `Clone`, `Send`, `Sync`) enter the prelude scope outside `std.core.*`.
+pub const AMBIENT_CORE_PRELUDE_MODULES: &[(&str, &str)] = &[
+    ("stdlib/core/cmp.aru", "std.core.cmp"),
+    ("stdlib/core/iter.aru", "std.core.iter"),
+    ("stdlib/core/marker.aru", "std.core.marker"),
+];
+
 /// The modules linked into `current` without an import, in a fixed order.
-/// Core modules see no primitive modules and the standard library sees no
-/// closure module, which keeps both free of import cycles.
+/// Core modules see no primitive/core-prelude modules and the standard library
+/// sees no alloc/closure prelude modules, which keeps both free of import cycles.
 pub fn ambient_modules(
     current: Option<&str>,
 ) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
@@ -141,8 +208,16 @@ pub fn ambient_modules(
         .iter()
         .copied()
         .filter(move |_| !core)
+        .chain(
+            AMBIENT_CORE_PRELUDE_MODULES
+                .iter()
+                .copied()
+                .filter(move |_| !core),
+        )
         .chain(std::iter::once(AMBIENT_CLOSURE_MODULE).filter(move |_| !standard))
         .chain(std::iter::once(AMBIENT_STRING_MODULE).filter(move |_| !standard))
+        .chain(std::iter::once(AMBIENT_VEC_MODULE).filter(move |_| !standard))
+        .chain(std::iter::once(AMBIENT_BOX_MODULE).filter(move |_| !standard))
         // `std.core.range` imports `std.core.cmp.Ord`; keep `cmp` free of an ambient cycle.
         .chain(
             std::iter::once(AMBIENT_RANGE_MODULE).filter(move |_| current != Some("std.core.cmp")),

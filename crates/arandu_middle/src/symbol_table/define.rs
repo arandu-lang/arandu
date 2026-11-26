@@ -407,6 +407,21 @@ impl super::SymbolTable {
         self.imported_symbols_mut().insert(symbol.id, symbol);
     }
 
+    /// Registers an imported symbol into the prelude scope (`ScopeId(0)`),
+    /// so it is visible throughout the file without an explicit `import` and
+    /// can be freely shadowed by any local declaration or import in the file's
+    /// global scope without triggering `N006ImportConflict`.
+    pub fn insert_prelude_imported(&mut self, mut symbol: Symbol) {
+        let prelude_scope = ScopeId(0);
+        symbol.scope = prelude_scope;
+        let id = symbol.id;
+        let name = symbol.name.clone();
+        self.imported_symbols_mut().insert(id, symbol);
+        if self.find_in_scope(prelude_scope, &name).is_none() {
+            self.scope_mut(prelude_scope).symbols.push(id);
+        }
+    }
+
     /// The imported symbols, copied first when another table shares them.
     pub fn imported_symbols_mut(&mut self) -> &mut rustc_hash::FxHashMap<SymbolId, Symbol> {
         std::sync::Arc::make_mut(&mut self.imported_symbols)

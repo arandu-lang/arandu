@@ -68,17 +68,52 @@ void test('layout expressions use the builtin function scope before annotation f
     }
 });
 
-void test('annotation semantic tokens use the TextMate annotation fallback', () => {
-    const manifestPath = path.resolve(__dirname, '..', '..', '..', 'package.json');
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+void test('semantic token scopes cover the legend and exist in the TextMate grammar', () => {
+    const root = path.resolve(__dirname, '..', '..', '..');
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as {
         contributes?: {
             semanticTokenScopes?: Array<{
+                language?: string;
                 scopes?: Record<string, string[]>;
             }>;
         };
     };
-    const scopes = manifest.contributes?.semanticTokenScopes?.[0]?.scopes;
-    assert.deepEqual(scopes?.decorator, ['entity.name.tag.annotation.arandu']);
+    const entry = manifest.contributes?.semanticTokenScopes?.find((item) => item.language === 'arandu');
+    assert.ok(entry, 'semanticTokenScopes must declare an arandu entry');
+    const scopes = entry?.scopes ?? {};
+
+    const legendPath = path.resolve(root, '..', '..', 'crates', 'arandu_lsp', 'src', 'ide', 'semantic_tokens.rs');
+    const legendSource = fs.readFileSync(legendPath, 'utf8');
+    const legendTypes = legendSource.match(/token_types:\s*vec!\[([\s\S]*?)\]/u)?.[1] ?? '';
+    const legendKeys = [...legendTypes.matchAll(/SemanticTokenType::([A-Z_]+)/gu)].map((match) =>
+        match[1].toLowerCase().replace(/_([a-z])/gu, (_match, letter: string) => letter.toUpperCase())
+    );
+    assert.ok(legendKeys.length > 0, 'legend token types must be readable from semantic_tokens.rs');
+    assert.deepEqual(Object.keys(scopes).sort(), [...legendKeys].sort());
+    assert.deepEqual(scopes.decorator, ['entity.name.tag.annotation.arandu']);
+    assert.ok(scopes.comment?.includes('comment.block.documentation.arandu'));
+
+    const grammar = JSON.parse(fs.readFileSync(path.join(root, 'syntaxes', 'arandu.tmLanguage.json'), 'utf8')) as unknown;
+    const grammarScopes = new Set<string>();
+    const collectScopes = (node: unknown): void => {
+        if (Array.isArray(node)) {
+            for (const value of node) collectScopes(value);
+        } else if (node !== null && typeof node === 'object') {
+            for (const [key, value] of Object.entries(node)) {
+                if (key === 'name' && typeof value === 'string') {
+                    for (const scope of value.split(/\s+/u)) grammarScopes.add(scope);
+                }
+                collectScopes(value);
+            }
+        }
+    };
+    collectScopes(grammar);
+    for (const [tokenType, fallbacks] of Object.entries(scopes)) {
+        assert.ok(fallbacks.length > 0, `${tokenType} needs at least one TextMate fallback`);
+        for (const fallback of fallbacks) {
+            assert.ok(grammarScopes.has(fallback), `${tokenType} fallback '${fallback}' is missing from the grammar`);
+        }
+    }
 });
 
 void test('format on save is opt-in and Arandu owns its manual formatter', () => {

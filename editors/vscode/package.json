@@ -195,13 +195,19 @@
                         "entity.name.type.module.arandu"
                     ],
                     "number": [
-                        "constant.numeric.arandu"
+                        "constant.numeric.dec.arandu",
+                        "constant.numeric.hex.arandu",
+                        "constant.numeric.bin.arandu",
+                        "constant.numeric.oct.arandu",
+                        "constant.numeric.float.arandu"
                     ],
                     "string": [
                         "string.quoted.double.arandu"
                     ],
                     "comment": [
-                        "comment.line.double-slash.arandu"
+                        "comment.line.double-slash.arandu",
+                        "comment.block.documentation.arandu",
+                        "comment.block.arandu"
                     ],
                     "operator": [
                         "keyword.operator.arandu"

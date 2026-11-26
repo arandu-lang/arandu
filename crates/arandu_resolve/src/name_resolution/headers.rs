@@ -84,7 +84,8 @@ pub fn resolve_headers_with_poll(
             for (name, &(id, kind)) in &exports.symbols {
                 if matches!(kind, arandu_middle::SymbolKind::AssociatedFunc)
                     && let Some((ty, method)) = name.rsplit_once('.')
-                    && let Some(type_sym) = resolver.symbols.lookup_type(global, ty)
+                    && let Some(type_sym) =
+                        resolver.symbols.lookup_type(arandu_middle::ScopeId(0), ty)
                 {
                     let lang_item = exports.lang_items.get(&id).copied().or_else(|| {
                         let internal = db
@@ -403,7 +404,9 @@ fn link_prelude_exports(
                     .associated_members_mut()
                     .insert((type_sym, SmolStr::new(method)), id);
             }
-            if let Some(local_type_sym) = resolver.symbols.lookup_type(global, ty) {
+            if let Some(local_type_sym) =
+                resolver.symbols.lookup_type(arandu_middle::ScopeId(0), ty)
+            {
                 resolver
                     .symbols
                     .associated_members_mut()

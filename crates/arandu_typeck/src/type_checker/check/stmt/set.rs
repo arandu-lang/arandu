@@ -441,77 +441,105 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
         let actual_base_ty = checker.resolve(peeled_id);
 
         match suffix {
-            arandu_parser::PlaceSuffix::Index { span, .. } => {
-                match &actual_base_ty {
-                    ArType::Slice(_) => {
-                        let diag = crate::Diagnostic::error(
+            arandu_parser::PlaceSuffix::Index { span, .. } => match &actual_base_ty {
+                ArType::Slice(_) => {
+                    let diag = crate::Diagnostic::error(
+                        crate::DiagCode::T026CannotAssignImmutable,
+                        "cannot assign to immutable slice element",
+                        *span,
+                    )
+                    .with_label(
+                        *span,
+                        "cannot assign to element of immutable slice view `[]T`",
+                    )
+                    .with_hint("consider using a mutable slice `mut []T`".to_string());
+                    checker.diagnostics.push(diag);
+                    return;
+                }
+                ArType::MutSlice(inner) | ArType::Ptr(inner) => {
+                    is_mutable = true;
+                    current_ty_id = *inner;
+                }
+                ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
+                    if !is_mutable {
+                        let (sym_name, sym_span, is_local) = symbol_id_opt
+                            .map(|s| {
+                                let sym = checker.symbols.get(s);
+                                (
+                                    sym.name.as_str(),
+                                    sym.span,
+                                    sym.kind == crate::SymbolKind::Local,
+                                )
+                            })
+                            .unwrap_or(("", place.span, false));
+                        let mut diag = crate::Diagnostic::error(
                             crate::DiagCode::T026CannotAssignImmutable,
-                            "cannot assign to immutable slice element",
+                            format!("cannot mutate immutable array '{sym_name}'"),
                             *span,
                         )
-                        .with_label(
-                            *span,
-                            "cannot assign to element of immutable slice view `[]T`",
-                        )
-                        .with_hint("consider using a mutable slice `mut []T`".to_string());
+                        .with_label(*span, "cannot assign to element of immutable array")
+                        .with_label(sym_span, "variable declared here as immutable");
+                        let msg = format!(
+                            "consider declaring the variable as mutable: `mut {sym_name} = ...;`"
+                        );
+                        diag = if is_local {
+                            diag.with_hint_replacement(crate::Hint {
+                                message: msg,
+                                replacement: Some(crate::CodeReplacement {
+                                    span: sym_span,
+                                    new_text: format!("mut {sym_name}"),
+                                }),
+                            })
+                        } else {
+                            diag.with_hint(msg)
+                        };
                         checker.diagnostics.push(diag);
                         return;
                     }
-                    ArType::MutSlice(inner) | ArType::Ptr(inner) => {
-                        is_mutable = true;
-                        current_ty_id = *inner;
-                    }
-                    ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
-                        if !is_mutable {
-                            let (sym_name, sym_span) = symbol_id_opt
-                                .map(|s| {
-                                    (
-                                        checker.symbols.get(s).name.as_str(),
-                                        checker.symbols.get(s).span,
-                                    )
-                                })
-                                .unwrap_or(("", place.span));
-                            let diag = crate::Diagnostic::error(
-                                crate::DiagCode::T026CannotAssignImmutable,
-                                format!("cannot mutate immutable array '{sym_name}'"),
-                                *span,
-                            )
-                            .with_label(*span, "cannot assign to element of immutable array")
-                            .with_label(sym_span, "variable declared here as immutable")
-                            .with_hint(format!("consider declaring the variable as mutable: `mut {sym_name} = ...;`"));
-                            checker.diagnostics.push(diag);
-                            return;
-                        }
-                        current_ty_id = *inner;
-                    }
-                    ArType::Named(_, args)
-                        if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
-                    {
-                        if !is_mutable {
-                            let (sym_name, sym_span) = symbol_id_opt
-                                .map(|s| {
-                                    (
-                                        checker.symbols.get(s).name.as_str(),
-                                        checker.symbols.get(s).span,
-                                    )
-                                })
-                                .unwrap_or(("", place.span));
-                            let diag = crate::Diagnostic::error(
-                                crate::DiagCode::T026CannotAssignImmutable,
-                                format!("cannot mutate immutable variable '{sym_name}'"),
-                                *span,
-                            )
-                            .with_label(*span, "cannot assign to element of immutable vector")
-                            .with_label(sym_span, "variable declared here as immutable")
-                            .with_hint(format!("consider declaring the variable as mutable: `mut {sym_name} = ...;`"));
-                            checker.diagnostics.push(diag);
-                            return;
-                        }
-                        current_ty_id = checker.type_info.type_interner.type_args(*args)[0];
-                    }
-                    _ => return,
+                    current_ty_id = *inner;
                 }
-            }
+                ArType::Named(_, args)
+                    if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
+                {
+                    if !is_mutable {
+                        let (sym_name, sym_span, is_local) = symbol_id_opt
+                            .map(|s| {
+                                let sym = checker.symbols.get(s);
+                                (
+                                    sym.name.as_str(),
+                                    sym.span,
+                                    sym.kind == crate::SymbolKind::Local,
+                                )
+                            })
+                            .unwrap_or(("", place.span, false));
+                        let mut diag = crate::Diagnostic::error(
+                            crate::DiagCode::T026CannotAssignImmutable,
+                            format!("cannot mutate immutable variable '{sym_name}'"),
+                            *span,
+                        )
+                        .with_label(*span, "cannot assign to element of immutable vector")
+                        .with_label(sym_span, "variable declared here as immutable");
+                        let msg = format!(
+                            "consider declaring the variable as mutable: `mut {sym_name} = ...;`"
+                        );
+                        diag = if is_local {
+                            diag.with_hint_replacement(crate::Hint {
+                                message: msg,
+                                replacement: Some(crate::CodeReplacement {
+                                    span: sym_span,
+                                    new_text: format!("mut {sym_name}"),
+                                }),
+                            })
+                        } else {
+                            diag.with_hint(msg)
+                        };
+                        checker.diagnostics.push(diag);
+                        return;
+                    }
+                    current_ty_id = checker.type_info.type_interner.type_args(*args)[0];
+                }
+                _ => return,
+            },
             arandu_parser::PlaceSuffix::Field { name, span, .. } => {
                 let interner = &checker.type_info.type_interner;
                 let struct_info_opt = match actual_base_ty {
@@ -558,15 +586,17 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                     return;
                 }
                 if !is_mutable {
-                    let (sym_name, sym_span) = symbol_id_opt
+                    let (sym_name, sym_span, is_local) = symbol_id_opt
                         .map(|s| {
+                            let sym = checker.symbols.get(s);
                             (
-                                checker.symbols.get(s).name.as_str(),
-                                checker.symbols.get(s).span,
+                                sym.name.as_str(),
+                                sym.span,
+                                sym.kind == crate::SymbolKind::Local,
                             )
                         })
-                        .unwrap_or(("", place.span));
-                    let diag = crate::Diagnostic::error(
+                        .unwrap_or(("", place.span, false));
+                    let mut diag = crate::Diagnostic::error(
                         crate::DiagCode::T026CannotAssignImmutable,
                         format!("cannot assign to field `{name}` of immutable '{sym_name}'"),
                         *span,
@@ -575,10 +605,21 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                         *span,
                         "cannot assign to a field reached without mutable access",
                     )
-                    .with_label(sym_span, "declared here without mutable access")
-                    .with_hint(format!(
+                    .with_label(sym_span, "declared here without mutable access");
+                    let msg = format!(
                         "declare it mutable (`mut {sym_name}`) or take it as `mut ref`/`mut self`"
-                    ));
+                    );
+                    diag = if is_local {
+                        diag.with_hint_replacement(crate::Hint {
+                            message: msg,
+                            replacement: Some(crate::CodeReplacement {
+                                span: sym_span,
+                                new_text: format!("mut {sym_name}"),
+                            }),
+                        })
+                    } else {
+                        diag.with_hint(msg)
+                    };
                     checker.diagnostics.push(diag);
                     return;
                 }

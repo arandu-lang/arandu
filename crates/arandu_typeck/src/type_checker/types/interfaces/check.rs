@@ -220,7 +220,7 @@ pub(crate) fn check_instantiation_constraints(
                 let ty_display = arg_ty.display(&checker.symbols, &checker.type_info.type_interner);
                 let detail = missing_methods_note(checker, arg_ty, bound.iface_sym, &bound_args);
                 // Put the method-level root cause in the primary message (notes are easy to miss).
-                let diag = crate::Diagnostic::error(
+                let mut diag = crate::Diagnostic::error(
                     crate::DiagCode::T025InterfaceNotSatisfied,
                     format!(
                         "type '{ty_display}' does not satisfy interface '{iface_name}': {detail}"
@@ -228,6 +228,11 @@ pub(crate) fn check_instantiation_constraints(
                     span,
                 )
                 .with_note(detail);
+                if let Some(hint) =
+                    interface_stubs_hint(checker, arg_ty, bound.iface_sym, &bound_args, span)
+                {
+                    diag = diag.with_hint_replacement(hint);
+                }
                 checker.diagnostics.push(diag);
             }
         }
@@ -249,4 +254,94 @@ fn constant_parameter_domain(
     };
     arandu_middle::ctfe::IntegerType::new(primitive, arandu_middle::DataLayout::ptr_width(width))
         .ok()
+}
+
+fn interface_stubs_hint(
+    checker: &mut TypeChecker<'_>,
+    arg_ty: &ArType,
+    iface_sym: SymbolId,
+    bound_args: &[TypeId],
+    call_span: Span,
+) -> Option<crate::Hint> {
+    let ArType::Named(type_sym, _) = arg_ty else {
+        return None;
+    };
+    if type_sym.file_id != call_span.file_id {
+        return None;
+    }
+    let sym = checker.symbols.try_get(*type_sym)?;
+    if !matches!(sym.kind, SymbolKind::Struct | SymbolKind::Enum) || sym.span.end <= sym.span.start
+    {
+        return None;
+    }
+    let type_span = sym.span;
+    let short_type = sym
+        .name
+        .rsplit('.')
+        .next()
+        .unwrap_or(sym.name.as_str())
+        .to_string();
+    let iface = checker.type_info.interfaces.get(&iface_sym)?.clone();
+    let self_param = iface.self_param;
+    let mut stubs = String::new();
+    for m in &iface.methods {
+        if checker
+            .symbols
+            .lookup_associated_member(*type_sym, &m.name)
+            .is_some()
+        {
+            continue;
+        }
+        let raw = checker.resolve(m.sig_id);
+        let inst = super::method::instantiate_interface_method(
+            checker, iface_sym, bound_args, arg_ty, &raw,
+        );
+        let ArType::Func(params_range, ret_id) = inst else {
+            continue;
+        };
+        let interner = &checker.type_info.type_interner;
+        let param_ids = interner.type_args(params_range);
+        let mut rendered_params = Vec::with_capacity(param_ids.len());
+        let mut explicit_idx = 0usize;
+        for (idx, &pid) in param_ids.iter().enumerate() {
+            let resolved_p = interner.resolve(pid);
+            let is_recv = idx == 0
+                && match &resolved_p {
+                    ArType::Named(s, _) => Some(*s) == self_param || *s == *type_sym,
+                    ArType::Ref(i) | ArType::RefMut(i) => match interner.resolve(*i) {
+                        ArType::Named(s, _) => Some(s) == self_param || s == *type_sym,
+                        _ => false,
+                    },
+                    _ => false,
+                };
+            if is_recv {
+                let recv_str = match resolved_p {
+                    ArType::Ref(_) => format!("self: ref {short_type}"),
+                    ArType::RefMut(_) => format!("self: mut ref {short_type}"),
+                    _ => format!("self: {short_type}"),
+                };
+                rendered_params.push(recv_str);
+            } else {
+                let p_disp = resolved_p.display(&checker.symbols, interner);
+                rendered_params.push(format!("p{explicit_idx}: {p_disp}"));
+                explicit_idx += 1;
+            }
+        }
+        let ret_disp = interner.resolve(ret_id).display(&checker.symbols, interner);
+        stubs.push_str(&format!(
+            "\n\nfunc {short_type}.{}({}): {ret_disp} {{\n    todo()\n}}",
+            m.name,
+            rendered_params.join(", ")
+        ));
+    }
+    if stubs.is_empty() {
+        return None;
+    }
+    Some(crate::Hint {
+        message: format!("generate missing interface method stubs for `{short_type}`"),
+        replacement: Some(crate::CodeReplacement {
+            span: Span::new(type_span.file_id, type_span.end, type_span.end),
+            new_text: stubs,
+        }),
+    })
 }

@@ -37,7 +37,7 @@ installers are the supported SDK delivery mechanism.
 | Navigation | definition, type definition, references, document highlight | supported; highlights do not yet distinguish read/write |
 | Structure | document/workspace symbols, folding, selection range | supported; workspace symbols use the progressively discovered index |
 | IntelliSense | completion, hover, signature help | supported, including call argument-label completion and stdlib/workspace auto-import (`additionalTextEdits`); no completion resolve phase |
-| Editing | code actions | structured quick fixes and missing-import quick fixes (`N001`/`N002`) |
+| Editing | code actions | structured quick fixes (match arms, interface stubs, `mut`, `.toString()`), missing-import quick fixes (`N001`/`N002`), and `source.organizeImports` |
 | Refactoring | prepare rename and multi-file rename | supported with lexical/conflict validation |
 | Presentation | full/range semantic tokens | supported; no semantic-token delta protocol |
 | Formatting | whole-document and range formatting | supported and canonical; no on-type formatting |

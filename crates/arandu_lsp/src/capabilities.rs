@@ -126,7 +126,10 @@ pub(crate) fn initialize_connection(
         document_formatting_provider: Some(OneOf::Left(true)),
         document_range_formatting_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![lsp_types::CodeActionKind::QUICKFIX]),
+            code_action_kinds: Some(vec![
+                lsp_types::CodeActionKind::QUICKFIX,
+                lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+            ]),
             work_done_progress_options: WorkDoneProgressOptions::default(),
             resolve_provider: None,
         })),

@@ -27,6 +27,35 @@ pub fn code_actions_with_snapshot(
     let mut out = code_actions(uri, context);
     let index = LineIndex::new(text);
 
+    let wants_organize = context.only.as_ref().is_none_or(|only| {
+        only.iter()
+            .any(|k| *k == CodeActionKind::SOURCE_ORGANIZE_IMPORTS || *k == CodeActionKind::SOURCE)
+    });
+    if wants_organize {
+        if let Some(edit) = arandu_ide::organize_imports(snap, source, text) {
+            let mut changes: HashMap<Uri, Vec<LspTextEdit>> = HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![LspTextEdit {
+                    range: Range {
+                        start: offset_to_position(&index, edit.start),
+                        end: offset_to_position(&index, edit.end),
+                    },
+                    new_text: edit.new_text,
+                }],
+            );
+            out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Organize imports".to_string(),
+                kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..WorkspaceEdit::default()
+                }),
+                ..CodeAction::default()
+            }));
+        }
+    }
+
     for d in &context.diagnostics {
         let is_unresolved = matches!(
             &d.code,

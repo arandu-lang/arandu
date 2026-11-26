@@ -743,20 +743,46 @@ pub fn check_match_exhaustiveness(
                     }
                 }
             }
+            let mut missing_arm_patterns: Vec<String> = Vec::new();
+            let enum_name = checker
+                .symbols
+                .try_get(sym)
+                .map(|s| s.name.rsplit('.').next().unwrap_or(&s.name).to_string())
+                .unwrap_or_else(|| "Enum".to_string());
             for &vid in &all_variants {
                 if !covered_top.contains(&vid) {
-                    missing_short.push(variant_short_name(checker, sym, vid));
+                    let vshort = variant_short_name(checker, sym, vid);
+                    let arity = match checker.type_info.enum_variants.get(&vid) {
+                        Some((_, crate::type_checker::EnumPayloadShape::Tuple(items))) => {
+                            items.len()
+                        }
+                        _ => 0,
+                    };
+                    let pat = if arity == 0 {
+                        format!("{enum_name}.{vshort}")
+                    } else {
+                        let wilds = vec!["_"; arity].join(", ");
+                        format!("{enum_name}.{vshort}({wilds})")
+                    };
+                    missing_arm_patterns.push(pat);
+                    missing_short.push(vshort);
                 }
             }
             if !missing_short.is_empty() {
                 missing_short.sort();
-                checker.diagnostics.push(crate::Diagnostic::error(
+                missing_arm_patterns.sort();
+                let diag = crate::Diagnostic::error(
                     crate::DiagCode::T024NonExhaustiveMatch,
                     format!(
                         "non-exhaustive match: missing variant(s): {}",
                         missing_short.join(", ")
                     ),
                     match_span,
+                );
+                checker.diagnostics.push(attach_match_arms_fix(
+                    diag,
+                    match_span,
+                    &missing_arm_patterns,
                 ));
                 return;
             }
@@ -769,14 +795,17 @@ pub fn check_match_exhaustiveness(
             }
             if !nested_missing.is_empty() {
                 nested_missing.sort();
-                checker.diagnostics.push(crate::Diagnostic::error(
+                let diag = crate::Diagnostic::error(
                     crate::DiagCode::T024NonExhaustiveMatch,
                     format!(
                         "non-exhaustive match: missing pattern(s): {}",
                         nested_missing.join(", ")
                     ),
                     match_span,
-                ));
+                );
+                checker
+                    .diagnostics
+                    .push(attach_match_arms_fix(diag, match_span, &nested_missing));
                 return;
             }
         }
@@ -796,12 +825,40 @@ pub fn check_match_exhaustiveness(
         missing.push("_".to_string());
     }
     missing.sort();
-    checker.diagnostics.push(crate::Diagnostic::error(
+    let diag = crate::Diagnostic::error(
         crate::DiagCode::T024NonExhaustiveMatch,
         format!(
             "non-exhaustive match: missing pattern(s): {}",
             missing.join(", ")
         ),
         match_span,
-    ));
+    );
+    checker
+        .diagnostics
+        .push(attach_match_arms_fix(diag, match_span, &missing));
+}
+
+fn attach_match_arms_fix(
+    diag: crate::Diagnostic,
+    match_span: Span,
+    arm_patterns: &[String],
+) -> crate::Diagnostic {
+    if arm_patterns.is_empty() || match_span.end <= match_span.start {
+        return diag;
+    }
+    let mut new_text = String::new();
+    for pat in arm_patterns {
+        new_text.push_str("\n    ");
+        new_text.push_str(pat);
+        new_text.push_str(" => todo(),");
+    }
+    new_text.push('\n');
+    let insert_pos = match_span.end - 1;
+    diag.with_hint_replacement(crate::Hint {
+        message: "add missing match arms with `todo()`".to_string(),
+        replacement: Some(crate::CodeReplacement {
+            span: Span::new(match_span.file_id, insert_pos, insert_pos),
+            new_text,
+        }),
+    })
 }

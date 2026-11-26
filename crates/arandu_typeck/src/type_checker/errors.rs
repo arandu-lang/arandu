@@ -26,11 +26,12 @@ pub fn constraint_to_diagnostic(
         .expected
         .display(symbols, &type_info.type_interner);
     let found_str = constraint.found.display(symbols, &type_info.type_interner);
+    let str_to_string = is_str_to_string(constraint, symbols);
 
     match &constraint.origin {
         ConstraintOrigin::Assignment { lhs_span, rhs_span } => {
             let flow = provenance::causal_chain(constraint);
-            Diagnostic::error(
+            let diag = Diagnostic::error(
                 DiagCode::T002IncompatibleAssignment,
                 format!(
                     "incompatible type in assignment: expected '{expected_str}', found '{found_str}'"
@@ -42,10 +43,14 @@ pub fn constraint_to_diagnostic(
             .with_note(format!(
                 "flow: {} → {}",
                 flow[0].description, flow[1].description
-            ))
-            .with_hint(format!(
-                "convert with '{found_str} as {expected_str}' or change the declaration type"
-            ))
+            ));
+            if str_to_string {
+                attach_to_string_fix(diag, *rhs_span)
+            } else {
+                diag.with_hint(format!(
+                    "convert with '{found_str} as {expected_str}' or change the declaration type"
+                ))
+            }
         }
 
         ConstraintOrigin::CallArg {
@@ -53,27 +58,34 @@ pub fn constraint_to_diagnostic(
             param_span,
             arg_span,
             arg_index,
-        } => Diagnostic::error(
-            DiagCode::T003IncompatibleCallArg,
-            format!(
-                "incompatible type in argument {}: expected '{}', found '{}'",
+        } => {
+            let diag = Diagnostic::error(
+                DiagCode::T003IncompatibleCallArg,
+                format!(
+                    "incompatible type in argument {}: expected '{}', found '{}'",
+                    arg_index + 1,
+                    expected_str,
+                    found_str,
+                ),
+                *call_span,
+            )
+            .with_label(
+                *param_span,
+                format!("parameter {} expects '{}'", arg_index + 1, expected_str),
+            )
+            .with_label(*arg_span, format!("argument has type '{found_str}'"))
+            .with_note(format!(
+                "flow: argument {} ({}) → parameter ({} expected)",
                 arg_index + 1,
-                expected_str,
                 found_str,
-            ),
-            *call_span,
-        )
-        .with_label(
-            *param_span,
-            format!("parameter {} expects '{}'", arg_index + 1, expected_str),
-        )
-        .with_label(*arg_span, format!("argument has type '{found_str}'"))
-        .with_note(format!(
-            "flow: argument {} ({}) → parameter ({} expected)",
-            arg_index + 1,
-            found_str,
-            expected_str,
-        )),
+                expected_str,
+            ));
+            if str_to_string {
+                attach_to_string_fix(diag, *arg_span)
+            } else {
+                diag
+            }
+        }
 
         ConstraintOrigin::CtfeResult { value_span, block_span } => Diagnostic::error(
             DiagCode::T004IncompatibleReturnType,
@@ -103,21 +115,27 @@ pub fn constraint_to_diagnostic(
         ConstraintOrigin::ReturnType {
             return_span,
             declared_span,
-        } => Diagnostic::error(
-            DiagCode::T004IncompatibleReturnType,
-            format!(
-                "incompatible return type: expected '{expected_str}', found '{found_str}'"
-            ),
-            *return_span,
-        )
-        .with_label(
-            *declared_span,
-            format!("return type '{expected_str}' declared here"),
-        )
-        .with_label(*return_span, format!("returns '{found_str}'"))
-        .with_hint(format!(
-            "convert the return value with 'as {expected_str}' or change the function's return type"
-        )),
+        } => {
+            let diag = Diagnostic::error(
+                DiagCode::T004IncompatibleReturnType,
+                format!(
+                    "incompatible return type: expected '{expected_str}', found '{found_str}'"
+                ),
+                *return_span,
+            )
+            .with_label(
+                *declared_span,
+                format!("return type '{expected_str}' declared here"),
+            )
+            .with_label(*return_span, format!("returns '{found_str}'"));
+            if str_to_string {
+                attach_to_string_fix(diag, *return_span)
+            } else {
+                diag.with_hint(format!(
+                    "convert the return value with 'as {expected_str}' or change the function's return type"
+                ))
+            }
+        }
 
         ConstraintOrigin::IfBranches {
             then_span,
@@ -601,4 +619,28 @@ fn suggest_bool_conversion(ty: &ArType) -> String {
 
 fn is_string_type(ty: &ArType) -> bool {
     matches!(ty, ArType::Primitive(super::types::Primitive::Str))
+}
+
+fn is_str_to_string(constraint: &Constraint, symbols: &SymbolTable) -> bool {
+    matches!(
+        constraint.found,
+        ArType::Primitive(super::types::Primitive::Str)
+    ) && matches!(
+        constraint.expected,
+        ArType::Named(sym, args)
+            if args.len == 0
+                && symbols
+                    .try_get(sym)
+                    .is_some_and(|s| s.lang_item == Some(arandu_middle::symbol_table::LangItem::String))
+    )
+}
+
+fn attach_to_string_fix(diag: Diagnostic, expr_span: arandu_lexer::Span) -> Diagnostic {
+    diag.with_hint_replacement(crate::Hint {
+        message: "convert `str` to owned `String` with `.toString()`".to_string(),
+        replacement: Some(crate::CodeReplacement {
+            span: arandu_lexer::Span::new(expr_span.file_id, expr_span.end, expr_span.end),
+            new_text: ".toString()".to_string(),
+        }),
+    })
 }

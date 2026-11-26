@@ -119,7 +119,7 @@ impl CliFailure {
 
     pub fn render(&self) {
         match self {
-            Self::Usage { message } => eprintln!("{message}"),
+            Self::Usage { message } => eprintln!("{}", render_usage_message(message)),
             Self::Operational {
                 operation,
                 context,
@@ -232,6 +232,15 @@ fn urlencoding_simple(s: &str) -> String {
     out
 }
 
+/// Prefixes one-line usage errors while preserving multi-line help and errors that are already labelled.
+fn render_usage_message(message: &str) -> std::borrow::Cow<'_, str> {
+    if message.contains('\n') || message.starts_with("error:") {
+        std::borrow::Cow::Borrowed(message)
+    } else {
+        std::borrow::Cow::Owned(format!("error: {message}"))
+    }
+}
+
 pub type CliResult = Result<CliSuccess, CliFailure>;
 
 #[cfg(test)]
@@ -290,5 +299,20 @@ mod tests {
     fn urlencoding_handles_special_characters() {
         assert_eq!(urlencoding_simple("hello world"), "hello+world");
         assert_eq!(urlencoding_simple("a/b:c"), "a%2Fb%3Ac");
+    }
+
+    #[test]
+    fn usage_render_prefixes_only_unlabelled_single_line_errors() {
+        let jobs = "--jobs requires an integer greater than zero";
+        assert_eq!(
+            render_usage_message(jobs).as_ref(),
+            format!("error: {jobs}")
+        );
+
+        let unknown = "error: unknown option '--jbs'. Did you mean '--jobs'?";
+        assert_eq!(render_usage_message(unknown).as_ref(), unknown);
+
+        let help = "Usage: arandu [options]\n\nOptions:\n  --help  Show help\n";
+        assert_eq!(render_usage_message(help).as_ref(), help);
     }
 }

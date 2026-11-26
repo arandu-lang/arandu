@@ -56,6 +56,51 @@ pub const COMMAND_NAMES: &[&str] = &[
     "explain",
 ];
 
+/// Global flags offered by every shell completion generator.
+/// Keep in sync with `args::global_help` and the flags accepted by `parse_invocation`.
+const GLOBAL_COMPLETION_FLAGS: &[&str] = &[
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+    "--release",
+    "--size",
+    "-Oz",
+    "--target",
+    "--stdlib-path",
+    "--cache-dir",
+    "--ctfe-fuel",
+    "--ctfe-frames",
+    "--ctfe-values",
+    "--layout",
+    "--color",
+    "--no-color",
+    "--vcs",
+    "-v",
+    "--verbose",
+    "-q",
+    "--quiet",
+    "--watch",
+    "--explain",
+    "-Werror",
+    "--warnings-as-errors",
+    "--no-generational-fallback",
+    "--genref-report",
+    "-Ztime-passes",
+    "-Zprofile-queries",
+    "-Zprint-alloc-stats",
+    "-Zdump-mir",
+    "-Zdebug-parser",
+    "-Zdebug-typeck",
+    "-Zdebug-ossa",
+    "-Zdebug-layout",
+    "-Zdebug-backend",
+    "-Zdebug-all",
+    "-Zself-profile",
+    "-Zexplain-rebuild",
+    "-Zno-generational-fallback",
+];
+
 pub fn run(raw_args: Vec<String>) -> CliResult {
     // Internal commands of the build daemon (HOT.3); not part of the CLI.
     match raw_args.get(1).map(String::as_str) {
@@ -685,26 +730,31 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
 
 fn print_completions(shell: &str) {
     let commands = COMMAND_NAMES.join(" ");
+    let flags = GLOBAL_COMPLETION_FLAGS.join(" ");
     match shell {
         "bash" => println!(
-            "_arandu() {{\n  local cur=\"${{COMP_WORDS[COMP_CWORD]}}\"\n  COMPREPLY=( $(compgen -W \"{commands} --help --version --release --target --layout --quiet --verbose\" -- \"$cur\") )\n}}\ncomplete -F _arandu arandu arandu_cli"
+            "_arandu() {{\n  local cur=\"${{COMP_WORDS[COMP_CWORD]}}\"\n  COMPREPLY=( $(compgen -W \"{commands} {flags}\" -- \"$cur\") )\n}}\ncomplete -F _arandu arandu arandu_cli"
         ),
         "zsh" => println!(
-            "#compdef arandu arandu_cli\n_arguments '1:command:({commands})' '*:argument: '"
+            "#compdef arandu arandu_cli\n_arguments '1:command:({commands})' '*:argument:({flags})'"
         ),
         "fish" => {
             for binary in ["arandu", "arandu_cli"] {
                 for command in COMMAND_NAMES {
                     println!("complete -c {binary} -n '__fish_use_subcommand' -a '{command}'");
                 }
-            }
-            for binary in ["arandu", "arandu_cli"] {
-                println!("complete -c {binary} -l help -s h -d 'Show help'");
-                println!("complete -c {binary} -l version -s V -d 'Show version'");
-                println!("complete -c {binary} -l quiet -s q -d 'Suppress status output'");
+                for flag in GLOBAL_COMPLETION_FLAGS {
+                    println!("complete -c {binary} -a '{flag}'");
+                }
             }
         }
         "powershell" => {
+            let candidates = COMMAND_NAMES
+                .iter()
+                .chain(GLOBAL_COMPLETION_FLAGS.iter())
+                .map(|candidate| format!("'{candidate}'"))
+                .collect::<Vec<_>>()
+                .join(",");
             let mut output = String::from(
                 "Register-ArgumentCompleter -CommandName arandu,arandu_cli -ScriptBlock {",
             );
@@ -713,15 +763,7 @@ fn print_completions(shell: &str) {
                 "  param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)",
             );
             output.push('\n');
-            output.push_str("  $commands = @(");
-            for command in COMMAND_NAMES {
-                output.push('\'');
-                output.push_str(command);
-                output.push_str("',");
-            }
-            output.push_str(
-                "'--help','--version','--release','--target','--layout','--quiet','--verbose')",
-            );
+            output.push_str(&format!("  $commands = @({candidates})"));
             output.push('\n');
             output.push_str("  $commands | Where-Object { $_ -like ($wordToComplete + '*') } | ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }");
             output.push('\n');

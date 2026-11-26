@@ -362,6 +362,28 @@ fn shell_completions_are_available_for_supported_shells() {
             completions.contains("completions"),
             "{shell} omitted completions"
         );
+        for flag in [
+            "--help",
+            "--version",
+            "--stdlib-path",
+            "--cache-dir",
+            "--color",
+            "--explain",
+            "-Werror",
+            "--watch",
+        ] {
+            assert!(completions.contains(flag), "{shell} omitted {flag}");
+        }
+        let extra: &[&str] = match shell {
+            "bash" => &["--layout", "--verbose"],
+            "zsh" => &["--ctfe-fuel", "-Zdebug-typeck"],
+            "fish" => &["--quiet", "--no-generational-fallback"],
+            "powershell" => &["--release", "-V"],
+            _ => &[],
+        };
+        for flag in extra {
+            assert!(completions.contains(flag), "{shell} omitted {flag}");
+        }
     }
 
     let fish = common::cli_command()
@@ -378,6 +400,28 @@ fn shell_completions_are_available_for_supported_shells() {
         .expect("generate PowerShell completion");
     let powershell = String::from_utf8_lossy(&powershell.stdout);
     assert!(powershell.contains("$commandName, $parameterName, $wordToComplete"));
+}
+
+#[test]
+fn bench_help_documents_policy_flags() {
+    let output = common::cli_command()
+        .args(["bench", "--help"])
+        .output()
+        .expect("run bench help");
+    assert!(output.status.success(), "{output:?}");
+    let help = String::from_utf8_lossy(&output.stdout);
+    for flag in [
+        "--timeout",
+        "--output",
+        "--save-baseline",
+        "--baseline",
+        "--compare",
+        "--dry-run",
+        "--max-regression",
+        "--noise-threshold",
+    ] {
+        assert!(help.contains(flag), "bench help omitted {flag}: {help}");
+    }
 }
 
 #[test]

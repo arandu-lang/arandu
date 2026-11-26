@@ -70,11 +70,11 @@ fn index_accesses(amir: &str) -> Vec<(String, bool)> {
     for line in amir.lines() {
         if let Some(rest) = line.strip_prefix("Func ") {
             function = rest.split('(').next().unwrap_or_default().to_owned();
-        } else if let Some((_, rhs)) = line.split_once(" = ")
-            && rhs.starts_with('_')
-            && rhs.contains("[_")
-        {
-            accesses.push((function.clone(), rhs.ends_with("/* in bounds */")));
+        } else if let Some((_, rhs)) = line.split_once(" = ") {
+            let base = rhs.strip_prefix("move ").unwrap_or(rhs);
+            if base.starts_with('_') && (base.contains("[_") || base.contains("[move _")) {
+                accesses.push((function.clone(), rhs.ends_with("/* in bounds */")));
+            }
         }
     }
     accesses

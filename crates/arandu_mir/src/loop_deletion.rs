@@ -77,7 +77,7 @@ impl Context<'_> {
     ) -> Option<(BlockId, Vec<AmirOperand>)> {
         let header = lp.body[0];
         let AmirTerminator::Branch {
-            condition: AmirOperand::Copy(condition),
+            condition: AmirOperand::Copy(condition) | AmirOperand::Move(condition),
             if_true,
             if_false: exit,
             false_args,
@@ -92,7 +92,7 @@ impl Context<'_> {
         let defined = defined_in(func, lp);
         let invariant = compute_invariant(func, lp, doms);
         let is_invariant = |op: &AmirOperand| match op {
-            AmirOperand::Copy(temp) => invariant.contains(temp),
+            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => invariant.contains(temp),
             AmirOperand::Constant(_) => true,
             _ => false,
         };
@@ -141,13 +141,13 @@ impl Context<'_> {
         let (iv, bound) = match definition_in(func, &[header], condition) {
             Some(AmirRvalue::Binary {
                 op: BinaryOp::Lt,
-                left: AmirOperand::Copy(iv),
+                left: AmirOperand::Copy(iv) | AmirOperand::Move(iv),
                 right,
             }) => (*iv, right),
             Some(AmirRvalue::Binary {
                 op: BinaryOp::Gt,
                 left,
-                right: AmirOperand::Copy(iv),
+                right: AmirOperand::Copy(iv) | AmirOperand::Move(iv),
             }) => (*iv, left),
             _ => return false,
         };
@@ -174,7 +174,8 @@ impl Context<'_> {
                 let AmirTerminator::Goto { target, args } = &func.block(latch).terminator else {
                     return false;
                 };
-                let (true, Some(AmirOperand::Copy(next))) = (*target == header, args.get(position))
+                let (true, Some(AmirOperand::Copy(next) | AmirOperand::Move(next))) =
+                    (*target == header, args.get(position))
                 else {
                     return false;
                 };
@@ -182,13 +183,13 @@ impl Context<'_> {
                     Some(
                         AmirRvalue::Binary {
                             op: BinaryOp::Add,
-                            left: AmirOperand::Copy(base),
+                            left: AmirOperand::Copy(base) | AmirOperand::Move(base),
                             right: step,
                         }
                         | AmirRvalue::Binary {
                             op: BinaryOp::Add,
                             left: step,
-                            right: AmirOperand::Copy(base),
+                            right: AmirOperand::Copy(base) | AmirOperand::Move(base),
                         },
                     ) => *base == iv && self.is_one(func, step),
                     _ => false,
@@ -210,7 +211,7 @@ impl Context<'_> {
         if is_invariant(value) {
             return true;
         }
-        let AmirOperand::Copy(temp) = value else {
+        let (AmirOperand::Copy(temp) | AmirOperand::Move(temp)) = value else {
             return false;
         };
         if depth == 0 {
@@ -240,7 +241,7 @@ impl Context<'_> {
                 self.literal_pool.get(*id),
                 AmirLiteralEntry::Int(text) if parse_int_literal(text) == Some(1)
             ),
-            AmirOperand::Copy(temp) => {
+            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => {
                 let all = (0..func.blocks.len())
                     .map(BlockId::from_usize)
                     .collect::<Vec<_>>();
@@ -257,11 +258,19 @@ impl Context<'_> {
     /// Whether skipping `stmt` changes nothing observable: no write, no
     /// effectful call, no trap and no ownership transfer.
     fn is_inert(&self, func: &AmirFunc, stmt: &AmirStmt) -> bool {
-        let mut moves = false;
+        let mut moves_non_copy = false;
         crate::amir::visit::for_each_stmt_operand(stmt, |op| {
-            moves |= matches!(op, AmirOperand::Move(_));
+            if let AmirOperand::Move(temp) = op {
+                let is_copy = func
+                    .temps
+                    .get(temp.as_usize())
+                    .is_some_and(|meta| meta.is_copy);
+                if !is_copy {
+                    moves_non_copy = true;
+                }
+            }
         });
-        if moves {
+        if moves_non_copy {
             return false;
         }
         match stmt {

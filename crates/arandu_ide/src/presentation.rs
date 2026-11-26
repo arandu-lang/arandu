@@ -3,6 +3,7 @@
 //! Editor-agnostic: no `lsp_types` here. The LSP adapter maps these to protocol
 //! types; the wasm bridge serializes them directly.
 
+use arandu_middle::docs::clean_doc_lines;
 use arandu_middle::types::ArType;
 use arandu_middle::{NodeKey, Symbol, SymbolId, SymbolKind};
 use arandu_query::{AnalysisSnapshot, SourceFile};
@@ -43,6 +44,48 @@ pub fn display_type(tc: &TypeCheckResult, ty: &ArType) -> String {
     ty.display(&tc.symbols, &tc.type_info.type_interner)
 }
 
+/// Render a named function signature and its parameter labels.
+///
+/// Shared by hover, completion and signature help so an interface method shows
+/// the same `func name(param: ty): ret` as a declared function.
+#[must_use]
+pub fn signature_named(
+    tc: &TypeCheckResult,
+    name: &str,
+    ty: &ArType,
+    parameter_names: &[String],
+) -> Option<(String, Vec<ParameterPresentation>)> {
+    let ArType::Func(param_types, return_type) = ty else {
+        return None;
+    };
+    let param_types_vec = tc.type_info.type_interner.type_args(*param_types);
+    let labels: Vec<_> = param_types_vec
+        .iter()
+        .enumerate()
+        .map(|(index, type_id)| {
+            let ty = tc.type_info.type_interner.resolve(*type_id);
+            let ty = display_type(tc, &ty);
+            parameter_names
+                .get(index)
+                .filter(|name| !name.is_empty())
+                .map_or_else(|| ty.clone(), |param| format!("{param}: {ty}"))
+        })
+        .collect();
+    let return_ty = tc.type_info.type_interner.resolve(*return_type);
+    let return_suffix = if matches!(return_ty, ArType::Void) {
+        String::new()
+    } else {
+        format!(": {}", display_type(tc, &return_ty))
+    };
+    Some((
+        format!("func {name}({}){return_suffix}", labels.join(", ")),
+        labels
+            .into_iter()
+            .map(|label| ParameterPresentation { label })
+            .collect(),
+    ))
+}
+
 pub fn symbol_presentation(
     snap: &AnalysisSnapshot,
     source: SourceFile,
@@ -52,47 +95,21 @@ pub fn symbol_presentation(
     let ty = tc.type_info.decl_type(symbol.id);
     let parameter_names = function_parameter_names(snap, source, symbol);
     let (signature, parameters) = match ty.as_ref() {
-        Some(ArType::Func(param_types, return_type)) => {
-            let param_types_vec = tc.type_info.type_interner.type_args(*param_types);
-            let labels: Vec<_> = param_types_vec
-                .iter()
-                .enumerate()
-                .map(|(index, type_id)| {
-                    let ty = tc.type_info.type_interner.resolve(*type_id);
-                    let ty = display_type(tc, &ty);
-                    parameter_names
-                        .get(index)
-                        .filter(|name| !name.is_empty())
-                        .map_or_else(|| ty.clone(), |name| format!("{name}: {ty}"))
-                })
-                .collect();
-            let return_ty = tc.type_info.type_interner.resolve(*return_type);
-            let return_suffix = if matches!(return_ty, ArType::Void) {
-                String::new()
-            } else {
-                format!(": {}", display_type(tc, &return_ty))
-            };
-            (
-                format!("func {}({}){return_suffix}", symbol.name, labels.join(", ")),
-                labels
-                    .into_iter()
-                    .map(|label| ParameterPresentation { label })
-                    .collect(),
-            )
-        }
         Some(ty) => {
-            let prefix = match symbol.kind {
-                SymbolKind::Const => "const",
-                SymbolKind::Field => "field",
-                SymbolKind::Param => "param",
-                SymbolKind::Local => "let",
-                SymbolKind::StaticMut => "static mut",
-                _ => "type",
-            };
-            (
-                format!("{prefix} {}: {}", symbol.name, display_type(tc, ty)),
-                Vec::new(),
-            )
+            signature_named(tc, symbol.name.as_str(), ty, &parameter_names).unwrap_or_else(|| {
+                let prefix = match symbol.kind {
+                    SymbolKind::Const => "const",
+                    SymbolKind::Field => "field",
+                    SymbolKind::Param => "param",
+                    SymbolKind::Local => "let",
+                    SymbolKind::StaticMut => "static mut",
+                    _ => "type",
+                };
+                (
+                    format!("{prefix} {}: {}", symbol.name, display_type(tc, ty)),
+                    Vec::new(),
+                )
+            })
         }
         None => (
             format!("{} {}", symbol_kind_name(symbol.kind), symbol.name),
@@ -138,11 +155,7 @@ pub fn symbol_documentation(
         .filter(|(target, _)| target.start <= symbol.span.start && symbol.span.end <= target.end)
         .min_by_key(|(target, _)| target.end.saturating_sub(target.start))?
         .1;
-    let text = docs
-        .iter()
-        .map(|line| line.strip_prefix("///").unwrap_or(line).trim_start())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = clean_doc_lines(docs).join("\n");
     (!text.is_empty()).then_some(text)
 }
 

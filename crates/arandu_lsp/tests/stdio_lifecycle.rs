@@ -1586,7 +1586,117 @@ fn stdio_presents_one_signature_and_documentation_contract() {
         "{signature}"
     );
 
-    lsp.shutdown(5);
+    let block_document = fixture.path().join("block_presentation.aru");
+    let block_uri = file_uri(&block_document);
+    let block_source = concat!(
+        "/**\n",
+        " * Adds two values.\n",
+        " * Keeps integer precision.\n",
+        " */\n",
+        "func add(left: int, right: int): int { return left + right }\n",
+        "func main(): int { return add(1, 2) }\n",
+    );
+    let block_definition = block_source.find("add").expect("block add definition");
+    let block_call = block_source.rfind("add").expect("block add call");
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": block_uri,
+                "languageId": "arandu",
+                "version": 1,
+                "text": block_source
+            }
+        }
+    }));
+    let block_diagnostics = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(block_uri.as_str())
+    });
+    assert_eq!(
+        block_diagnostics
+            .pointer("/params/diagnostics")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "block presentation fixture must be valid: {block_diagnostics}"
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 6, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": block_uri },
+            "position": utf16_position(block_source, block_definition + 1)
+        }
+    }));
+    let block_hover = lsp.wait_for_response(6);
+    let block_hover_markdown = block_hover
+        .pointer("/result/contents/value")
+        .and_then(Value::as_str)
+        .expect("Markdown hover for block docs");
+    assert!(
+        block_hover_markdown.contains(expected_signature),
+        "{block_hover}"
+    );
+    assert!(
+        block_hover_markdown.contains("Adds two values.\nKeeps integer precision."),
+        "{block_hover}"
+    );
+    assert!(!block_hover_markdown.contains("*/"), "{block_hover}");
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 7, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": block_uri },
+            "position": utf16_position(block_source, block_definition + 2)
+        }
+    }));
+    let block_completion = lsp.wait_for_response(7);
+    let block_add_item = block_completion
+        .pointer("/result")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("label") == Some(&json!("add")))
+        })
+        .expect("add completion with block docs");
+    assert_eq!(
+        block_add_item.get("detail").and_then(Value::as_str),
+        Some(expected_signature)
+    );
+    assert_eq!(
+        block_add_item
+            .pointer("/documentation/value")
+            .and_then(Value::as_str),
+        Some("Adds two values.\nKeeps integer precision.")
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 8, "method": "textDocument/signatureHelp",
+        "params": {
+            "textDocument": { "uri": block_uri },
+            "position": utf16_position(block_source, block_call + "add(1, ".len())
+        }
+    }));
+    let block_signature = lsp.wait_for_response(8);
+    assert_eq!(
+        block_signature
+            .pointer("/result/signatures/0/label")
+            .and_then(Value::as_str),
+        Some(expected_signature),
+        "{block_signature}"
+    );
+    assert_eq!(
+        block_signature
+            .pointer("/result/signatures/0/documentation/value")
+            .and_then(Value::as_str),
+        Some("Adds two values.\nKeeps integer precision."),
+        "{block_signature}"
+    );
+
+    lsp.shutdown(9);
 }
 
 #[test]

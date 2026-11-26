@@ -28,13 +28,13 @@ fn struct_fields_complete_after_receiver_dot() {
         "}\n",
     );
     let items = completions_at(text, "    return p.");
-    let fields: Vec<&str> = items
+    let fields: Vec<(&str, Option<&str>)> = items
         .iter()
         .filter(|item| item.kind == CompletionKind::Field)
-        .map(|item| item.label.as_str())
+        .map(|item| (item.label.as_str(), item.detail.as_deref()))
         .collect();
-    assert!(fields.contains(&"x"), "got {fields:?}");
-    assert!(fields.contains(&"y"), "got {fields:?}");
+    assert!(fields.contains(&("x", Some("int"))), "got {fields:?}");
+    assert!(fields.contains(&("y", Some("int"))), "got {fields:?}");
 }
 
 #[test]
@@ -77,20 +77,23 @@ fn private_fields_complete_only_in_owner_methods() {
 #[test]
 fn enum_variants_complete_after_receiver_dot() {
     let text = concat!(
-        "enum Color { Red, Green, Blue }\n",
+        "enum Color { Red, Green(int), Blue }\n",
         "func paint(c: Color): int {\n",
         "    return c.\n",
         "}\n",
     );
     let items = completions_at(text, "    return c.");
-    let variants: Vec<&str> = items
+    let variants: Vec<(&str, Option<&str>)> = items
         .iter()
         .filter(|item| item.kind == CompletionKind::EnumMember)
-        .map(|item| item.label.as_str())
+        .map(|item| (item.label.as_str(), item.detail.as_deref()))
         .collect();
-    assert!(variants.contains(&"Red"), "got {variants:?}");
-    assert!(variants.contains(&"Green"), "got {variants:?}");
-    assert!(variants.contains(&"Blue"), "got {variants:?}");
+    assert!(variants.contains(&("Red", None)), "got {variants:?}");
+    assert!(
+        variants.contains(&("Green", Some("int"))),
+        "got {variants:?}"
+    );
+    assert!(variants.contains(&("Blue", None)), "got {variants:?}");
 }
 
 #[test]
@@ -110,6 +113,22 @@ fn associated_methods_complete_after_receiver_dot() {
         .map(|item| item.label.as_str())
         .collect();
     assert!(methods.contains(&"get"), "got {methods:?}");
+}
+
+#[test]
+fn interface_methods_show_name_and_parameters_in_detail() {
+    let text = concat!(
+        "interface Drawable {\n",
+        "    func draw(scale: int): int\n",
+        "}\n",
+        "func main(): int { return Drawable. }\n",
+    );
+    let items = completions_at(text, "return Drawable.");
+    let draw = items
+        .iter()
+        .find(|item| item.kind == CompletionKind::Method && item.label == "draw")
+        .expect("draw completion");
+    assert_eq!(draw.detail.as_deref(), Some("func draw(int): int"));
 }
 
 #[test]
@@ -374,5 +393,153 @@ fn call_arguments_are_suggested_with_labels() {
     assert!(
         item_labels.contains(&"port:"),
         "missing 'port:': {item_labels:?}"
+    );
+}
+
+#[test]
+fn auto_import_suggests_std_collections_hashmap_with_text_edit() {
+    let text = "module app.demo\n\nfunc main(): void {\n    let m: HashM\n}\n";
+    let items = completions_at(text, "HashM");
+    let hm = items
+        .iter()
+        .find(|item| item.label == "HashMap")
+        .expect("expected auto-import suggestion for HashMap");
+    assert_eq!(hm.additional_text_edits.len(), 1);
+    assert!(
+        hm.additional_text_edits[0]
+            .new_text
+            .contains("from std.collections import { HashMap }"),
+        "unexpected edit: {:?}",
+        hm.additional_text_edits[0]
+    );
+}
+
+#[test]
+fn auto_import_skips_already_imported_symbols() {
+    let text = "module app.demo\n\nimport std.fs\n\nfunc main(): void {\n    fs\n}\n";
+    let items = completions_at(text, "    fs");
+    let fs_items: Vec<_> = items.iter().filter(|item| item.label == "fs").collect();
+    assert!(
+        fs_items
+            .iter()
+            .all(|item| item.additional_text_edits.is_empty()),
+        "already-imported `fs` must not carry auto-import edits: {fs_items:?}"
+    );
+}
+
+#[test]
+fn auto_import_suggests_workspace_symbols_from_other_files() {
+    let mut host = AnalysisHost::default();
+    let _user_file = host.new_file(
+        "models/user.aru".into(),
+        "module models.user\n\npublic struct Account {\n    public id: int\n}\n\npublic func makeAccount(): Account {\n    return Account { id: 1 }\n}\n"
+            .to_string(),
+    );
+    let main_text = "module app.main\n\nfunc main(): void {\n    let a: Acco\n}\n";
+    let main_file = host.new_file("app/main.aru".into(), main_text.to_string());
+    let offset = u32::try_from(main_text.find("Acco").unwrap() + "Acco".len()).unwrap();
+    let snap = host.snapshot();
+
+    let items = completions(&snap, main_file, main_text, offset);
+    let acc = items
+        .iter()
+        .find(|item| item.label == "Account")
+        .expect("expected workspace auto-import for Account");
+    assert_eq!(acc.additional_text_edits.len(), 1);
+    assert!(
+        acc.additional_text_edits[0]
+            .new_text
+            .contains("from models.user import { Account }"),
+        "unexpected edit: {:?}",
+        acc.additional_text_edits[0]
+    );
+}
+
+#[test]
+fn auto_import_respects_package_internal_visibility() {
+    use arandu_middle::{ModuleId, PackageId, TargetId};
+    use arandu_query::vfs::{ModuleBinding, PackageModuleMap};
+    use std::sync::Arc;
+
+    let mut host = AnalysisHost::default();
+    let same_pkg_file = host.new_file(
+        "src/auth.aru".into(),
+        "module self.auth\n\ninternal func verifyToken(): bool { return true }\n".to_string(),
+    );
+    let dep_file = host.new_file(
+        "deps/web/router.aru".into(),
+        "module web.router\n\npublic struct Router {}\ninternal func secretInternal(): void {}\n"
+            .to_string(),
+    );
+    let main_text = "module self.main\n\nfunc main(): void {\n    verify\n}\n";
+    let main_file = host.new_file("src/main.aru".into(), main_text.to_string());
+
+    let pkg0 = PackageId::try_from_usize(0).unwrap();
+    let pkg1 = PackageId::try_from_usize(1).unwrap();
+    let tgt0 = TargetId::try_from_usize(0).unwrap();
+    let tgt1 = TargetId::try_from_usize(1).unwrap();
+    let mut bindings = vec![
+        (
+            "self/main.aru".to_string(),
+            ModuleBinding {
+                package: pkg0,
+                target: tgt0,
+                module: ModuleId::try_from_usize(0).unwrap(),
+                file: main_file,
+            },
+        ),
+        (
+            "self/auth.aru".to_string(),
+            ModuleBinding {
+                package: pkg0,
+                target: tgt0,
+                module: ModuleId::try_from_usize(1).unwrap(),
+                file: same_pkg_file,
+            },
+        ),
+        (
+            "web/router.aru".to_string(),
+            ModuleBinding {
+                package: pkg1,
+                target: tgt1,
+                module: ModuleId::try_from_usize(2).unwrap(),
+                file: dep_file,
+            },
+        ),
+    ];
+    bindings.sort_by(|a, b| a.0.cmp(&b.0));
+    let map = PackageModuleMap::new(host.db(), pkg0, tgt0, Arc::new(bindings));
+    host.db_mut().set_package_module_map(map);
+    host.bump_revision();
+
+    let snap = host.snapshot();
+    // Same-package `internal` function IS suggested.
+    let offset = u32::try_from(main_text.find("verify").unwrap() + "verify".len()).unwrap();
+    let items = completions(&snap, main_file, main_text, offset);
+    let vt = items
+        .iter()
+        .find(|item| item.label == "verifyToken")
+        .expect("expected same-package internal auto-import for verifyToken");
+    assert!(
+        vt.additional_text_edits[0]
+            .new_text
+            .contains("from self.auth import { verifyToken }"),
+        "unexpected edit: {:?}",
+        vt.additional_text_edits[0]
+    );
+
+    // Dependency `public` type IS suggested, but dependency `internal` function is NOT.
+    let router_candidates =
+        arandu_ide::auto_import_candidates_for_name(&snap, main_file, main_text, "Router");
+    assert_eq!(router_candidates.len(), 1);
+    assert_eq!(
+        router_candidates[0].import_statement,
+        "from web.router import { Router }"
+    );
+    let secret_candidates =
+        arandu_ide::auto_import_candidates_for_name(&snap, main_file, main_text, "secretInternal");
+    assert!(
+        secret_candidates.is_empty(),
+        "dependency internal symbol must never be suggested: {secret_candidates:?}"
     );
 }

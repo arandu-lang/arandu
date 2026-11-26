@@ -207,6 +207,43 @@ pub fn clean_doc_line(line: &str) -> &str {
     }
 }
 
+/// Clean stored doc-comment lines, including `/** … */` block comments.
+///
+/// Block comments arrive as one token with embedded newlines and decorative
+/// `* ` prefixes. Fences are dropped and each embedded line becomes one output
+/// line; blank lines from `///` are preserved so Markdown paragraphs survive.
+#[must_use]
+pub fn clean_doc_lines(raw_lines: &[String]) -> Vec<String> {
+    let mut cleaned = Vec::new();
+    for raw in raw_lines {
+        let mut in_block = false;
+        for subline in raw.lines() {
+            let trimmed = subline.trim();
+            if in_block && trimmed == "*/" {
+                in_block = false;
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("/**") {
+                in_block = !trimmed.ends_with("*/");
+                let content = rest.strip_suffix("*/").unwrap_or(rest).trim();
+                if !content.is_empty() {
+                    cleaned.push(clean_doc_line(content).to_owned());
+                }
+                continue;
+            }
+            let content = if in_block {
+                let content = trimmed.strip_suffix("*/").unwrap_or(trimmed);
+                in_block = !trimmed.ends_with("*/");
+                content.trim()
+            } else {
+                trimmed
+            };
+            cleaned.push(clean_doc_line(content).to_owned());
+        }
+    }
+    cleaned
+}
+
 enum ParseSection {
     Preamble,
     Description,
@@ -220,12 +257,7 @@ enum ParseSection {
 /// Parse raw doc-comment lines into a summary and structured [`DocSections`].
 #[must_use]
 pub fn parse_doc_comment_lines(raw_lines: &[String]) -> (Option<String>, DocSections) {
-    let mut cleaned_lines = Vec::new();
-    for line in raw_lines {
-        for subline in line.lines() {
-            cleaned_lines.push(clean_doc_line(subline).to_string());
-        }
-    }
+    let cleaned_lines = clean_doc_lines(raw_lines);
 
     let mut summary = None;
     let mut description_lines = Vec::new();
@@ -407,6 +439,40 @@ mod tests {
         assert!(sections.examples[0].code.contains("v.push(42)"));
         assert!(!sections.examples[0].should_panic);
         assert!(!sections.examples[0].no_run);
+    }
+
+    #[test]
+    fn clean_doc_lines_handles_block_and_line_forms() {
+        let block = vec![
+            concat!(
+                "/**\n",
+                " * Adds two values.\n",
+                " *\n",
+                " * Keeps integer precision.\n",
+                " */\n",
+            )
+            .to_owned(),
+        ];
+        assert_eq!(
+            clean_doc_lines(&block),
+            ["Adds two values.", "", "Keeps integer precision."]
+        );
+
+        let embedded = vec!["/** heading\ncontinued */".to_owned()];
+        assert_eq!(clean_doc_lines(&embedded), ["heading", "continued"]);
+
+        let single = vec!["/** A raw handle with */ marker. */".to_owned()];
+        assert_eq!(clean_doc_lines(&single), ["A raw handle with */ marker."]);
+
+        let lines = vec![
+            "/// Adds two values.".to_owned(),
+            "///".to_owned(),
+            "//! Keeps integer precision.".to_owned(),
+        ];
+        assert_eq!(
+            clean_doc_lines(&lines),
+            ["Adds two values.", "", "Keeps integer precision."]
+        );
     }
 
     #[test]

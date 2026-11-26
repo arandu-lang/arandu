@@ -10,7 +10,7 @@
 
 use std::fmt::Write;
 
-use arandu_middle::docs::clean_doc_line;
+use arandu_middle::docs::clean_doc_lines;
 use arandu_middle::layout::{
     FfiPosition, FfiType, LayoutEngine, StructLayoutProvider, TypeLayout, c_primitive_name,
     ffi_type_of,
@@ -216,11 +216,10 @@ impl Context<'_> {
 
     /// Writes a C block comment for the docs attached to `symbol`, if any.
     fn push_doc_comment(&self, out: &mut String, symbol: SymbolId) {
-        let lines = self
-            .doc_lines(symbol)
-            .iter()
-            .flat_map(|raw| raw.lines())
-            .filter_map(clean_header_doc_line)
+        let raw = self.doc_lines(symbol);
+        let lines = clean_doc_lines(&raw)
+            .into_iter()
+            .filter(|line| !line.is_empty())
             .collect::<Vec<_>>();
         if lines.is_empty() {
             return;
@@ -348,24 +347,6 @@ fn primitive_label(primitive: Primitive) -> String {
         other => return format!("{other:?}"),
     };
     label.to_owned()
-}
-
-/// Normalizes one stored doc line for the generated header.
-///
-/// The lexer keeps the source marker (`///`, `//!` or `/** … */`), and
-/// `clean_doc_line` already strips the line forms. Block forms are handled
-/// here so their fences never leak as `*` lines.
-fn clean_header_doc_line(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    let text = if let Some(rest) = trimmed.strip_prefix("/**") {
-        rest.strip_suffix("*/").unwrap_or(rest)
-    } else if trimmed == "*/" {
-        ""
-    } else {
-        clean_doc_line(trimmed)
-    };
-    let text = text.trim();
-    (!text.is_empty()).then(|| text.to_owned())
 }
 
 struct Function {

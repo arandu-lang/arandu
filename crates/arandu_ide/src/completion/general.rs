@@ -103,8 +103,7 @@ pub(super) fn general_completions(
         offer(&mut best, name, rank, symbol.span.start, item);
     }
 
-    for candidate in
-        auto_import::collect_auto_imports(snap, source, tc, text, prefix, prefix_l, false, false)
+    for candidate in auto_import::collect_auto_imports(snap, source, tc, text, prefix, false, false)
     {
         let label = candidate.label.clone();
         offer(
@@ -171,8 +170,7 @@ pub(super) fn type_position_completions(
         offer(&mut best, name, 0, symbol.span.start, item);
     }
 
-    for candidate in
-        auto_import::collect_auto_imports(snap, source, tc, text, prefix, prefix_l, false, true)
+    for candidate in auto_import::collect_auto_imports(snap, source, tc, text, prefix, false, true)
     {
         let label = candidate.label.clone();
         offer(

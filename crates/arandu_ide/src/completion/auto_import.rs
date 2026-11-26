@@ -153,13 +153,14 @@ pub fn collect_auto_imports(
     tc: &TypeCheckResult,
     text: &str,
     prefix: &str,
-    prefix_l: &str,
     exact_only: bool,
     types_only: bool,
 ) -> Vec<AutoImportCandidate> {
     if !exact_only && prefix.len() < 2 {
         return Vec::new();
     }
+    let prefix_l = prefix.to_ascii_lowercase();
+    let prefix_l = prefix_l.as_str();
 
     // Names already available in scope (local decls, explicit imports, prelude).
     let in_scope: FxHashSet<&str> = tc
@@ -435,8 +436,7 @@ pub fn auto_import_candidates_for_name(
         return Vec::new();
     }
     let tc = crate::presentation::typecheck(snap, source);
-    let lower = name.to_ascii_lowercase();
-    collect_auto_imports(snap, source, &tc, text, name, &lower, true, false)
+    collect_auto_imports(snap, source, &tc, text, name, true, false)
 }
 
 /// Converts an [`AutoImportCandidate`] into a [`CompletionItem`] carrying its

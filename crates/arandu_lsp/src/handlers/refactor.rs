@@ -96,7 +96,7 @@ pub(super) fn code_actions(
             return serde_json::Value::Null;
         };
         let text = info.source.text(&snap.db);
-        let actions = ide::code_actions_with_snapshot(&snap, info.source, text, &uri, &context);
+        let actions = ide::code_actions_with_snapshot(snap, info.source, text, &uri, &context);
         serde_json::to_value(actions).unwrap_or(serde_json::Value::Null)
     });
 }

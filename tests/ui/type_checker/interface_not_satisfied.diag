@@ -1,3 +1,9 @@
 T025: type 'Buffer' does not satisfy interface 'Writer': missing or incompatible methods: write
   --> tests/ui/type_checker/interface_not_satisfied.aru:13:5
   note: missing or incompatible methods: write
+  hint: generate missing interface method stubs for `Buffer`
+  replacement: at 7:2-7:2 with '
+
+func Buffer.write(): void {
+    todo()
+}'

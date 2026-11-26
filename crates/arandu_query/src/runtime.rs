@@ -591,6 +591,21 @@ pub(crate) fn surface_files(
 
 #[salsa::tracked]
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "is_derived_method", file = ?file.file_id(db), function = ?symbol,
+))]
+pub(crate) fn is_derived_method(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    symbol: SymbolId,
+) -> bool {
+    declaration_signatures(db, file)
+        .type_info
+        .derived_methods
+        .contains_key(&symbol)
+}
+
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
     query = "function_hir", file = ?file.file_id(db), function = ?symbol,
 ))]
 pub fn function_hir(
@@ -601,8 +616,8 @@ pub fn function_hir(
     if symbol.is_synthetic() {
         return FingerprintEq::from_content(&capture::closure_function_hir(db, file, symbol));
     }
-    let declared = declaration_signatures(db, file);
-    if declared.type_info.derived_methods.contains_key(&symbol) {
+    if *is_derived_method(db, file, symbol) {
+        let declared = declaration_signatures(db, file);
         let mut checked = (**declared).clone();
         let mut diagnostics = Vec::new();
         let hir = match arandu_semantics::lower_derived_method_hir(&mut checked, symbol) {

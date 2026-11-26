@@ -669,6 +669,11 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
     );
     same_set(&mut local.struct_repr_c, &signatures.struct_repr_c);
     same_set(&mut local.struct_unions, &signatures.struct_unions);
+    same_map(
+        &mut local.func_param_defaults,
+        &signatures.func_param_defaults,
+    );
+    same_map(&mut local.derived_methods, &signatures.derived_methods);
 }
 
 /// Every position a diagnostic carries.

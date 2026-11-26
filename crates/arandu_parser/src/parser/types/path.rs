@@ -98,7 +98,7 @@ impl<'a> Parser<'a> {
             if !self.eat_name("COMMA") {
                 break;
             }
-            if self.at_kind_name(end_name) {
+            if self.at_kind_name(end_name) || (end_name == "LBRACE" && self.at_kind_name("EQUAL")) {
                 break;
             }
         }

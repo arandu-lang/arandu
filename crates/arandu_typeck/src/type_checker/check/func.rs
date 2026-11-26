@@ -309,6 +309,21 @@ fn check_func_body_inner(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
             checker.ctx.bind(symbol_id, param_ty_id);
             checker.record_decl_type(symbol_id, param_ty_id);
         }
+        if let Some(def_expr) = param.default {
+            checker.text_view_sites.insert(def_expr);
+            let def_ty_id =
+                super::super::synth::synth_expr_expected(checker, def_expr, Some(param_ty_id));
+            super::super::synth::check_call_arg(
+                checker,
+                def_expr,
+                param_ty_id,
+                def_ty_id,
+                param.span,
+                param.span,
+                checker.pool.expr_span(def_expr),
+                index,
+            );
+        }
     }
 
     let ret_id = checker.intern(ret_ty);

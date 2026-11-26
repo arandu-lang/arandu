@@ -670,11 +670,15 @@ impl Shift {
             ty,
             is_variadic: _,
             is_receiver: _,
+            default,
         } in params
         {
             self.span(span);
             self.attributes(attrs);
             self.type_expr_id(ty);
+            if let Some(default) = default {
+                self.expr_id(default);
+            }
         }
     }
 

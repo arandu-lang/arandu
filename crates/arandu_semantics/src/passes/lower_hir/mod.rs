@@ -10,6 +10,7 @@ use arandu_parser::Program;
 
 mod closure;
 mod decl;
+mod derive;
 mod expr;
 mod link;
 mod materialize;
@@ -19,6 +20,7 @@ mod place;
 mod stmt;
 
 pub use closure::{link_generic_closure_headers, lower_closure_hir};
+pub use derive::lower_derived_method_hir;
 pub use link::link_hir_module;
 pub use materialize::{MaterializationError, materialize_ctfe_scalar, materialize_ctfe_value};
 
@@ -105,11 +107,20 @@ fn lower_declaration_context(
     let mut pool = crate::hir::HirPool::new();
     let mut decls = Vec::new();
     let mut failure = None;
+    let mut owner_types = rustc_hash::FxHashSet::default();
     program.for_each_decl_recursive(|_, declaration| {
         if failure.is_some()
             || (!include_constants && matches!(declaration, arandu_parser::TopLevelDecl::Const(_)))
         {
             return;
+        }
+        if matches!(
+            declaration,
+            arandu_parser::TopLevelDecl::Struct(_) | arandu_parser::TopLevelDecl::Enum(_)
+        ) && let Some(key) = crate::primary_def_key(declaration)
+            && let Some(&sym) = type_check.resolved.definitions.get(&key)
+        {
+            owner_types.insert(sym);
         }
         match decl::lower_declaration(type_check, &program.pool, &mut pool, declaration) {
             Ok(Some(declaration)) => decls.push(pool.alloc_decl(declaration)),
@@ -120,6 +131,7 @@ fn lower_declaration_context(
     if let Some(diagnostic) = failure {
         return Err(vec![diagnostic]);
     }
+    derive::lower_derived_decl_headers(type_check, &mut pool, &mut decls, &owner_types);
     Ok(HirProgram {
         span: program.span,
         module: program.module.as_ref().map(|module| module.path.join(".")),
@@ -159,6 +171,13 @@ pub fn lower_to_hir(
         &program.decls,
         &mut decls,
     )?;
+    derive::lower_derived_methods_for_file(
+        type_check,
+        &mut hir_pool,
+        &mut decls,
+        program.span.file_id,
+    )
+    .map_err(|diagnostic| vec![diagnostic])?;
     decls.extend(std::mem::take(&mut hir_pool.synthetic_decls));
     let module = program.module.as_ref().map(|m| m.path.join("."));
     Ok(HirProgram {
@@ -213,6 +232,9 @@ fn lower_selected_declaration(
         .any(|d| d.severity == Severity::Error)
     {
         return Err(type_check.diagnostics.clone());
+    }
+    if !external && !ctfe && type_check.type_info.derived_methods.contains_key(&symbol) {
+        return derive::lower_derived_method_hir(type_check, symbol);
     }
     let mut selected = None;
     program.for_each_decl_recursive(|_, item| {

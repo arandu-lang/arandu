@@ -180,6 +180,35 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                     let func_id = checker.intern(func_ty);
                     checker.record_decl_type(symbol_id, func_id);
 
+                    let mut seen_default = false;
+                    for (param_idx, param) in func_decl.params.iter().enumerate() {
+                        if let Some(def_expr) = param.default {
+                            seen_default = true;
+                            if let Some(&param_ty) = param_types.get(param_idx) {
+                                let param_default =
+                                    extract_param_default(checker.pool, def_expr, param_ty);
+                                checker
+                                    .type_info
+                                    .func_param_defaults
+                                    .insert((symbol_id, param_idx), param_default);
+                            }
+                        } else if seen_default {
+                            checker.diagnostics.push(
+                                arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::T012WrongArgCount,
+                                    format!(
+                                        "non-default parameter '{}' cannot follow a parameter with a default value",
+                                        param.name
+                                    ),
+                                    param.span,
+                                )
+                                .with_primary_label(
+                                    "move this parameter before parameters with `= default`",
+                                ),
+                            );
+                        }
+                    }
+
                     if func_decl
                         .attrs
                         .iter()
@@ -694,5 +723,69 @@ fn reject_foreign_owning_closure(
             .with_primary_label("`own (A) -> R` uses Arandu's internal calling convention")
             .with_hint("pass a plain function value `(A) -> R` and a context pointer instead"),
         );
+    }
+}
+
+fn extract_param_default(
+    pool: &arandu_parser::AstPool,
+    mut expr: arandu_parser::ExprId,
+    ty: crate::type_checker::types::TypeId,
+) -> crate::ParamDefault {
+    use arandu_parser::{StringPart, UnaryOp, ast_pool::ExprKind};
+    while let ExprKind::Group { expr: inner } = pool.expr(expr) {
+        expr = *inner;
+    }
+    match pool.expr(expr) {
+        ExprKind::Int { value } => crate::ParamDefault::Int {
+            raw: value.clone(),
+            ty,
+        },
+        ExprKind::Float { value } => crate::ParamDefault::Float {
+            raw: value.clone(),
+            ty,
+        },
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr: inner,
+        } => {
+            let mut inner_id = *inner;
+            while let ExprKind::Group { expr: g } = pool.expr(inner_id) {
+                inner_id = *g;
+            }
+            match pool.expr(inner_id) {
+                ExprKind::Int { value } => crate::ParamDefault::Int {
+                    raw: smol_str::SmolStr::new(format!("-{value}")),
+                    ty,
+                },
+                ExprKind::Float { value } => crate::ParamDefault::Float {
+                    raw: smol_str::SmolStr::new(format!("-{value}")),
+                    ty,
+                },
+                _ => crate::ParamDefault::LocalExpr { expr, ty },
+            }
+        }
+        ExprKind::Bool { value } => crate::ParamDefault::Bool(*value),
+        ExprKind::Char { value } => crate::ParamDefault::Char(value.clone()),
+        ExprKind::Nil => crate::ParamDefault::Nil { ty },
+        ExprKind::InterpolatedString { parts } => {
+            let parts = pool.string_part_list(*parts);
+            let mut combined = String::new();
+            let mut all_text = true;
+            for part_id in parts {
+                match pool.string_part(*part_id) {
+                    StringPart::Text { text, .. } => combined.push_str(text),
+                    StringPart::Expr { .. } => {
+                        all_text = false;
+                        break;
+                    }
+                }
+            }
+            if all_text {
+                crate::ParamDefault::Str(smol_str::SmolStr::new(combined))
+            } else {
+                crate::ParamDefault::LocalExpr { expr, ty }
+            }
+        }
+        _ => crate::ParamDefault::LocalExpr { expr, ty },
     }
 }

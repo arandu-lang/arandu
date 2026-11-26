@@ -166,6 +166,28 @@ pub(super) fn lower_call(
             for &arg_id in arg_ids {
                 hir_args.push(super::lower_expr(type_check, pool, hir_pool, arg_id)?);
             }
+            if let Some(callee_sym) =
+                resolve_call_symbol(type_check, pool, hir_pool, callee_id, callee_vid)
+            {
+                let formal_params =
+                    callee_param_types(type_check, hir_pool, callee_sym, callee_vid);
+                while hir_args.len() < formal_params.len() {
+                    let param_idx = hir_args.len();
+                    let Some(default) = type_check
+                        .type_info
+                        .func_param_defaults
+                        .get(&(callee_sym, param_idx))
+                        .cloned()
+                    else {
+                        break;
+                    };
+                    let formal_ty = formal_params[param_idx];
+                    let def_id = materialize_param_default(
+                        type_check, pool, hir_pool, callee_sym, default, formal_ty, span,
+                    )?;
+                    hir_args.push(def_id);
+                }
+            }
             let args_range = hir_pool.alloc_expr_list(&hir_args);
             HirExprKind::Call {
                 callee: callee_vid,
@@ -481,4 +503,133 @@ fn value_receiver_call(
     }
     let args = hir_pool.alloc_expr_list(&args);
     Ok(Some(HirExprKind::Call { callee, args }))
+}
+
+fn resolve_call_symbol(
+    type_check: &TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &crate::hir::HirPool,
+    callee_id: ExprId,
+    callee_vid: crate::hir::HirExprId,
+) -> Option<arandu_middle::SymbolId> {
+    let mut inner_vid = callee_vid;
+    while let HirExprKind::Generic { callee, .. } = hir_pool.expr(inner_vid).kind {
+        inner_vid = callee;
+    }
+    match hir_pool.expr(inner_vid).kind {
+        HirExprKind::Path { symbol }
+        | HirExprKind::TypePath {
+            member_symbol: symbol,
+            ..
+        } => return Some(symbol),
+        _ => {}
+    }
+    let bare = match pool.expr(callee_id) {
+        ExprKind::Generic { callee, .. } => *callee,
+        _ => callee_id,
+    };
+    if let ExprKind::Field { .. } | ExprKind::SafeField { .. } = pool.expr(bare) {
+        let field_span = pool.expr_span(bare);
+        if let Some(&sym) = type_check.resolved.value_refs.get(&field_span.into()) {
+            return Some(sym);
+        }
+    }
+    type_check.resolved.expr_symbol(bare)
+}
+
+fn callee_param_types(
+    type_check: &TypeCheckResult,
+    hir_pool: &crate::hir::HirPool,
+    callee_sym: arandu_middle::SymbolId,
+    callee_vid: crate::hir::HirExprId,
+) -> Vec<crate::types::TypeId> {
+    let interner = &type_check.type_info.type_interner;
+    let ty = hir_pool.expr(callee_vid).ty;
+    if let ArType::Func(params, _) = interner.resolve(ty) {
+        return interner.type_args(params);
+    }
+    if let Some(decl_ty) = type_check.type_info.decl_type_id(callee_sym)
+        && let ArType::Func(params, _) = interner.resolve(decl_ty)
+    {
+        return interner.type_args(params);
+    }
+    Vec::new()
+}
+
+fn materialize_param_default(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    callee_sym: arandu_middle::SymbolId,
+    default: arandu_typeck::ParamDefault,
+    formal_ty: crate::types::TypeId,
+    span: arandu_middle::Span,
+) -> Result<crate::hir::HirExprId, Diagnostic> {
+    let error_ty = arandu_middle::types::TypeInterner::preinterned_error_id();
+    let ty_for = |fallback: crate::types::TypeId| {
+        if formal_ty != error_ty {
+            formal_ty
+        } else {
+            fallback
+        }
+    };
+    let expr = match default {
+        arandu_typeck::ParamDefault::LocalExpr { expr, ty } => {
+            if callee_sym.file_id == span.file_id && expr.as_usize() < pool.exprs.len() {
+                return super::lower_expr(type_check, pool, hir_pool, expr);
+            }
+            return Err(Diagnostic::error(
+                crate::DiagCode::T012WrongArgCount,
+                "cross-module default parameter requires a constant literal or `nil`",
+                span,
+            )
+            .with_hint(format!(
+                "pass this argument explicitly or use a literal default (expected `{}`)",
+                type_check
+                    .type_info
+                    .type_interner
+                    .resolve(ty_for(ty))
+                    .display(&type_check.symbols, &type_check.type_info.type_interner)
+            )));
+        }
+        arandu_typeck::ParamDefault::Int { raw, ty } => {
+            let kind = HirExprKind::Int(raw);
+            let expr_ty = super::expr_type_for_kind(type_check, hir_pool, &kind, ty_for(ty));
+            HirExpr {
+                kind,
+                ty: expr_ty,
+                span,
+            }
+        }
+        arandu_typeck::ParamDefault::Float { raw, ty } => {
+            let kind = HirExprKind::Float(raw);
+            let expr_ty = super::expr_type_for_kind(type_check, hir_pool, &kind, ty_for(ty));
+            HirExpr {
+                kind,
+                ty: expr_ty,
+                span,
+            }
+        }
+        arandu_typeck::ParamDefault::Bool(v) => HirExpr {
+            kind: HirExprKind::Bool(v),
+            ty: arandu_middle::types::TypeInterner::preinterned_primitive(Primitive::Bool),
+            span,
+        },
+        arandu_typeck::ParamDefault::Str(raw) => HirExpr {
+            kind: HirExprKind::Str(raw),
+            ty: arandu_middle::types::TypeInterner::preinterned_primitive(Primitive::Str),
+            span,
+        },
+        arandu_typeck::ParamDefault::Char(raw) => HirExpr {
+            kind: HirExprKind::Char(raw),
+            ty: arandu_middle::types::TypeInterner::preinterned_primitive(Primitive::Char),
+            span,
+        },
+        arandu_typeck::ParamDefault::Nil { ty } => HirExpr {
+            kind: HirExprKind::Nil,
+            ty: ty_for(ty),
+            span,
+        },
+    };
+    Ok(hir_pool.alloc_expr(expr))
 }

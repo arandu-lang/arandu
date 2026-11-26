@@ -601,6 +601,35 @@ pub fn function_hir(
     if symbol.is_synthetic() {
         return FingerprintEq::from_content(&capture::closure_function_hir(db, file, symbol));
     }
+    let declared = declaration_signatures(db, file);
+    if declared.type_info.derived_methods.contains_key(&symbol) {
+        let mut checked = (**declared).clone();
+        let mut diagnostics = Vec::new();
+        let hir = match arandu_semantics::lower_derived_method_hir(&mut checked, symbol) {
+            Ok(hir) => hir,
+            Err(errors) => {
+                diagnostics = errors;
+                None
+            }
+        };
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"DerivedFunctionHir/v1");
+        identity.update(declared.identity().as_bytes());
+        identity.update(&symbol.file_id.to_le_bytes());
+        identity.update(&symbol.local_id.0.to_le_bytes());
+        let source_fingerprint = identity.finalize();
+        return FingerprintEq::fingerprinted(
+            db,
+            "function_hir",
+            PreparedHir {
+                hir,
+                type_check: checked,
+                diagnostics,
+                source_fingerprint,
+            },
+            source_fingerprint,
+        );
+    }
     if let Some(local) = local_function_hir(db, file, symbol) {
         return local;
     }

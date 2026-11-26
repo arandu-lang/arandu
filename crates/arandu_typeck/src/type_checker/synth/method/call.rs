@@ -487,7 +487,21 @@ pub(crate) fn synth_method_call(
 
     let mut explicit_params = params[1..].to_vec();
     let arg_ids = checker.pool.expr_list(args).to_vec();
-    if explicit_params.len() != arg_ids.len() {
+    let min_params = if let Some(sym) = method_sym_recorded {
+        let mut required = explicit_params.len();
+        while required > 0
+            && checker
+                .type_info
+                .func_param_defaults
+                .contains_key(&(sym, required))
+        {
+            required -= 1;
+        }
+        required
+    } else {
+        explicit_params.len()
+    };
+    if arg_ids.len() < min_params || arg_ids.len() > explicit_params.len() {
         let struct_name = effective_id
             .map(|id| checker.symbols.get(id).name.clone())
             .unwrap_or_else(|| {
@@ -495,17 +509,24 @@ pub(crate) fn synth_method_call(
                     .display(&checker.symbols, &checker.type_info.type_interner)
                     .into()
             });
-        let diag = crate::Diagnostic::error(
-            crate::DiagCode::T012WrongArgCount,
+        let expected_msg = if min_params == explicit_params.len() {
             format!(
                 "method '{struct_name}.{method}' expects {} argument(s), found {}",
                 explicit_params.len(),
                 arg_ids.len()
-            ),
-            call_span,
-        )
-        .with_label(field_span, "call target is here")
-        .with_label(call_span, format!("{} arguments provided", arg_ids.len()));
+            )
+        } else {
+            format!(
+                "method '{struct_name}.{method}' expects {} to {} argument(s), found {}",
+                min_params,
+                explicit_params.len(),
+                arg_ids.len()
+            )
+        };
+        let diag =
+            crate::Diagnostic::error(crate::DiagCode::T012WrongArgCount, expected_msg, call_span)
+                .with_label(field_span, "call target is here")
+                .with_label(call_span, format!("{} arguments provided", arg_ids.len()));
         let diag = crate::type_checker::synth::expr::note_trailing_block(
             checker,
             diag,
@@ -515,7 +536,10 @@ pub(crate) fn synth_method_call(
         checker.diagnostics.push(diag);
     }
 
-    if !method_generic_params.is_empty() && explicit_params.len() == arg_ids.len() {
+    if !method_generic_params.is_empty()
+        && arg_ids.len() >= min_params
+        && arg_ids.len() <= explicit_params.len()
+    {
         let mut receiver_bindings = (|| {
             let params = checker
                 .type_info

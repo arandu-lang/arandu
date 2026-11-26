@@ -368,6 +368,16 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::Clone => 66,
         LangItem::Eq => 67,
         LangItem::Display => 68,
+        LangItem::OrderingLess => 69,
+        LangItem::OrderingEqual => 70,
+        LangItem::OrderingGreater => 71,
+        LangItem::PartialEq => 72,
+        LangItem::Hash => 73,
+        LangItem::Hasher => 74,
+        LangItem::Debug => 75,
+        LangItem::Formatter => 76,
+        LangItem::FmtError => 77,
+        LangItem::PhantomData => 78,
     }
 }
 

@@ -63,6 +63,8 @@ impl TypeInfo {
         view.variadic_functions.retain(kept);
         view.struct_repr_c.retain(kept);
         view.struct_unions.retain(kept);
+        view.func_param_defaults.retain(|(sym, _), _| kept(sym));
+        view.derived_methods.retain(|sym, _| kept(sym));
         view
     }
 
@@ -180,6 +182,13 @@ impl TypeInfo {
                     types.push(method.sig_id);
                     pending.extend(method.generic_params.iter().copied());
                 }
+            }
+            if let Some(recipe) = self.derived_methods.get(&symbol) {
+                pending.push(recipe.type_symbol);
+                pending.extend(recipe.param_symbols.iter().copied());
+                types.push(recipe.self_param_ty);
+                types.extend(recipe.explicit_param_tys.iter().copied());
+                types.push(recipe.return_ty);
             }
             types.extend(headers.get(&symbol).into_iter().flatten().copied());
             for ty in types {

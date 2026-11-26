@@ -1,4 +1,4 @@
-use super::{Block, DeclId, Expr, IndexRange, TypeExprId, TypeName};
+use super::{Block, DeclId, Expr, ExprId, IndexRange, TypeExprId, TypeName};
 pub use arandu_base::lang::{AbiKind, Visibility};
 use arandu_lexer::Span;
 use smallvec::SmallVec;
@@ -319,6 +319,8 @@ pub struct Param {
     pub is_variadic: bool,
     /// `true` when this parameter is the method receiver (`self`).
     pub is_receiver: bool,
+    /// Optional default value expression (`port: int = 8080`).
+    pub default: Option<ExprId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

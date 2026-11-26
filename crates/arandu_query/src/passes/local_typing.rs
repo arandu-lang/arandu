@@ -549,6 +549,8 @@ impl Frame<'_> {
             struct_repr_c: _,
             struct_unions: _,
             struct_field_defaults,
+            func_param_defaults,
+            derived_methods: _,
             closures,
             adjustments,
             closure_temporaries,
@@ -557,6 +559,7 @@ impl Frame<'_> {
             || !adjustments.is_empty()
             || !closure_temporaries.is_empty()
             || *struct_field_defaults != signatures.struct_field_defaults
+            || *func_param_defaults != signatures.func_param_defaults
         {
             return None;
         }
@@ -584,6 +587,9 @@ impl Frame<'_> {
             }
         }
         local.struct_field_defaults = FxHashMap::default();
+        local
+            .func_param_defaults
+            .retain(|_, default| !matches!(default, arandu_typeck::ParamDefault::LocalExpr { .. }));
         without_signatures(&mut local, signatures);
         Some(local)
     }

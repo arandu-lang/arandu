@@ -332,6 +332,9 @@ pub(super) fn dump_param(pool: &AstPool, param: &Param) -> String {
     if param.is_variadic {
         out.push_str("...");
     }
+    if let Some(default) = param.default {
+        out.push_str(&format!(" = {}", super::expr::dump_expr(pool, default)));
+    }
     out
 }
 

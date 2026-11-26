@@ -19,6 +19,7 @@ pub mod cfg;
 
 pub mod ctfe;
 pub mod db;
+pub mod derive;
 pub mod diagnostics;
 pub mod docs;
 pub mod effects;

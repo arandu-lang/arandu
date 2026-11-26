@@ -201,14 +201,22 @@ pub(super) fn parse_params(
         } else {
             return None;
         };
+        let default = if !is_receiver && !is_variadic && cur.eat(TokenKind::Equal) {
+            Some(super::expr::try_hand_lower_expr(ctx, cur, 0)?)
+        } else {
+            None
+        };
         // When self has an explicit `: Type`, use type end; if type span was
         // synthesized from the method receiver name (elsewhere), clamp to `self`.
         let ty_span = ctx.pool.type_expr_span(ty);
-        let p_end = if is_receiver && ty_span.start < p_start {
+        let mut p_end = if is_receiver && ty_span.start < p_start {
             name_tok.start + name_tok.len
         } else {
             ty_span.end.max(name_tok.start + name_tok.len)
         };
+        if let Some(def) = default {
+            p_end = p_end.max(ctx.pool.expr_span(def).end);
+        }
         params.push(Param {
             span: ctx.span(p_start, p_end),
             attrs: smallvec![],
@@ -217,6 +225,7 @@ pub(super) fn parse_params(
             ty,
             is_variadic,
             is_receiver,
+            default,
         });
         if cur.eat(TokenKind::Comma) {
             continue;

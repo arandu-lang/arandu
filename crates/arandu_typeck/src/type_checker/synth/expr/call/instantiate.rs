@@ -12,7 +12,7 @@ pub(crate) fn infer_and_instantiate_func(
     expected_ret: Option<TypeId>,
     call_span: arandu_lexer::Span,
 ) -> Option<(Vec<TypeId>, TypeId)> {
-    if formals.len() != arg_tys.len() {
+    if arg_tys.len() > formals.len() {
         return None;
     }
     let mut bindings: rustc_hash::FxHashMap<arandu_middle::SymbolId, TypeId> =

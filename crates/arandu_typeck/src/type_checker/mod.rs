@@ -15,7 +15,7 @@ pub mod solver;
 pub mod synth;
 pub mod types;
 
-pub use info::{EnumPayloadShape, TypeInfo, translate_type};
+pub use info::{DeriveRecipe, EnumPayloadShape, ParamDefault, TypeInfo, translate_type};
 
 use constraints::{Constraint, ConstraintOrigin};
 use context::TyCtx;

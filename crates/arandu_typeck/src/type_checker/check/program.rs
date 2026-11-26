@@ -2,7 +2,7 @@ use arandu_parser::{Program, TopLevelDecl};
 
 use super::super::TypeChecker;
 use super::super::types::collect_interfaces_and_constraints;
-use super::collect::{collect_signature_types, collect_type_shapes};
+use super::collect::{collect_derive_methods, collect_signature_types, collect_type_shapes};
 use super::func::check_func_body;
 use super::prelude::register_prelude;
 use super::validate::validate_top_level_any;
@@ -15,6 +15,7 @@ pub fn check_signatures(checker: &mut TypeChecker<'_>, program: &Program) {
     // so `func new<T>(): Vec<T>` expands to `Vec<T, GlobalAllocator>` at collect time.
     collect_interfaces_and_constraints(checker, program);
     collect_signature_types(checker, program);
+    collect_derive_methods(checker, program);
 
     duplicate_module_member_info(checker, program);
     super::validate::validate_type_constraints_in_program(checker, program);
@@ -123,6 +124,19 @@ fn duplicate_module_member_info(checker: &mut TypeChecker<'_>, program: &Program
                     .type_info
                     .struct_field_defaults
                     .insert((member_id, fname), expr_id);
+            }
+            let param_defaults_for_free: Vec<_> = checker
+                .type_info
+                .func_param_defaults
+                .iter()
+                .filter(|((sym, _), _)| *sym == free_id)
+                .map(|((_, idx), pd)| (*idx, pd.clone()))
+                .collect();
+            for (idx, pd) in param_defaults_for_free {
+                checker
+                    .type_info
+                    .func_param_defaults
+                    .insert((member_id, idx), pd);
             }
         }
     }

@@ -438,6 +438,13 @@ pub(super) fn signatures_with_imports(
             .type_info
             .struct_field_defaults
             .retain(|(symbol, _), _| symbol.file_id == file_id);
+        checker
+            .type_info
+            .func_param_defaults
+            .retain(|(symbol, _), default| {
+                symbol.file_id == file_id
+                    || !matches!(default, arandu_typeck::ParamDefault::LocalExpr { .. })
+            });
         // Import aliases carry names/IDs, not the original declaration identity.
         // Retain canonical SIMD/interior-mutability and intrinsic metadata by
         // SymbolId, including re-exports. Path suffixes and imported spellings

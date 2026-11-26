@@ -140,6 +140,22 @@ impl TypeInfo {
             .into_iter()
             .filter_map(|(key, expr)| Some((key, ExprId::new(at.slot(expr.as_usize())?))))
             .collect();
+        self.func_param_defaults = std::mem::take(&mut self.func_param_defaults)
+            .into_iter()
+            .filter_map(|(key, default)| {
+                let updated = match default {
+                    super::ParamDefault::LocalExpr { expr, ty } => super::ParamDefault::LocalExpr {
+                        expr: ExprId::new(at.slot(expr.as_usize())?),
+                        ty,
+                    },
+                    other => other,
+                };
+                Some((key, updated))
+            })
+            .collect();
+        for recipe in self.derived_methods.values_mut() {
+            recipe.span = at.span(recipe.span);
+        }
     }
 
     /// Merge an item shard recorded in item-local coordinates, placing its
@@ -510,6 +526,59 @@ impl TypeInfo {
                 self.struct_field_defaults
                     .insert((remap(*sym), name.clone()), ExprId::new(slot));
             }
+        }
+        for ((sym, index), default) in &other.func_param_defaults {
+            let translated = match default {
+                super::ParamDefault::LocalExpr { expr, ty } => {
+                    let Some(slot) = at.slot(expr.as_usize()) else {
+                        continue;
+                    };
+                    super::ParamDefault::LocalExpr {
+                        expr: ExprId::new(slot),
+                        ty: reintern_type(self, other, *ty),
+                    }
+                }
+                super::ParamDefault::Int { raw, ty } => super::ParamDefault::Int {
+                    raw: raw.clone(),
+                    ty: reintern_type(self, other, *ty),
+                },
+                super::ParamDefault::Float { raw, ty } => super::ParamDefault::Float {
+                    raw: raw.clone(),
+                    ty: reintern_type(self, other, *ty),
+                },
+                super::ParamDefault::Bool(b) => super::ParamDefault::Bool(*b),
+                super::ParamDefault::Str(s) => super::ParamDefault::Str(s.clone()),
+                super::ParamDefault::Char(c) => super::ParamDefault::Char(c.clone()),
+                super::ParamDefault::Nil { ty } => super::ParamDefault::Nil {
+                    ty: reintern_type(self, other, *ty),
+                },
+            };
+            self.func_param_defaults
+                .insert((remap(*sym), *index), translated);
+        }
+        for (&sym, recipe) in &other.derived_methods {
+            let mapped = remap(sym);
+            let self_param_ty = reintern_type(self, other, recipe.self_param_ty);
+            let explicit_param_tys = recipe
+                .explicit_param_tys
+                .iter()
+                .map(|&ty| reintern_type(self, other, ty))
+                .collect();
+            let return_ty = reintern_type(self, other, recipe.return_ty);
+            self.derived_methods.insert(
+                mapped,
+                super::DeriveRecipe {
+                    type_symbol: remap(recipe.type_symbol),
+                    method_symbol: remap(recipe.method_symbol),
+                    kind: recipe.kind,
+                    self_param_ty,
+                    explicit_param_tys,
+                    return_ty,
+                    param_symbols: recipe.param_symbols.iter().map(|&p| remap(p)).collect(),
+                    is_copy: recipe.is_copy,
+                    span: at.span(recipe.span),
+                },
+            );
         }
         self.interior_mutable_types
             .extend(other.interior_mutable_types.iter().copied().map(&remap));

@@ -26,6 +26,7 @@ pub enum AnnotationId {
     Repr,
     Union,
     Cold,
+    Derive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,6 +78,7 @@ pub enum AnnotationArguments {
     OptionalString,
     OneStringOrIdent,
     EffectList,
+    OneOrMoreIdents,
 }
 
 impl AnnotationArguments {
@@ -89,6 +91,9 @@ impl AnnotationArguments {
             Self::OptionalString => "no arguments or one string argument",
             Self::OneStringOrIdent => "one string or identifier argument",
             Self::EffectList => "one or more effect identifiers or strings",
+            Self::OneOrMoreIdents => {
+                "one or more trait identifiers (PartialEq, Eq, Ord, Clone, Hash, Debug)"
+            }
         }
     }
 }
@@ -293,6 +298,16 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         availability: AnnotationAvailability::Implemented,
         summary: "Marks a function or method as infrequently executed (suppresses inlining and emits cold hints).",
     },
+    AnnotationSpec {
+        id: AnnotationId::Derive,
+        canonical_name: "Derive",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::OneOrMoreIdents,
+        repeatable: true,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Generates built-in trait implementations (PartialEq, Eq, Ord, Clone, Hash, Debug).",
+    },
 ];
 
 #[derive(Debug, Default)]
@@ -371,6 +386,12 @@ fn arguments_match(spec: &AnnotationSpec, attr: &Attribute, pool: &AstPool) -> b
                         ExprKind::Path { .. } | ExprKind::InterpolatedString { .. }
                     )
                 })
+        }
+        AnnotationArguments::OneOrMoreIdents => {
+            !attr.args.is_empty()
+                && attr.args.iter().all(
+                    |arg| matches!(pool.expr(*arg), ExprKind::Path { path } if path.len() == 1),
+                )
         }
     }
 }
@@ -530,6 +551,29 @@ pub fn validate_attributes(
                 }
             }
             if has_invalid_effect {
+                continue;
+            }
+        }
+        if spec.id == AnnotationId::Derive {
+            let mut has_invalid_derive = false;
+            for &arg in &attr.args {
+                let Some(name) = (match pool.expr(arg) {
+                    ExprKind::Path { path } if path.len() == 1 => Some(path[0].as_str()),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                if let Err(issue) = arandu_middle::derive::DeriveKind::parse(name) {
+                    out.diagnostics
+                        .push(arandu_middle::derive::invalid_derive_arg_diagnostic(
+                            issue,
+                            name,
+                            pool.expr_span(arg),
+                        ));
+                    has_invalid_derive = true;
+                }
+            }
+            if has_invalid_derive {
                 continue;
             }
         }

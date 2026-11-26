@@ -273,20 +273,46 @@ pub(super) fn synth_direct_symbol_call(
                 .with_label(span, format!("{} arguments provided", arg_ids.len()));
                 checker.diagnostics.push(diag);
             }
-        } else if params.len() != arg_ids.len() {
-            let diag = crate::Diagnostic::error(
-                crate::DiagCode::T012WrongArgCount,
-                format!(
-                    "expected {} arguments, found {}",
-                    params.len(),
-                    arg_ids.len()
-                ),
-                span,
-            )
-            .with_label(checker.pool.expr_span(callee_id), "call target is here")
-            .with_label(span, format!("{} arguments provided", arg_ids.len()));
-            let diag = super::note_trailing_block(checker, diag, &arg_ids, params.len());
-            checker.diagnostics.push(diag);
+        } else {
+            let min_params = if let Some(sym) = callee_func_sym {
+                let mut required = params.len();
+                while required > 0
+                    && checker
+                        .type_info
+                        .func_param_defaults
+                        .contains_key(&(sym, required - 1))
+                {
+                    required -= 1;
+                }
+                required
+            } else {
+                params.len()
+            };
+            if arg_ids.len() < min_params || arg_ids.len() > params.len() {
+                let expected_msg = if min_params == params.len() {
+                    format!(
+                        "expected {} arguments, found {}",
+                        params.len(),
+                        arg_ids.len()
+                    )
+                } else {
+                    format!(
+                        "expected {} to {} arguments, found {}",
+                        min_params,
+                        params.len(),
+                        arg_ids.len()
+                    )
+                };
+                let diag = crate::Diagnostic::error(
+                    crate::DiagCode::T012WrongArgCount,
+                    expected_msg,
+                    span,
+                )
+                .with_label(checker.pool.expr_span(callee_id), "call target is here")
+                .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                let diag = super::note_trailing_block(checker, diag, &arg_ids, params.len());
+                checker.diagnostics.push(diag);
+            }
         }
         for (i, arg_id) in arg_ids.iter().copied().enumerate() {
             let formal = if is_variadic && i >= params.len().saturating_sub(1) {

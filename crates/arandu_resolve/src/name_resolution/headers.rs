@@ -71,7 +71,9 @@ pub fn resolve_headers_with_poll(
                 continue;
             }
             let exports = db.exported_symbols(imported_file);
-            if mod_name == crate::AMBIENT_CLOSURE_MODULE.1 {
+            if mod_name == crate::AMBIENT_CLOSURE_MODULE.1
+                || matches!(mod_name, "std.core.hash" | "std.core.fmt")
+            {
                 link_unnamed_exports(&mut resolver, &exports, global);
                 continue;
             }

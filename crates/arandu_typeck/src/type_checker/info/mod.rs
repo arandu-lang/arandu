@@ -218,6 +218,10 @@ pub struct TypeInfo {
     pub struct_unions: rustc_hash::FxHashSet<SymbolId>,
     /// Struct field default value expressions (`(struct_symbol, field_name) -> default_expr`).
     pub struct_field_defaults: FxHashMap<(SymbolId, smol_str::SmolStr), ExprId>,
+    /// Function/method parameter defaults (`(func_symbol, param_index) -> default`).
+    pub func_param_defaults: FxHashMap<(SymbolId, usize), ParamDefault>,
+    /// Synthesized `@Derive(...)` associated method recipes, keyed by method `SymbolId`.
+    pub derived_methods: FxHashMap<SymbolId, DeriveRecipe>,
     /// Lambdas lowered as capture structs, keyed by the lambda span. Empty
     /// unless a `move ||` job or a callback argument was accepted.
     pub closures: FxHashMap<arandu_middle::Span, ClosureRecipe>,
@@ -229,6 +233,32 @@ pub struct TypeInfo {
     /// this synthetic local for the rest of the statement, like Rust's
     /// temporary scope, so its code and environment are read from one value.
     pub closure_temporaries: FxHashMap<arandu_middle::Span, ClosureTemporary>,
+}
+
+/// Recipe for synthesizing a built-in `@Derive(...)` method body in HIR lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeriveRecipe {
+    pub type_symbol: SymbolId,
+    pub method_symbol: SymbolId,
+    pub kind: arandu_middle::derive::DeriveMethodKind,
+    pub self_param_ty: TypeId,
+    pub explicit_param_tys: Vec<TypeId>,
+    pub return_ty: TypeId,
+    pub param_symbols: Vec<SymbolId>,
+    pub is_copy: bool,
+    pub span: arandu_middle::Span,
+}
+
+/// Default value attached to a function or method parameter (`port: int = 8080`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ParamDefault {
+    LocalExpr { expr: ExprId, ty: TypeId },
+    Int { raw: smol_str::SmolStr, ty: TypeId },
+    Float { raw: smol_str::SmolStr, ty: TypeId },
+    Bool(bool),
+    Str(smol_str::SmolStr),
+    Char(smol_str::SmolStr),
+    Nil { ty: TypeId },
 }
 
 /// The local an owning closure temporary is bound to, and the closure's type
@@ -318,6 +348,8 @@ impl TypeInfo {
             struct_repr_c: rustc_hash::FxHashSet::default(),
             struct_unions: rustc_hash::FxHashSet::default(),
             struct_field_defaults: FxHashMap::default(),
+            func_param_defaults: FxHashMap::default(),
+            derived_methods: FxHashMap::default(),
             closures: FxHashMap::default(),
             adjustments: FxHashMap::default(),
             closure_temporaries: FxHashMap::default(),

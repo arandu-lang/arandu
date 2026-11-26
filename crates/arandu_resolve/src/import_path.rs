@@ -196,6 +196,8 @@ pub const AMBIENT_CORE_PRELUDE_MODULES: &[(&str, &str)] = &[
     ("stdlib/core/cmp.aru", "std.core.cmp"),
     ("stdlib/core/iter.aru", "std.core.iter"),
     ("stdlib/core/marker.aru", "std.core.marker"),
+    ("stdlib/core/hash.aru", "std.core.hash"),
+    ("stdlib/core/fmt.aru", "std.core.fmt"),
 ];
 
 /// The modules linked into `current` without an import, in a fixed order.

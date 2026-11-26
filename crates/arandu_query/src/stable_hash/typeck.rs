@@ -574,8 +574,81 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    // Parameter defaults: non-local constant defaults are part of the cross-module
+    // call signature contract, while arbitrary LocalExpr defaults depend on arena ExprId.
+    {
+        let mut param_defaults: Vec<_> = info
+            .func_param_defaults
+            .iter()
+            .filter(|(_, default)| {
+                include_spans || !matches!(default, arandu_typeck::ParamDefault::LocalExpr { .. })
+            })
+            .collect();
+        param_defaults.sort_by(|((a, ai), _), ((b, bi), _)| {
+            (a.file_id, a.local_id.0, ai).cmp(&(b.file_id, b.local_id.0, bi))
+        });
+        h.update(&u64_le(param_defaults.len() as u64));
+        for ((symbol, idx), default) in param_defaults {
+            hash_symbol_id(&mut h, *symbol);
+            h.update(&u64_le(*idx as u64));
+            match default {
+                arandu_typeck::ParamDefault::LocalExpr { expr, ty } => {
+                    h.update(&[0]);
+                    hash_id(&mut h, expr.as_usize());
+                    hash_semantic_type(&mut h, *ty, &info.type_interner, symbols);
+                }
+                arandu_typeck::ParamDefault::Int { raw, ty } => {
+                    h.update(&[1]);
+                    hash_str(&mut h, raw);
+                    hash_semantic_type(&mut h, *ty, &info.type_interner, symbols);
+                }
+                arandu_typeck::ParamDefault::Float { raw, ty } => {
+                    h.update(&[2]);
+                    hash_str(&mut h, raw);
+                    hash_semantic_type(&mut h, *ty, &info.type_interner, symbols);
+                }
+                arandu_typeck::ParamDefault::Bool(v) => {
+                    h.update(&[3, u8::from(*v)]);
+                }
+                arandu_typeck::ParamDefault::Str(raw) => {
+                    h.update(&[4]);
+                    hash_str(&mut h, raw);
+                }
+                arandu_typeck::ParamDefault::Char(raw) => {
+                    h.update(&[5]);
+                    hash_str(&mut h, raw);
+                }
+                arandu_typeck::ParamDefault::Nil { ty } => {
+                    h.update(&[6]);
+                    hash_semantic_type(&mut h, *ty, &info.type_interner, symbols);
+                }
+            }
+        }
+    }
+
     // HIR lowering reads the default expression of each omitted field, by its
     // arena ID: a position, like the expression tables.
+    {
+        let mut derived: Vec<_> = info.derived_methods.iter().collect();
+        derived.sort_by_key(|(sym, _)| (sym.file_id, sym.local_id.0));
+        h.update(&u64_le(derived.len() as u64));
+        for (sym, recipe) in derived {
+            hash_symbol_id(&mut h, *sym);
+            hash_symbol_id(&mut h, recipe.type_symbol);
+            h.update(&[recipe.kind as u8, u8::from(recipe.is_copy)]);
+            hash_semantic_type(&mut h, recipe.self_param_ty, &info.type_interner, symbols);
+            h.update(&u64_le(recipe.explicit_param_tys.len() as u64));
+            for &ty in &recipe.explicit_param_tys {
+                hash_semantic_type(&mut h, ty, &info.type_interner, symbols);
+            }
+            hash_semantic_type(&mut h, recipe.return_ty, &info.type_interner, symbols);
+            h.update(&u64_le(recipe.param_symbols.len() as u64));
+            for &p in &recipe.param_symbols {
+                hash_symbol_id(&mut h, p);
+            }
+        }
+    }
+
     if include_spans {
         let mut defaults: Vec<_> = info.struct_field_defaults.iter().collect();
         defaults.sort_by(|((a, x), _), ((b, y), _)| {

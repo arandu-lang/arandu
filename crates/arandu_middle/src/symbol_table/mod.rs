@@ -197,6 +197,26 @@ pub enum LangItem {
     Ord,
     /// Three-way comparison result enum: `std.core.cmp.Ordering`.
     Ordering,
+    /// `Ordering.Less` variant.
+    OrderingLess,
+    /// `Ordering.Equal` variant.
+    OrderingEqual,
+    /// `Ordering.Greater` variant.
+    OrderingGreater,
+    /// Partial equality interface: `std.core.cmp.PartialEq`.
+    PartialEq,
+    /// Hashing interface: `std.core.hash.Hash`.
+    Hash,
+    /// Streaming hasher interface: `std.core.hash.Hasher`.
+    Hasher,
+    /// Debug formatting interface: `std.core.fmt.Debug`.
+    Debug,
+    /// Allocation-free formatter buffer: `std.core.fmt.Formatter`.
+    Formatter,
+    /// Formatting error enum: `std.core.fmt.FmtError`.
+    FmtError,
+    /// Zero-sized type marker: `std.core.marker.PhantomData`.
+    PhantomData,
 }
 
 /// What an owning closure type allows (RFC 0032, L3).

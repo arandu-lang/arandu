@@ -311,7 +311,10 @@ fn validate_zip_archive(
             .checked_add(entry.size())
             .filter(|size| *size <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
             .ok_or_else(|| "archive exceeds the 4 GiB uncompressed validation limit".to_string())?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| format!("invalid zip entry #{i} name: {e}"))?
+            .into_owned();
         validate_path_safety(&name)?;
 
         if root_candidate.is_none() {
@@ -368,7 +371,10 @@ fn validate_zip_archive(
         let entry = zip
             .by_index(i)
             .map_err(|e| format!("entry #{i} error: {e}"))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| format!("invalid zip entry #{i} name: {e}"))?
+            .into_owned();
 
         let folded = name.to_lowercase();
         if !seen.insert(folded) {

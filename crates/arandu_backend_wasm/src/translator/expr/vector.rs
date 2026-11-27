@@ -58,7 +58,8 @@ impl<'a> FuncTranslator<'a> {
                 self.code.push(Instruction::V128Load(wasm_encoder::MemArg {
                     offset: 0,
                     align: 0,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 }));
             }
             _ => unreachable!(),

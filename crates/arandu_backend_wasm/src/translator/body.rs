@@ -185,7 +185,8 @@ impl FuncTranslator<'_> {
                     self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                         offset: 4,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                     self.code.push(Instruction::LocalGet(self.scratch_b));
                 } else {
@@ -204,7 +205,8 @@ impl FuncTranslator<'_> {
                     self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                         offset: 4,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                     self.code.push(Instruction::LocalGet(self.scratch_b));
                 }
@@ -240,21 +242,24 @@ impl FuncTranslator<'_> {
                                 self.code.push(Instruction::I64Load(wasm_encoder::MemArg {
                                     offset: 0,
                                     align: 3,
-                                    memory_index: 0,
+                                    target: wasm_encoder::MemArgTarget::Memory(0),
+                                    ordering: None,
                                 }))
                             }
                             ValType::F32 => {
                                 self.code.push(Instruction::F32Load(wasm_encoder::MemArg {
                                     offset: 0,
                                     align: 2,
-                                    memory_index: 0,
+                                    target: wasm_encoder::MemArgTarget::Memory(0),
+                                    ordering: None,
                                 }))
                             }
                             ValType::F64 => {
                                 self.code.push(Instruction::F64Load(wasm_encoder::MemArg {
                                     offset: 0,
                                     align: 3,
-                                    memory_index: 0,
+                                    target: wasm_encoder::MemArgTarget::Memory(0),
+                                    ordering: None,
                                 }))
                             }
                             _ => self

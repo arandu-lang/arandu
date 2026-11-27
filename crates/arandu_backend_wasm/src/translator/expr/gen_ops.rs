@@ -162,7 +162,8 @@ impl<'a> FuncTranslator<'a> {
         let counter_memarg = wasm_encoder::MemArg {
             offset: crate::memory::GEN_COUNTER_ADDR,
             align: 2,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         };
         // The low tag bit records liveness, leaving only 31 generation bits.
         // Exhaustion must trap rather than alias an earlier live or stale handle.

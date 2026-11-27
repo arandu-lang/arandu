@@ -102,7 +102,8 @@ pub const fn noffset_memarg() -> MemArg {
     MemArg {
         offset: 0,
         align: MEM_ALIGN,
-        memory_index: 0,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
     }
 }
 

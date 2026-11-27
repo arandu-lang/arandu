@@ -57,7 +57,8 @@ impl<'a> FuncTranslator<'a> {
             let memarg = |o: u64| wasm_encoder::MemArg {
                 offset: o,
                 align: 2,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             };
             // Reorder the stack into the three words, then emit two stores.
             self.code.push(Instruction::LocalSet(self.scratch_d));
@@ -76,7 +77,8 @@ impl<'a> FuncTranslator<'a> {
         let memarg = |align: u32| wasm_encoder::MemArg {
             offset,
             align,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         };
         match size {
             1 => self.code.push(Instruction::I32Store8(memarg(0))),
@@ -98,7 +100,8 @@ impl<'a> FuncTranslator<'a> {
             let memarg = |o: u64| wasm_encoder::MemArg {
                 offset: o,
                 align: 2,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             };
             self.code.push(Instruction::LocalSet(self.scratch));
             self.code.push(Instruction::LocalGet(self.scratch));
@@ -113,7 +116,8 @@ impl<'a> FuncTranslator<'a> {
         let memarg = |align: u32| wasm_encoder::MemArg {
             offset,
             align,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         };
         match size {
             1 => {

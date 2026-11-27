@@ -27,7 +27,8 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                         offset: niche_offset,
                         align: 2,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                     self.code.push(Instruction::I32Const(niche_value as i32));
                     self.code.push(Instruction::I32Eq);
@@ -42,7 +43,8 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                         offset: pointer_offset,
                         align: 2,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                     self.code.push(Instruction::I32Const(tag_mask as i32));
                     self.code.push(Instruction::I32And);
@@ -51,7 +53,8 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                         offset: 0,
                         align: 2,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                 }
             }

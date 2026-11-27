@@ -169,7 +169,8 @@ impl<'a> FuncTranslator<'a> {
                             self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                                 offset: 4,
                                 align: 2,
-                                memory_index: 0,
+                                target: wasm_encoder::MemArgTarget::Memory(0),
+                                ordering: None,
                             }));
                             self.code.push(Instruction::I32GeU);
                             self.code.push(Instruction::If(BlockType::Empty));
@@ -179,7 +180,8 @@ impl<'a> FuncTranslator<'a> {
                             self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                                 offset: 0,
                                 align: 2,
-                                memory_index: 0,
+                                target: wasm_encoder::MemArgTarget::Memory(0),
+                                ordering: None,
                             }));
                             self.emit_operand(index_op, int_ty);
                             self.code.push(Instruction::I32Const(elem_size as i32));

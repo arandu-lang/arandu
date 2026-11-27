@@ -56,7 +56,8 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                         offset: pointer_offset,
                         align: 2,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                     let mask_inv = !(tag_mask as i32);
                     self.code.push(Instruction::I32Const(mask_inv));

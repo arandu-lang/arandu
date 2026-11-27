@@ -272,32 +272,38 @@ impl<'a> FuncTranslator<'a> {
                     ValType::I32 => self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     ValType::I64 => self.code.push(Instruction::I64Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     ValType::F32 => self.code.push(Instruction::F32Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     ValType::F64 => self.code.push(Instruction::F64Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     ValType::V128 => self.code.push(Instruction::V128Store(wasm_encoder::MemArg {
                         offset: u64::from(field.offset),
                         align: 4,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     _ => self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                 }
             }

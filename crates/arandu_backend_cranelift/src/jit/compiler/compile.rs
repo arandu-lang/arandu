@@ -401,14 +401,20 @@ impl<M: Module> AranduModule<M> {
             if let Some(debug) = &mut self.debug
                 && let Some(code) = context.compiled_code()
             {
+                let base_srcloc = context.func.params.base_srcloc();
                 let ranges = code
                     .buffer
                     .get_srclocs_sorted()
                     .iter()
                     .filter_map(|range| {
+                        let loc = if range.loc.is_rel() {
+                            range.loc.relocate(base_srcloc)
+                        } else {
+                            range.loc.as_abs()
+                        };
                         debug
                             .source_locations
-                            .get(range.loc.bits() as usize)
+                            .get(loc.bits() as usize)
                             .copied()
                             .map(|span| DebugCodeRange {
                                 start: range.start,
@@ -566,7 +572,7 @@ fn define_padded_function<M: Module>(
             )
             .map_err(|error| Box::new(error.into()))?;
         (
-            compiled.buffer.alignment,
+            compiled.buffer.min_alignment,
             compiled.buffer.data().to_vec(),
             compiled.buffer.relocs().to_vec(),
         )

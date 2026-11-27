@@ -76,14 +76,20 @@ impl<'a> WasmModuleBuilder<'a> {
 
         // Embed component-type metadata into the core module bytes.
         let mut annotated = core_bytes;
-        embed_component_metadata(&mut annotated, &resolve, world_id, StringEncoding::UTF8)
-            .map_err(|e| {
-                Diagnostic::ice(
-                    arandu_middle::diagnostics::DiagCode::ICEGEN002,
-                    format!("embed_component_metadata failed: {e:?}"),
-                    arandu_base::Span::new(0, 0, 0),
-                )
-            })?;
+        embed_component_metadata(
+            &mut annotated,
+            &resolve,
+            world_id,
+            StringEncoding::UTF8,
+            false,
+        )
+        .map_err(|e| {
+            Diagnostic::ice(
+                arandu_middle::diagnostics::DiagCode::ICEGEN002,
+                format!("embed_component_metadata failed: {e:?}"),
+                arandu_base::Span::new(0, 0, 0),
+            )
+        })?;
 
         // Encode as a WebAssembly Component.
         let component_bytes = ComponentEncoder::default()

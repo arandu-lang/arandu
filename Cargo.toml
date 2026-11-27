@@ -38,11 +38,11 @@ authors = ["Arandu Language Contributors"]
 [workspace.dependencies]
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-salsa = "0.28.5"                                                               # Salsa's new version (salsa-2022 tracked-based macro API)
-blake3 = { version = "1.8.7", features = ["rayon"] }
+salsa = "0.28.6"                                                               # Salsa's new version (salsa-2022 tracked-based macro API)
+blake3 = { version = "1.8.8", features = ["rayon"] }
 sha2 = "0.11.0"
-smol_str = "0.3.6"
-smallvec = "1.16.2"
+smol_str = "0.3.7"
+smallvec = "1.16.6"
 rustc-hash = "2.1.3"
 rustc_apfloat = "=0.2.3"
 miette = { version = "7.6.0", features = ["fancy"] }
@@ -54,17 +54,17 @@ lsp-types = "0.97.0"
 crossbeam-channel = "0.5.15"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-toml = "0.8.23"
+toml = "1.2.3"
 semver = "1.0.28"
 rowan = "0.17.0"
-bumpalo = "3.20.3"
-wasm-encoder = "0.259.0"
-wasmparser = "0.259.0"
-wit-component = "0.259.0"
-wit-parser = "0.259.0"
+bumpalo = "3.20.4"
+wasm-encoder = "0.263.0"
+wasmparser = "0.263.0"
+wit-component = "0.263.0"
+wit-parser = "0.263.0"
 tar = "0.4"
 flate2 = "1.0"
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip = { version = "9.8", default-features = false, features = ["deflate"] }
 
 
 

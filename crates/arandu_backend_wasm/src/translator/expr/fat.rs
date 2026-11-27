@@ -170,7 +170,8 @@ impl<'a> FuncTranslator<'a> {
                 let memarg = |o: u64| wasm_encoder::MemArg {
                     offset: o,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 };
                 self.code.push(Instruction::LocalGet(ptr_local));
                 self.code.push(Instruction::LocalSet(self.scratch_b));
@@ -265,7 +266,8 @@ impl<'a> FuncTranslator<'a> {
                 let memarg = |o: u64| wasm_encoder::MemArg {
                     offset: o,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 };
                 self.code.push(Instruction::LocalGet(ptr_local));
                 self.code.push(Instruction::LocalSet(self.scratch_b));

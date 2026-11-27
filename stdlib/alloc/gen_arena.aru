@@ -103,6 +103,16 @@ public func GenArena.new<T>(): GenArena<T> {
     return new<T>()
 }
 
+/// Creates an empty arena pre-sized to hold at least `cap` slots without
+/// reallocating its slot tables during initial insertions.
+public func GenArena.withCapacity<T>(cap: usize): GenArena<T> {
+    let mut a = new<T>()
+    if cap > (0 as usize) {
+        growSlots<T>(mut ref a, cap)
+    }
+    return a
+}
+
 func growSlots<T>(a: mut ref GenArena<T>, minCap: usize): void {
     if a.slots_cap >= minCap {
         return
@@ -294,6 +304,21 @@ public func GenArena.getMut<T>(self: mut ref GenArena<T>, r: GenRef): mut ref T 
         let data = checkedPointer<T>(self, r)
         let view = intrinsics.mutSliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
         return mut ref view[0 as usize]
+    }
+}
+
+/// Returns `Option.Some(T)` copying the live value when `r` is valid, or
+/// `Option.None` if stale or out of range, without building an intermediate slice view.
+public func GenArena.tryGetCopy<T: marker.Copy>(self: ref GenArena<T>, r: GenRef): Option<T> {
+    let idx = r.index as usize
+    if idx >= self.slots { return Option.None }
+    unsafe {
+        let usedPtr = mem.ptrOffset<u8>(self.used, r.index as isize)
+        if mem.ptrRead<u8>(usedPtr) == (0 as u8) { return Option.None }
+        let genPtr = mem.ptrOffset<u32>(self.gen, r.index as isize)
+        if mem.ptrRead<u32>(genPtr) != r.generation { return Option.None }
+        let data = mem.ptrOffset<T>(self.data, r.index as isize)
+        return Option.Some(mem.ptrRead<T>(data))
     }
 }
 

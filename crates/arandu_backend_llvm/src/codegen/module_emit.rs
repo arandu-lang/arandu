@@ -170,6 +170,13 @@ impl<'a> ModuleEmitter<'a> {
         );
     }
 
+    pub(super) fn require_task_arena_fast_state(&self) {
+        self.require_declaration(
+            "ar_task_arena_fast_state",
+            "declare ptr @ar_task_arena_fast_state() nounwind willreturn memory(none)",
+        );
+    }
+
     pub(super) fn require_task_arena_checkpoint(&self) {
         self.require_declaration(
             "ar_task_arena_checkpoint",

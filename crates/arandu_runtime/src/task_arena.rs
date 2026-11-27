@@ -71,9 +71,11 @@ impl Drop for ArenaChunk {
 /// Per-thread linear bump allocator supporting $O(1)$ allocation and loop-scoped
 /// checkpoint/rewind.
 ///
-/// Caches the active slab's `[base, cur, end)` pointers inline so the common
+/// Caches the active slab's `[cur, end, base)` pointers inline so the common
 /// bump-pointer fast path executes in a handful of instructions without `Vec`
-/// indexing or overflow-checked division.
+/// indexing or overflow-checked division. `#[repr(C)]` fixes `cur` at offset 0
+/// and `end` at offset `size_of::<usize>()` for LLVM's inline fast path.
+#[repr(C)]
 pub struct TaskArena {
     cur: usize,
     end: usize,
@@ -237,6 +239,15 @@ impl TaskArena {
 
 thread_local! {
     static TASK_ARENA: UnsafeCell<TaskArena> = const { UnsafeCell::new(TaskArena::new()) };
+}
+
+/// Returns a pointer to the current thread's `TaskArena` `[cur, end]` pair
+/// for inline bump-pointer allocation in LLVM-compiled code.
+#[unsafe(no_mangle)]
+pub extern "C" fn ar_task_arena_fast_state() -> *mut usize {
+    // SAFETY: `TASK_ARENA` is thread-local and `TaskArena` is `#[repr(C)]`
+    // with `cur: usize` at offset 0 and `end: usize` at offset `size_of::<usize>()`.
+    TASK_ARENA.with(|cell| cell.get().cast::<usize>())
 }
 
 /// Allocates `size` bytes with `align` alignment in the current thread's `TaskArena`.

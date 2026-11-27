@@ -867,6 +867,428 @@ fn alloc_temp(func: &mut AmirFunc, ty: TypeId, span: Span) -> TempId {
     id
 }
 
+/// Interprocedural Dual-Locus loop rewind pass (RFC 0043).
+///
+/// Computes the transitive set of functions that perform `ArenaAlloc`
+/// (`USES_TASK_ARENA`). Whenever a natural loop calls a `USES_TASK_ARENA`
+/// callee and no pointer/reference/carrier derived from that call can escape
+/// the loop iteration, this pass inserts `ArenaCheckpoint` at the loop header
+/// and `ArenaRewind` on every back-edge latch so per-iteration `TaskArena`
+/// memory is reclaimed in O(1) without manual checkpoints.
+pub fn apply_interprocedural_loop_rewinds(
+    program: &mut arandu_middle::amir::AmirProgram,
+    interner: &TypeInterner,
+) -> usize {
+    use arandu_middle::SymbolId;
+
+    let mut uses_task_arena: FxHashSet<SymbolId> = FxHashSet::default();
+    for func in &program.funcs {
+        let has_arena_alloc = func.blocks.iter().any(|block| {
+            func.block_stmts(block.id).any(|stmt| {
+                matches!(
+                    stmt,
+                    AmirStmt::Assign {
+                        rhs: AmirRvalue::ArenaAlloc { .. },
+                        ..
+                    }
+                )
+            })
+        });
+        if has_arena_alloc {
+            uses_task_arena.insert(func.symbol);
+        }
+    }
+    if uses_task_arena.is_empty() {
+        return 0;
+    }
+
+    // Worklist fixpoint: propagate USES_TASK_ARENA through direct calls.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for func in &program.funcs {
+            if uses_task_arena.contains(&func.symbol) {
+                continue;
+            }
+            let calls_arena = func.blocks.iter().any(|block| {
+                func.block_stmts(block.id).any(|stmt| {
+                    matches!(
+                        stmt,
+                        AmirStmt::Call {
+                            callee: AmirOperand::FunctionRef(sym),
+                            ..
+                        } if uses_task_arena.contains(sym)
+                    )
+                })
+            });
+            if calls_arena {
+                uses_task_arena.insert(func.symbol);
+                changed = true;
+            }
+        }
+    }
+
+    let mut rewound_loops = 0usize;
+    for func in &mut program.funcs {
+        if func.blocks.len() < 2 {
+            continue;
+        }
+        let already_rewinds_or_suspends = func.blocks.iter().any(|block| {
+            matches!(block.terminator, AmirTerminator::Suspend { .. })
+                || func
+                    .block_stmts(block.id)
+                    .any(|stmt| matches!(stmt, AmirStmt::ArenaRewind { .. }))
+        });
+        if already_rewinds_or_suspends {
+            continue;
+        }
+
+        let doms = Dominators::new(func);
+        let mut header_latches: FxHashMap<BlockId, Vec<BlockId>> = FxHashMap::default();
+        for block in &func.blocks {
+            for &succ in func.successors(block.id) {
+                if doms.dominates(succ, block.id) {
+                    header_latches.entry(succ).or_default().push(block.id);
+                }
+            }
+        }
+        if header_latches.is_empty() {
+            continue;
+        }
+
+        let mut ordered_headers: Vec<BlockId> = header_latches.keys().copied().collect();
+        ordered_headers.sort_by_key(|b| b.as_usize());
+
+        let mut insertions_header: FxHashMap<BlockId, LocalId> = FxHashMap::default();
+        let mut insertions_latch: FxHashMap<BlockId, LocalId> = FxHashMap::default();
+
+        for header in ordered_headers {
+            let latches = &header_latches[&header];
+            let loop_blocks = collect_natural_loop_blocks(func, header, latches);
+            let header_calls_arena = func.block_stmts(header).any(|stmt| {
+                matches!(
+                    stmt,
+                    AmirStmt::Call {
+                        callee: AmirOperand::FunctionRef(sym),
+                        ..
+                    } if uses_task_arena.contains(sym)
+                )
+            });
+            if header_calls_arena {
+                continue;
+            }
+            let mut seed_temps: FxHashSet<TempId> = FxHashSet::default();
+            let mut has_arena_call = false;
+            for &bid in &loop_blocks {
+                for stmt in func.block_stmts(bid) {
+                    if let AmirStmt::Call {
+                        callee: AmirOperand::FunctionRef(sym),
+                        lhs,
+                        ..
+                    } = stmt
+                        && uses_task_arena.contains(sym)
+                    {
+                        has_arena_call = true;
+                        if let Some(dest) = lhs {
+                            seed_temps.insert(*dest);
+                        }
+                    }
+                }
+            }
+            if !has_arena_call {
+                continue;
+            }
+            if !interprocedural_loop_is_safe_to_rewind(
+                func,
+                interner,
+                header,
+                &loop_blocks,
+                &seed_temps,
+            ) {
+                continue;
+            }
+            if latches.iter().any(|l| insertions_latch.contains_key(l)) {
+                continue;
+            }
+
+            let i64_ty = interner.intern(ArType::Primitive(Primitive::I64));
+            let zero_span = Span::new(0, 0, 0);
+            let mark_local = LocalId::from_usize(func.locals.len());
+            func.locals.push(AmirLocal {
+                id: mark_local,
+                ty: i64_ty,
+                is_memory: true,
+                symbol: None,
+                span: zero_span,
+                use_span: None,
+            });
+            insertions_header.insert(header, mark_local);
+            for &latch in latches {
+                insertions_latch.insert(latch, mark_local);
+            }
+            rewound_loops += 1;
+        }
+
+        if insertions_header.is_empty() {
+            continue;
+        }
+
+        let i64_ty = interner.intern(ArType::Primitive(Primitive::I64));
+        let zero_span = Span::new(0, 0, 0);
+        let old_blocks: Vec<(BlockId, Vec<AmirStmt>)> = func
+            .blocks
+            .iter()
+            .map(|b| (b.id, func.block_stmts(b.id).cloned().collect()))
+            .collect();
+
+        for (bi, (bid, stmts)) in old_blocks.into_iter().enumerate() {
+            let mut new_stmts = Vec::with_capacity(stmts.len() + 4);
+            if let Some(&mark_local) = insertions_header.get(&bid) {
+                let mark_temp = alloc_temp(func, i64_ty, zero_span);
+                new_stmts.push(AmirStmt::Assign {
+                    lhs: mark_temp,
+                    rhs: AmirRvalue::ArenaCheckpoint,
+                });
+                new_stmts.push(AmirStmt::Store {
+                    lhs: AmirPlace {
+                        local: mark_local,
+                        projections: smallvec![],
+                    },
+                    rhs: AmirOperand::Move(mark_temp),
+                });
+            }
+            new_stmts.extend(stmts);
+            if let Some(&mark_local) = insertions_latch.get(&bid) {
+                let load_temp = alloc_temp(func, i64_ty, zero_span);
+                new_stmts.push(AmirStmt::Assign {
+                    lhs: load_temp,
+                    rhs: AmirRvalue::Load(AmirPlace {
+                        local: mark_local,
+                        projections: smallvec![],
+                    }),
+                });
+                new_stmts.push(AmirStmt::ArenaRewind(AmirOperand::Move(load_temp)));
+            }
+            let start = func.stmts.len();
+            for s in new_stmts {
+                func.stmts.push(s);
+            }
+            let len = func.stmts.len() - start;
+            func.blocks[bi].statements = DenseRange::new(start, len);
+        }
+    }
+
+    rewound_loops
+}
+
+fn collect_natural_loop_blocks(
+    func: &AmirFunc,
+    header: BlockId,
+    latches: &[BlockId],
+) -> FxHashSet<BlockId> {
+    let mut loop_blocks: FxHashSet<BlockId> = FxHashSet::default();
+    loop_blocks.insert(header);
+    let mut worklist: Vec<BlockId> = Vec::new();
+    for &latch in latches {
+        if loop_blocks.insert(latch) {
+            worklist.push(latch);
+        }
+    }
+    while let Some(node) = worklist.pop() {
+        for &pred in func.predecessors(node) {
+            if pred != header && loop_blocks.insert(pred) {
+                worklist.push(pred);
+            }
+        }
+    }
+    loop_blocks
+}
+
+fn type_may_carry_arena_ref(ty: TypeId, interner: &TypeInterner) -> bool {
+    !matches!(
+        interner.resolve(ty),
+        ArType::Primitive(
+            Primitive::Int
+                | Primitive::I8
+                | Primitive::I16
+                | Primitive::I32
+                | Primitive::I64
+                | Primitive::ISize
+                | Primitive::U8
+                | Primitive::U16
+                | Primitive::U32
+                | Primitive::U64
+                | Primitive::USize
+                | Primitive::Float
+                | Primitive::F32
+                | Primitive::F64
+                | Primitive::Bool
+                | Primitive::Char
+        ) | ArType::Void
+            | ArType::Never
+    )
+}
+
+fn interprocedural_loop_is_safe_to_rewind(
+    func: &AmirFunc,
+    interner: &TypeInterner,
+    _header: BlockId,
+    loop_blocks: &FxHashSet<BlockId>,
+    seed_temps: &FxHashSet<TempId>,
+) -> bool {
+    use arandu_middle::amir::visit::{for_each_rvalue_operand, for_each_terminator_operand};
+
+    let mut tainted_temps: FxHashSet<TempId> = seed_temps
+        .iter()
+        .copied()
+        .filter(|&t| {
+            func.temps
+                .get(t.as_usize())
+                .is_none_or(|info| type_may_carry_arena_ref(info.ty, interner))
+        })
+        .collect();
+    let mut tainted_locals: FxHashSet<LocalId> = FxHashSet::default();
+
+    let operand_tainted = |op: &AmirOperand, temps: &FxHashSet<TempId>| match op {
+        AmirOperand::Copy(t) | AmirOperand::Move(t) => temps.contains(t),
+        _ => false,
+    };
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &bid in loop_blocks {
+            for stmt in func.block_stmts(bid) {
+                match stmt {
+                    AmirStmt::Assign { lhs: dest, rhs } => {
+                        let dest_may_carry = func
+                            .temps
+                            .get(dest.as_usize())
+                            .is_none_or(|info| type_may_carry_arena_ref(info.ty, interner));
+                        if !dest_may_carry {
+                            continue;
+                        }
+                        let rhs_tainted = match rhs {
+                            AmirRvalue::Load(p)
+                            | AmirRvalue::Borrow(p)
+                            | AmirRvalue::BorrowMut(p) => tainted_locals.contains(&p.local),
+                            AmirRvalue::RelativeBorrow { local, .. } => {
+                                tainted_locals.contains(local)
+                            }
+                            _ => {
+                                let mut found = false;
+                                for_each_rvalue_operand(rhs, |op| {
+                                    if operand_tainted(op, &tainted_temps) {
+                                        found = true;
+                                    }
+                                });
+                                found
+                            }
+                        };
+                        if rhs_tainted && tainted_temps.insert(*dest) {
+                            changed = true;
+                        }
+                    }
+                    AmirStmt::Store {
+                        lhs: place,
+                        rhs: value,
+                    } => {
+                        if operand_tainted(value, &tainted_temps) {
+                            if place
+                                .projections
+                                .iter()
+                                .any(|p| matches!(p, AmirProjection::Deref))
+                            {
+                                return false;
+                            }
+                            if tainted_locals.insert(place.local) {
+                                changed = true;
+                            }
+                        }
+                    }
+                    AmirStmt::Call { args, .. } => {
+                        if args.iter().any(|arg| operand_tainted(arg, &tainted_temps)) {
+                            return false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Return slot `_0` must never be tainted.
+    if tainted_temps.contains(&TempId::from_usize(0)) {
+        return false;
+    }
+
+    for block in &func.blocks {
+        let in_loop = loop_blocks.contains(&block.id);
+        if !in_loop {
+            for stmt in func.block_stmts(block.id) {
+                let mut escapes = false;
+                match stmt {
+                    AmirStmt::Assign { rhs, .. } => {
+                        match rhs {
+                            AmirRvalue::Load(p)
+                            | AmirRvalue::Borrow(p)
+                            | AmirRvalue::BorrowMut(p)
+                                if tainted_locals.contains(&p.local) =>
+                            {
+                                escapes = true;
+                            }
+                            AmirRvalue::RelativeBorrow { local, .. }
+                                if tainted_locals.contains(local) =>
+                            {
+                                escapes = true;
+                            }
+                            _ => {}
+                        }
+                        for_each_rvalue_operand(rhs, |op| {
+                            if operand_tainted(op, &tainted_temps) {
+                                escapes = true;
+                            }
+                        });
+                    }
+                    AmirStmt::Store {
+                        lhs: place,
+                        rhs: value,
+                    } => {
+                        if tainted_locals.contains(&place.local)
+                            || operand_tainted(value, &tainted_temps)
+                        {
+                            escapes = true;
+                        }
+                    }
+                    AmirStmt::Call { args, .. } => {
+                        if args.iter().any(|a| operand_tainted(a, &tainted_temps)) {
+                            escapes = true;
+                        }
+                    }
+                    _ => {}
+                }
+                if escapes {
+                    return false;
+                }
+            }
+        }
+
+        // Any tainted operand flowing through a terminator (edge args, switch/branch)
+        // conservatively blocks automatic loop rewind.
+        let mut term_tainted = false;
+        for_each_terminator_operand(&block.terminator, |op| {
+            if operand_tainted(op, &tainted_temps) {
+                term_tainted = true;
+            }
+        });
+        if term_tainted {
+            return false;
+        }
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

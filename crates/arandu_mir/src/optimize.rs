@@ -32,6 +32,15 @@ pub fn optimize_amir_checked_with_level(
     {
         return Err(issue);
     }
+    if crate::dual_locus::apply_interprocedural_loop_rewinds(program, interner) > 0
+        && let Some(issue) = crate::amir_validate::validate_amir_program(program, symbols, interner)
+            .into_iter()
+            .next()
+    {
+        return Err(
+            issue.with_note("AMIR invariant failed after interprocedural Dual-Locus rewind")
+        );
+    }
     if matches!(level, OptLevel::O1 | OptLevel::O2) {
         let inline_intrinsics = inline_intrinsic_callees(program, symbols);
         crate::inlining::inline_leaf_functions_with_options(

@@ -59,10 +59,109 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             AmirRvalue::ArenaAlloc { size, align, .. } => {
                 self.module.require_task_arena_alloc();
                 let len_ty = self.module.ptr_int_ty();
+                let alloc_size = (*size).max(1);
+                let alloc_align = (*align).max(1).next_power_of_two();
+                let has_suspend = self.func.blocks.iter().any(|block| {
+                    matches!(
+                        block.terminator,
+                        arandu_middle::amir::AmirTerminator::Suspend { .. }
+                    )
+                });
+                if has_suspend {
+                    self.writer.line(format!(
+                        "{result} = call ptr @ar_task_arena_alloc({len_ty} {alloc_size}, {len_ty} {alloc_align})"
+                    ));
+                    return Ok(());
+                }
+                // Inline bump-pointer fast path: loads thread-local `[cur, end]`
+                // once (hoistable by LLVM LICM) and only calls `ar_task_arena_alloc`
+                // on the cold slab-exhaustion path.
+                self.module.require_task_arena_fast_state();
+                let ptr_bytes = u64::from(self.module.layout.pointer_width());
+                let mask = alloc_align - 1;
+                let state = self.new_value();
+                let cur = self.new_value();
+                let end_ptr = self.new_value();
+                let end = self.new_value();
+                let aligned = if mask == 0 {
+                    cur.clone()
+                } else {
+                    let bumped = self.new_value();
+                    let masked = self.new_value();
+                    self.writer
+                        .line(format!("{state} = call ptr @ar_task_arena_fast_state()"));
+                    self.writer.line(format!(
+                        "{cur} = load {len_ty}, ptr {state}, align {ptr_bytes}"
+                    ));
+                    self.writer.line(format!(
+                        "{end_ptr} = getelementptr inbounds i8, ptr {state}, {len_ty} {ptr_bytes}"
+                    ));
+                    self.writer.line(format!(
+                        "{end} = load {len_ty}, ptr {end_ptr}, align {ptr_bytes}"
+                    ));
+                    self.writer
+                        .line(format!("{bumped} = add {len_ty} {cur}, {mask}"));
+                    self.writer.line(format!(
+                        "{masked} = and {len_ty} {bumped}, -{}",
+                        alloc_align
+                    ));
+                    masked
+                };
+                if mask == 0 {
+                    self.writer
+                        .line(format!("{state} = call ptr @ar_task_arena_fast_state()"));
+                    self.writer.line(format!(
+                        "{cur} = load {len_ty}, ptr {state}, align {ptr_bytes}"
+                    ));
+                    self.writer.line(format!(
+                        "{end_ptr} = getelementptr inbounds i8, ptr {state}, {len_ty} {ptr_bytes}"
+                    ));
+                    self.writer.line(format!(
+                        "{end} = load {len_ty}, ptr {end_ptr}, align {ptr_bytes}"
+                    ));
+                }
+                let next = self.new_value();
+                let ok1 = self.new_value();
+                let ok2 = self.new_value();
+                let ok3 = self.new_value();
+                let ok12 = self.new_value();
+                let ok = self.new_value();
+                self.writer
+                    .line(format!("{next} = add {len_ty} {aligned}, {alloc_size}"));
+                self.writer
+                    .line(format!("{ok1} = icmp uge {len_ty} {aligned}, {cur}"));
+                self.writer
+                    .line(format!("{ok2} = icmp uge {len_ty} {next}, {aligned}"));
+                self.writer
+                    .line(format!("{ok3} = icmp ule {len_ty} {next}, {end}"));
+                self.writer.line(format!("{ok12} = and i1 {ok1}, {ok2}"));
+                self.writer.line(format!("{ok} = and i1 {ok12}, {ok3}"));
+
+                let fast_bb = self.new_block();
+                let slow_bb = self.new_block();
+                let join_bb = self.new_block();
+                self.writer
+                    .line(format!("br i1 {ok}, label %{fast_bb}, label %{slow_bb}"));
+
+                self.enter_llvm_label(&fast_bb);
                 self.writer.line(format!(
-                    "{result} = call ptr @ar_task_arena_alloc({len_ty} {}, {len_ty} {})",
-                    size.max(&1),
-                    align.max(&1)
+                    "store {len_ty} {next}, ptr {state}, align {ptr_bytes}"
+                ));
+                let fast_ptr = self.new_value();
+                self.writer
+                    .line(format!("{fast_ptr} = inttoptr {len_ty} {aligned} to ptr"));
+                self.writer.line(format!("br label %{join_bb}"));
+
+                self.enter_llvm_label(&slow_bb);
+                let slow_ptr = self.new_value();
+                self.writer.line(format!(
+                    "{slow_ptr} = call ptr @ar_task_arena_alloc({len_ty} {alloc_size}, {len_ty} {alloc_align})"
+                ));
+                self.writer.line(format!("br label %{join_bb}"));
+
+                self.enter_llvm_label(&join_bb);
+                self.writer.line(format!(
+                    "{result} = phi ptr [ {fast_ptr}, %{fast_bb} ], [ {slow_ptr}, %{slow_bb} ]"
                 ));
                 Ok(())
             }

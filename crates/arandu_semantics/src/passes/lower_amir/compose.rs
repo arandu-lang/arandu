@@ -165,6 +165,11 @@ pub fn compose_function_units(
                         aggregate
                             .symbols_mut()
                             .register_synthetic(input.placed(source));
+                    } else if matches!(
+                        source.kind,
+                        arandu_middle::SymbolKind::Local | arandu_middle::SymbolKind::Param
+                    ) {
+                        continue;
                     } else {
                         return Err(vec![ice(
                             "composition is missing an entry-file source symbol",

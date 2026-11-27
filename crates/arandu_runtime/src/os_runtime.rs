@@ -220,7 +220,13 @@ pub unsafe extern "C" fn ar_env_var_is_set(ptr: *const u8, len: i64) -> i64 {
     if len <= 0 || ptr.is_null() {
         return 0;
     }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let Some(byte_len) = usize::try_from(len)
+        .ok()
+        .filter(|&n| n <= isize::MAX as usize)
+    else {
+        return 0;
+    };
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, byte_len) };
     let Ok(name) = std::str::from_utf8(bytes) else {
         return 0;
     };

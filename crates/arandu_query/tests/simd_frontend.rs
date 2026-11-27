@@ -129,7 +129,7 @@ fn intrinsic_abi_rejects_wrong_lane_width_and_struct_literal_construction() {
            extern "arandu-intrinsic" { func simdF32x4Splat(value: f64): F32x4 }
         "#,
         r#"import std.core.simd as simd
-           func main(): int { let invalid = simd.F32x4 {} return 0 }
+           func main(): int { let invalid = simd.F32x4 {}; return 0 }
         "#,
     ] {
         let mut db = database();

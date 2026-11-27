@@ -44,12 +44,24 @@ func allocationFailure(): void {
 }
 
 extern "C" {
+    /// Allocator for typed buffers using target-provided alignment.
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    /// Matching deallocator for `ar_rt_alloc_aligned`.
+    func ar_rt_free_aligned(p: ptr[u8], size: usize, align: usize): void
     /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: usize): ptr[u8]
     /// Host deallocator for a raw byte buffer.
     func ar_vec_buf_free(p: ptr[u8], size: usize): void
     /// Host allocator that resizes a raw byte buffer.
     func ar_vec_realloc(p: ptr[u8], oldSize: usize, newSize: usize): ptr[u8]
+}
+
+func genArenaDataAlign<T>(): usize {
+    let a = mem.alignOf<T>()
+    if a < (16 as usize) {
+        return 16 as usize
+    }
+    return a
 }
 
 /// Handle identifying a slot and the generation when it was inserted.
@@ -143,21 +155,38 @@ func growSlots<T>(a: mut ref GenArena<T>, minCap: usize): void {
         }
     }
     let oldSlots = a.slots_cap
+    let dataAlign = genArenaDataAlign<T>()
     unsafe {
         let nullp: ptr[u8] = nil
-        let pData = ar_vec_realloc(a.data as ptr[u8], oldSlots * elem, newCap * elem)
+        let pData = ar_rt_alloc_aligned(newCap * elem, dataAlign)
         if pData == nullp {
             intrinsics.abort()
         }
         let pGen = ar_vec_realloc(a.gen as ptr[u8], oldSlots * genElem, newCap * genElem)
         if pGen == nullp {
+            ar_rt_free_aligned(pData, newCap * elem, dataAlign)
             intrinsics.abort()
         }
         let pUsed = ar_vec_realloc(a.used as ptr[u8], oldSlots * usedElem, newCap * usedElem)
         if pUsed == nullp {
+            ar_rt_free_aligned(pData, newCap * elem, dataAlign)
             intrinsics.abort()
         }
-        a.data = pData as ptr[T]
+        let newData = pData as ptr[T]
+        if oldSlots > (0 as usize) {
+            let mut idx: usize = 0 as usize
+            while idx < a.slots {
+                let u = mem.ptrRead<u8>(mem.ptrOffset<u8>(pUsed, idx as isize))
+                if u != (0 as u8) {
+                    let src = mem.ptrOffset<T>(a.data, idx as isize)
+                    let dst = mem.ptrOffset<T>(newData, idx as isize)
+                    mem.ptrWrite<T>(dst, mem.ptrRead<T>(src))
+                }
+                idx = idx + (1 as usize)
+            }
+            ar_rt_free_aligned(a.data as ptr[u8], oldSlots * elem, dataAlign)
+        }
+        a.data = newData
         a.gen = pGen as ptr[u32]
         a.used = pUsed as ptr[u8]
         a.slots_cap = newCap
@@ -429,7 +458,7 @@ func destroyGenArena<T>(a: mut ref GenArena<T>): void {
                 }
                 i = i + (1 as usize)
             }
-            ar_vec_buf_free(a.data as ptr[u8], a.slots_cap * elem)
+            ar_rt_free_aligned(a.data as ptr[u8], a.slots_cap * elem, genArenaDataAlign<T>())
             ar_vec_buf_free(a.gen as ptr[u8], a.slots_cap * genElem)
             ar_vec_buf_free(a.used as ptr[u8], a.slots_cap * usedElem)
         }

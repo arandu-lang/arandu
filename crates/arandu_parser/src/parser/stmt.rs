@@ -238,6 +238,14 @@ impl<'a> Parser<'a> {
                 .to_string();
             self.advance();
             Some(SmolStr::new(name))
+        } else if self.current().kind == TokenKind::Colon
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| matches!(t.kind, TokenKind::IdentValue | TokenKind::IdentType))
+        {
+            self.advance(); // consume ':'
+            Some(self.expect_name_like()?)
         } else if !self.at_kind_name("SEMICOLON")
             && !self.at_kind_name("RBRACE")
             && !self.at_kind_name("EOF")
@@ -266,6 +274,14 @@ impl<'a> Parser<'a> {
                 .to_string();
             self.advance();
             Some(SmolStr::new(name))
+        } else if self.current().kind == TokenKind::Colon
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| matches!(t.kind, TokenKind::IdentValue | TokenKind::IdentType))
+        {
+            self.advance(); // consume ':'
+            Some(self.expect_name_like()?)
         } else if !self.at_kind_name("SEMICOLON")
             && !self.at_kind_name("RBRACE")
             && !self.at_kind_name("EOF")

@@ -368,9 +368,14 @@ func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h
             let bit = intrinsics.bitTrailingZeros32(matchMask) as usize
             let idx = (pos + bit) & self.mask
             let mut same_key = false
-            match self.buckets.asSlice()[idx].asRef() {
-                Some(entry) => {
-                    same_key = entry.hash == h && entry.key.eq(ref key)
+            match self.buckets.get(idx) {
+                Some(slot) => {
+                    match slot.asRef() {
+                        Some(entry) => {
+                            same_key = entry.hash == h && entry.key.eq(ref key)
+                        }
+                        None => {}
+                    }
                 }
                 None => {}
             }

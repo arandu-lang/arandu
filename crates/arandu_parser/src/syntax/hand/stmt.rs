@@ -167,6 +167,14 @@ pub fn parse_stmt_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
                 let lbl = cur.bump()?;
                 let raw = ctx.text(lbl)?;
                 Some((SmolStr::new(raw.trim_start_matches('\'')), lbl))
+            } else if cur.peek_kind() == Some(TokenKind::Colon)
+                && cur
+                    .peek_at(1)
+                    .is_some_and(|t| t.kind == TokenKind::IdentValue)
+            {
+                let _colon = cur.bump()?;
+                let lbl = cur.bump()?;
+                Some((SmolStr::new(ctx.text(lbl)?), lbl))
             } else if cur.peek_kind() == Some(TokenKind::IdentValue) {
                 let lbl = cur.bump()?;
                 Some((SmolStr::new(ctx.text(lbl)?), lbl))
@@ -186,6 +194,14 @@ pub fn parse_stmt_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
                 let lbl = cur.bump()?;
                 let raw = ctx.text(lbl)?;
                 Some((SmolStr::new(raw.trim_start_matches('\'')), lbl))
+            } else if cur.peek_kind() == Some(TokenKind::Colon)
+                && cur
+                    .peek_at(1)
+                    .is_some_and(|t| t.kind == TokenKind::IdentValue)
+            {
+                let _colon = cur.bump()?;
+                let lbl = cur.bump()?;
+                Some((SmolStr::new(ctx.text(lbl)?), lbl))
             } else if cur.peek_kind() == Some(TokenKind::IdentValue) {
                 let lbl = cur.bump()?;
                 Some((SmolStr::new(ctx.text(lbl)?), lbl))

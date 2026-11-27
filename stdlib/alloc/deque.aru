@@ -34,8 +34,16 @@ import std.core.intrinsics as intrinsics
 import std.core.option as option
 
 extern "C" {
-    func ar_vec_malloc(size: usize): ptr[u8]
-    func ar_vec_buf_free(p: ptr[u8], size: usize): void
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    func ar_rt_free_aligned(p: ptr[u8], size: usize, align: usize): void
+}
+
+func dequeAllocAlign<T>(): usize {
+    let a = mem.alignOf<T>()
+    if a < (16 as usize) {
+        return 16 as usize
+    }
+    return a
 }
 
 const MINIMUM_CAPACITY = 8 as usize
@@ -109,7 +117,7 @@ public func VecDeque.withCapacity<T>(capacity: usize): VecDeque<T> {
     }
     let cap = roundUpPowerOfTwo<T>(capacity)
     unsafe {
-        let raw = ar_vec_malloc(cap * elemSize<T>())
+        let raw = ar_rt_alloc_aligned(cap * elemSize<T>(), dequeAllocAlign<T>())
         let nullp: ptr[u8] = nil
         if raw == nullp {
             intrinsics.abort()
@@ -153,7 +161,8 @@ func VecDeque.grow<T>(self: mut ref VecDeque<T>): void {
     }
 
     unsafe {
-        let raw = ar_vec_malloc(newCap * elemSize<T>())
+        let align = dequeAllocAlign<T>()
+        let raw = ar_rt_alloc_aligned(newCap * elemSize<T>(), align)
         let nullp: ptr[u8] = nil
         if raw == nullp {
             intrinsics.abort()
@@ -161,18 +170,20 @@ func VecDeque.grow<T>(self: mut ref VecDeque<T>): void {
         let newData = raw as ptr[T]
 
         // Copy elements in order from old buffer to new buffer
-        let mut i = 0 as usize
-        let mask = self.capacity - (1 as usize)
-        while i < self.len {
-            let phys = (self.head + i) & mask
-            let src = mem.ptrOffset<T>(self.data, phys as isize)
-            let dst = mem.ptrOffset<T>(newData, i as isize)
-            mem.ptrWrite<T>(dst, mem.ptrRead<T>(src))
-            i = i + (1 as usize)
+        if self.len > (0 as usize) {
+            let mut i = 0 as usize
+            let mask = self.capacity - (1 as usize)
+            while i < self.len {
+                let phys = (self.head + i) & mask
+                let src = mem.ptrOffset<T>(self.data, phys as isize)
+                let dst = mem.ptrOffset<T>(newData, i as isize)
+                mem.ptrWrite<T>(dst, mem.ptrRead<T>(src))
+                i = i + (1 as usize)
+            }
         }
 
         if self.capacity > (0 as usize) {
-            ar_vec_buf_free(self.data as ptr[u8], self.capacity * elemSize<T>())
+            ar_rt_free_aligned(self.data as ptr[u8], self.capacity * elemSize<T>(), align)
         }
 
         self.data = newData
@@ -313,6 +324,10 @@ public func VecDeque.backMut<T>(self: mut ref VecDeque<T>): Option<mut ref T> {
 
 /// Clears all elements from the deque without releasing allocated capacity.
 public func VecDeque.clear<T>(self: mut ref VecDeque<T>): void {
+    if self.len == (0 as usize) {
+        self.head = 0 as usize
+        return
+    }
     unsafe {
         let mask = self.capacity - (1 as usize)
         let mut i = 0 as usize
@@ -332,7 +347,7 @@ func destroyVecDeque<T>(d: mut ref VecDeque<T>): void {
     if d.data != nullp && d.capacity > (0 as usize) {
         d.clear()
         unsafe {
-            ar_vec_buf_free(d.data as ptr[u8], d.capacity * elemSize<T>())
+            ar_rt_free_aligned(d.data as ptr[u8], d.capacity * elemSize<T>(), dequeAllocAlign<T>())
         }
     }
 }

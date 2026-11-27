@@ -21,37 +21,37 @@ module std.runtime.supervisor
 
 extern "C" {
     /// Host worker supervisor creation.
-    func ar_rt_supervisor_create(): int
+    func ar_rt_supervisor_create(): i64
     /// Host worker supervisor destruction.
-    func ar_rt_supervisor_destroy(id: int): void
+    func ar_rt_supervisor_destroy(id: i64): void
     /// Host worker spawn using a pointer and length path.
-    func ar_rt_supervisor_spawn(sup: int, path_ptr: ptr[u8], path_len: int, max_restarts: int): int
+    func ar_rt_supervisor_spawn(sup: i64, path_ptr: ptr[u8], path_len: i64, max_restarts: i64): i64
     /// Host query for a worker status.
-    func ar_rt_supervisor_poll(sup: int, worker: int): int
+    func ar_rt_supervisor_poll(sup: i64, worker: i64): i64
     /// Host wait for a worker to finish.
-    func ar_rt_supervisor_wait(sup: int, worker: int): int
+    func ar_rt_supervisor_wait(sup: i64, worker: i64): i64
     /// Host request to terminate a worker.
-    func ar_rt_supervisor_kill(sup: int, worker: int): int
+    func ar_rt_supervisor_kill(sup: i64, worker: i64): i64
 }
 
 // Host wrapper that accepts language `str` (fat) — declared with str ABI.
 extern "C" {
     /// Host worker spawn using an Arandu string path.
-    func ar_rt_supervisor_spawn_str(sup: int, path: str, max_restarts: int): int
+    func ar_rt_supervisor_spawn_str(sup: i64, path: str, max_restarts: i64): i64
 }
 
 /// experimental — not Minimal 0.1
 public struct Supervisor {
     /// Opaque host handle.
-    id: int
+    id: i64
 }
 
 /// experimental — not Minimal 0.1
 ///
-/// POD auto-copy (`id: int`).
+/// POD auto-copy (`id: i64`).
 public struct WorkerHandle {
     /// Opaque host handle.
-    id: int
+    id: i64
 }
 
 /// Creates a host worker supervisor and stores its integer handle.
@@ -82,7 +82,7 @@ public func Supervisor.close(self: mut ref Supervisor): void {
 /// worker `id` signals failure; the wrapper does not return `Result`.
 public func Supervisor.spawn(self: ref Supervisor, path: str, maxRestarts: int): WorkerHandle {
     unsafe {
-        return WorkerHandle { id: ar_rt_supervisor_spawn_str(self.id, path, maxRestarts) }
+        return WorkerHandle { id: ar_rt_supervisor_spawn_str(self.id, path, maxRestarts as i64) }
     }
 }
 
@@ -92,7 +92,7 @@ public func Supervisor.spawn(self: ref Supervisor, path: str, maxRestarts: int):
 /// restart, or `-1` on error. The worker must belong to this supervisor.
 public func Supervisor.poll(self: ref Supervisor, w: WorkerHandle): int {
     unsafe {
-        return ar_rt_supervisor_poll(self.id, w.id)
+        return ar_rt_supervisor_poll(self.id, w.id) as int
     }
 }
 
@@ -102,7 +102,7 @@ public func Supervisor.poll(self: ref Supervisor, w: WorkerHandle): int {
 /// does not apply the automatic restart action used by `Supervisor.poll`.
 public func Supervisor.wait(self: ref Supervisor, w: WorkerHandle): int {
     unsafe {
-        return ar_rt_supervisor_wait(self.id, w.id)
+        return ar_rt_supervisor_wait(self.id, w.id) as int
     }
 }
 
@@ -112,6 +112,6 @@ public func Supervisor.wait(self: ref Supervisor, w: WorkerHandle): int {
 /// to this supervisor.
 public func Supervisor.kill(self: ref Supervisor, w: WorkerHandle): int {
     unsafe {
-        return ar_rt_supervisor_kill(self.id, w.id)
+        return ar_rt_supervisor_kill(self.id, w.id) as int
     }
 }

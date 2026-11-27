@@ -486,7 +486,7 @@ fn discarded_branches_have_no_argument_obligations() {
 #[test]
 fn computed_arguments_in_match_arms_keep_their_lexical_scope() {
     {
-        let body = "func main(): uint { let value = Option.Some(0 as uint)\nreturn match value { Option.Some(x) => count<comptime (20 + 22)>() + x Option.None => 0 } }";
+        let body = "func main(): uint { let value = Option.Some(0 as uint)\nreturn match value { Option.Some(x) => count<comptime (20 + 22)>() + x, Option.None => 0 } }";
         let mut db = DatabaseImpl::new();
         let file = db.new_file("arguments.aru".into(), format!("{COUNT}{body}"));
         assert_eq!(values(&db, file), [Some(42)]);
@@ -498,7 +498,7 @@ fn computed_arguments_in_match_arms_keep_their_lexical_scope() {
     }
     for body in [
         "func main(): uint { let f = |value uint| { return count<comptime (value + 1)>() }\nreturn f(0) }",
-        "func main(): uint { let value = Option.Some(0 as uint)\nreturn match value { Option.Some(value) => count<comptime (value + 1)>() Option.None => 0 } }",
+        "func main(): uint { let value = Option.Some(0 as uint)\nreturn match value { Option.Some(value) => count<comptime (value + 1)>(), Option.None => 0 } }",
     ] {
         let mut db = DatabaseImpl::new();
         let file = db.new_file(

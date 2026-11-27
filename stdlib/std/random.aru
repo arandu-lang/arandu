@@ -174,12 +174,26 @@ public func Xoshiro256PlusPlus.nextBool(self: mut ref Xoshiro256PlusPlus): bool 
     return (self.nextU64() & (1 as u64)) == (1 as u64)
 }
 
-/// Returns a float uniformly distributed in `[minVal, maxVal)`.
+/// Returns a float uniformly distributed in `[minVal, maxVal)` for finite,
+/// ordered bounds. Equal or reversed bounds return `minVal`.
 public func Xoshiro256PlusPlus.genRangeFloat(self: mut ref Xoshiro256PlusPlus, minVal: float, maxVal: float): float {
     if minVal >= maxVal {
         return minVal
     }
-    return minVal + self.nextFloat() * (maxVal - minVal)
+    let unit = self.nextFloat()
+    let mut value = minVal
+    if minVal < 0.0 && maxVal > 0.0 {
+        // Convex interpolation avoids overflowing `maxVal - minVal` when the
+        // finite bounds have opposite signs and a very large distance apart.
+        value = minVal * (1.0 - unit) + maxVal * unit
+    } else {
+        value = minVal + unit * (maxVal - minVal)
+    }
+    // Rounding can land exactly on the exclusive upper bound.
+    if value < minVal || value >= maxVal {
+        return minVal
+    }
+    return value
 }
 
 /// Fills `dest` with pseudorandom bytes.
@@ -224,7 +238,7 @@ public func Xoshiro256PlusPlus.genRange(self: mut ref Xoshiro256PlusPlus, minVal
 /// Fills `dest` with operating system entropy from the operating system.
 ///
 /// Returns `true` on success, or `false` if the system entropy source fails.
-public func fillEntropy(dest: []u8): bool {
+public func fillEntropy(dest: mut []u8): bool {
     let len = slice.len<u8>(dest)
     if len == (0 as usize) { return true }
     unsafe {

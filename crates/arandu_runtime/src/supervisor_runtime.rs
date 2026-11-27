@@ -26,17 +26,33 @@ struct Supervisor {
 
 type SharedSupervisor = Arc<Mutex<Supervisor>>;
 
-static SUPERS: Mutex<Vec<Option<SharedSupervisor>>> = Mutex::new(Vec::new());
+struct SupervisorEntry {
+    generation: u32,
+    value: Option<SharedSupervisor>,
+}
 
-fn lock() -> std::sync::MutexGuard<'static, Vec<Option<SharedSupervisor>>> {
+static SUPERS: Mutex<Vec<SupervisorEntry>> = Mutex::new(Vec::new());
+
+fn lock() -> std::sync::MutexGuard<'static, Vec<SupervisorEntry>> {
     SUPERS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn get_supervisor(id: i64) -> Option<SharedSupervisor> {
+fn decode_id(id: i64) -> Option<(usize, u32)> {
     if id < 0 {
         return None;
     }
-    lock().get(id as usize).and_then(Clone::clone)
+    Some(((id as u32) as usize, (id >> 32) as u32))
+}
+
+fn get_supervisor(id: i64) -> Option<SharedSupervisor> {
+    let (index, generation) = decode_id(id)?;
+    if generation == 0 {
+        return None;
+    }
+    lock()
+        .get(index)
+        .filter(|entry| entry.generation == generation)
+        .and_then(|entry| entry.value.clone())
 }
 
 fn checked_path_len(length: i64) -> Option<usize> {
@@ -55,13 +71,22 @@ pub unsafe extern "C" fn ar_rt_supervisor_create() -> i64 {
         workers: Vec::new(),
         closed: false,
     }));
-    if let Some(idx) = g.iter().position(|x| x.is_none()) {
-        g[idx] = Some(s);
-        return idx as i64;
+    if let Some(idx) = g
+        .iter()
+        .position(|entry| entry.value.is_none() && entry.generation != 0)
+    {
+        let generation = g[idx].generation;
+        g[idx].value = Some(s);
+        return ((generation as i64) << 32) | idx as i64;
     }
-    let id = g.len() as i64;
-    g.push(Some(s));
-    id
+    if g.len() > u32::MAX as usize {
+        return -1;
+    }
+    g.push(SupervisorEntry {
+        generation: 1,
+        value: Some(s),
+    });
+    (1_i64 << 32) | (g.len() - 1) as i64
 }
 
 /// Destroy a supervisor and reap its workers.
@@ -73,9 +98,9 @@ pub unsafe extern "C" fn ar_rt_supervisor_create() -> i64 {
 /// `id` from create.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_supervisor_destroy(id: i64) {
-    if id < 0 {
+    let Some((index, generation)) = decode_id(id) else {
         return;
-    }
+    };
     let Some(supervisor) = get_supervisor(id) else {
         return;
     };
@@ -86,12 +111,19 @@ pub unsafe extern "C" fn ar_rt_supervisor_destroy(id: i64) {
     };
     {
         let mut table = lock();
-        if let Some(slot) = table.get_mut(id as usize)
-            && slot
+        if let Some(entry) = table.get_mut(index)
+            && entry.generation == generation
+            && entry
+                .value
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, &supervisor))
         {
-            *slot = None;
+            entry.value = None;
+            if entry.generation < 0x7fff_ffff {
+                entry.generation += 1;
+            } else {
+                entry.generation = 0;
+            }
         }
     }
     for worker in workers.into_iter().flatten() {
@@ -333,6 +365,19 @@ mod tests {
             let s = ar_rt_supervisor_create();
             assert!(s >= 0);
             ar_rt_supervisor_destroy(s);
+        }
+    }
+
+    #[test]
+    fn stale_supervisor_handle_cannot_destroy_reused_slot() {
+        unsafe {
+            let stale = ar_rt_supervisor_create();
+            ar_rt_supervisor_destroy(stale);
+            let current = ar_rt_supervisor_create();
+            assert_ne!(stale, current);
+            ar_rt_supervisor_destroy(stale);
+            assert!(get_supervisor(current).is_some());
+            ar_rt_supervisor_destroy(current);
         }
     }
 

@@ -36,6 +36,134 @@ fn check(source: &str) -> Output {
     invoke("check", source)
 }
 
+#[cfg(unix)]
+#[test]
+fn directory_name_bytes_preserve_non_utf8_host_names() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let directory =
+        std::env::temp_dir().join(format!("arandu-non-utf8-dir-{}-{id}", std::process::id()));
+    fs::create_dir(&directory).expect("create non-UTF-8 name test directory");
+    fs::write(
+        directory.join(std::ffi::OsString::from_vec(vec![0xff])),
+        b"",
+    )
+    .expect("create non-UTF-8 filename");
+    let directory = directory.to_str().expect("UTF-8 temp directory");
+    let source = format!(
+        r#"module tests.borrowed_views.non_utf8_directory_name
+import std.core.mem as mem
+import std.core.slice as slice
+import std.fs as fs
+
+@Effects(FileRead, Foreign)
+func main(): int {{
+    match fs.readDir("{directory}") {{
+        Ok(listing) => {{
+            if listing.len() != 1 as usize {{ return 1 }}
+            let name = listing.name(0 as usize)
+            if slice.len<u8>(name) != 1 as usize {{ return 2 }}
+            let first = unsafe {{ mem.ptrRead<u8>(slice.asPtr<u8>(name)) }}
+            if first as int != 255 {{ return 3 }}
+            let text = listing.nameStr(0 as usize)
+            if *text != "�" {{ return 4 }}
+            return 0
+        }}
+        Err(_) => {{ return 5 }}
+    }}
+}}
+"#
+    );
+    let output = invoke("run", &source);
+    let _ = fs::remove_dir_all(directory);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "directory listing did not preserve raw name bytes: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    if !Command::new("gcc")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        return;
+    }
+    fs::create_dir(directory).expect("recreate non-UTF-8 name test directory");
+    fs::write(
+        std::path::Path::new(directory).join(std::ffi::OsString::from_vec(vec![0xff])),
+        b"",
+    )
+    .expect("recreate non-UTF-8 filename");
+    let emitted = invoke_with_args("emit-c", &source, &["--layout=host"]);
+    assert!(
+        emitted.status.success(),
+        "C emission failed: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let stem = std::env::temp_dir().join(format!("arandu-non-utf8-c-{}-{id}", std::process::id()));
+    let c_file = stem.with_extension("c");
+    fs::write(&c_file, &emitted.stdout).expect("write generated C");
+    let compiled = Command::new("gcc")
+        .arg(&c_file)
+        .arg("-o")
+        .arg(&stem)
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
+        .output()
+        .expect("compile generated C");
+    assert!(
+        compiled.status.success(),
+        "C compilation failed: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let executed = Command::new(&stem)
+        .current_dir(workspace_root())
+        .output()
+        .expect("run generated C");
+    let _ = fs::remove_file(c_file);
+    let _ = fs::remove_file(stem);
+    assert_eq!(
+        executed.status.code(),
+        Some(0),
+        "C directory listing did not preserve raw name bytes: {}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+}
+
+#[test]
+fn top_level_write_rejects_absolute_paths_outside_its_directory_capability() {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "arandu-absolute-write-rejected-{}-{id}",
+        std::process::id()
+    ));
+    let path_text = path.to_str().expect("UTF-8 temp path").replace('\\', "/");
+    let source = format!(
+        r#"module tests.borrowed_views.absolute_write_rejected
+import std.fs as fs
+
+@Effects(FileWrite, Foreign)
+func main(): int {{
+    match fs.write("{path_text}", "must not be written") {{
+        Ok(_) => {{ return 1 }}
+        Err(_) => {{ return 0 }}
+    }}
+}}
+"#
+    );
+    let output = invoke("run", &source);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "absolute path unexpectedly escaped the current-directory capability: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!path.exists(), "absolute output path was created");
+}
+
 const DIRECTORY_NAME_VIEWS_SOURCE: &str = r#"module tests.borrowed_views.directory_multiple_names
 import std.fs as fs
 
@@ -594,7 +722,7 @@ fn c_backend_directory_name_views_coexist() {
     );
     let generated_c = String::from_utf8_lossy(&emitted.stdout);
     assert!(
-        generated_c.contains("names_total_len > SIZE_MAX - nlen")
+        generated_c.contains("names_total_len > SIZE_MAX - additional_names")
             && generated_c.contains("blob_len > INT32_MAX")
             && generated_c.contains("entries_cap * 2 > SIZE_MAX / sizeof(ArHostDirEntry)")
             && generated_c.contains("readdir_error = errno")

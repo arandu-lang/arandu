@@ -84,7 +84,7 @@ fn publish_udp(socket: SharedUdpSocket) -> Option<i32> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_net_udp_bind(host_ptr: *const u8, host_len: usize, port: i32) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
-        if host_ptr.is_null() || !(0..=65535).contains(&port) {
+        if host_ptr.is_null() || host_len > isize::MAX as usize || !(0..=65535).contains(&port) {
             return None;
         }
         let host =
@@ -113,7 +113,12 @@ pub unsafe extern "C" fn ar_net_udp_send_to(
     port: i32,
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
-        if (buf.is_null() && len != 0) || host_ptr.is_null() || !(0..=65535).contains(&port) {
+        if (buf.is_null() && len != 0)
+            || len > i32::MAX as usize
+            || host_ptr.is_null()
+            || host_len > isize::MAX as usize
+            || !(0..=65535).contains(&port)
+        {
             return None;
         }
         let host =
@@ -150,7 +155,7 @@ pub unsafe extern "C" fn ar_net_udp_recv_from(
     port_out: *mut i32,
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
-        if buf.is_null() && len != 0 {
+        if (buf.is_null() && len != 0) || len > i32::MAX as usize {
             return None;
         }
         let socket = get_udp_socket(id)?;
@@ -215,13 +220,18 @@ pub unsafe extern "C" fn ar_net_dns_resolve(
     ip_cap: usize,
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
-        if name_ptr.is_null() || ip_buf.is_null() || ip_cap == 0 {
+        if name_ptr.is_null()
+            || name_len > isize::MAX as usize
+            || ip_buf.is_null()
+            || ip_cap == 0
+            || ip_cap > isize::MAX as usize
+        {
             return None;
         }
         let host =
             std::str::from_utf8(unsafe { std::slice::from_raw_parts(name_ptr, name_len) }).ok()?;
         use std::net::ToSocketAddrs;
-        let query = format!("{host}:0");
+        let query = format_udp_endpoint(host, 0);
         if let Ok(mut addrs) = query.to_socket_addrs()
             && let Some(addr) = addrs.next()
         {

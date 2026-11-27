@@ -138,7 +138,7 @@ func main(): int {
 #[test]
 fn size_core_retains_allocator_for_implicit_large_aggregate_storage() {
     let bytes = compile_size(
-        "func main(): int { let values: [20000]u8 = [7 as u8; 20000] if values[19999] == 7 { return 0 } return 1 }",
+        "func main(): int { let values: [20000]u8 = [7 as u8; 20000]; if values[19999] == 7 { return 0 } return 1 }",
         false,
     );
     wasmparser::Validator::new().validate_all(&bytes).unwrap();

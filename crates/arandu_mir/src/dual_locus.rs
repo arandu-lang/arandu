@@ -1206,10 +1206,10 @@ fn interprocedural_loop_is_safe_to_rewind(
                             }
                         }
                     }
-                    AmirStmt::Call { args, .. } => {
-                        if args.iter().any(|arg| operand_tainted(arg, &tainted_temps)) {
-                            return false;
-                        }
+                    AmirStmt::Call { args, .. }
+                        if args.iter().any(|arg| operand_tainted(arg, &tainted_temps)) =>
+                    {
+                        return false;
                     }
                     _ => {}
                 }
@@ -1260,10 +1260,10 @@ fn interprocedural_loop_is_safe_to_rewind(
                             escapes = true;
                         }
                     }
-                    AmirStmt::Call { args, .. } => {
-                        if args.iter().any(|a| operand_tainted(a, &tainted_temps)) {
-                            escapes = true;
-                        }
+                    AmirStmt::Call { args, .. }
+                        if args.iter().any(|a| operand_tainted(a, &tainted_temps)) =>
+                    {
+                        escapes = true;
                     }
                     _ => {}
                 }

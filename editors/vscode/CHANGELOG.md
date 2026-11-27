@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Release candidate promotion preparation.
+
 ## 0.2.0
 
 - Legacy annotation spellings (`@no_fallback`, `@repr`, ...) are unknown annotations (N012); the quick fix replaces them with the canonical name and hover names it.

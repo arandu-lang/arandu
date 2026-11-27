@@ -160,9 +160,12 @@ pub unsafe extern "C" fn ar_vec_clear(id: i64) {
 /// `id` must be a valid vector handle allocated by [`ar_vec_new`] and must not be used afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_vec_destroy(id: i64) {
+    let Ok(index) = usize::try_from(id) else {
+        return;
+    };
     let mut g = lock();
-    if (id as usize) < g.len() {
-        g[id as usize] = None;
+    if index < g.len() {
+        g[index] = None;
     }
 }
 

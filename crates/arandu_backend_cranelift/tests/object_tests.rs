@@ -56,7 +56,7 @@ fn scalar_object_has_no_runtime_imports() {
 #[test]
 fn printing_object_imports_only_its_actual_host() {
     let names = imports(&compile_object(
-        "import io\nfunc main(): int { io.println(\"hello\") return 0 }",
+        "import io\nfunc main(): int { io.println(\"hello\"); return 0 }",
     ));
     assert_eq!(names, ["io.println"]);
 }

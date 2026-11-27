@@ -77,7 +77,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 // once (hoistable by LLVM LICM) and only calls `ar_task_arena_alloc`
                 // on the cold slab-exhaustion path.
                 self.module.require_task_arena_fast_state();
-                let ptr_bytes = u64::from(self.module.layout.pointer_width());
+                let ptr_bytes = self.module.layout.pointer_width();
                 let mask = alloc_align - 1;
                 let state = self.new_value();
                 let cur = self.new_value();

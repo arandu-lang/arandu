@@ -262,6 +262,48 @@ func pushScalar(s: mut ref String, c: char): void {
     s.len = s.len + clen
 }
 
+func pushByteUnchecked(s: mut ref String, b: u8): void {
+    if (1 as usize) > maxBufferCapacity() - s.len {
+        unsafe {
+            intrinsics.abort()
+        }
+    }
+    let need = s.len + (1 as usize)
+    if s.capacity < need {
+        ensureCapacity(s, need)
+    }
+    unsafe {
+        let p = mem.ptrOffset<u8>(s.data, s.len as isize)
+        mem.ptrWrite<u8>(p, b)
+    }
+    s.len = need
+}
+
+func pushBytesUnchecked(s: mut ref String, bytes: []u8): void {
+    let addLen = intrinsics.sliceLen<u8>(bytes)
+    if addLen == 0 {
+        return
+    }
+    if addLen > maxBufferCapacity() - s.len {
+        unsafe {
+            intrinsics.abort()
+        }
+    }
+    let need = s.len + addLen
+    if s.capacity < need {
+        ensureCapacity(s, need)
+    }
+    let mut i: usize = 0
+    unsafe {
+        while i < addLen {
+            let p = mem.ptrOffset<u8>(s.data, (s.len + i) as isize)
+            mem.ptrWrite<u8>(p, bytes[i])
+            i = i + 1
+        }
+    }
+    s.len = need
+}
+
 func clear(s: mut ref String): void {
     s.len = 0
 }
@@ -387,6 +429,25 @@ public func String.reserve(self: mut ref String, additional: usize): void {
 /// Growth may reallocate; allocation failure aborts.
 public func String.pushScalar(self: mut ref String, c: char): void {
     pushScalar(self, c)
+}
+
+/// Appends a single raw byte without UTF-8 validation.
+///
+/// # Safety
+/// Callers must guarantee that the buffer contains valid UTF-8 before any
+/// operation treats the `String` as text (e.g. `asStr`, `charCount`, display).
+@Unsafe
+public func String.pushByteUnchecked(self: mut ref String, b: u8): void {
+    pushByteUnchecked(self, b)
+}
+
+/// Appends raw bytes without UTF-8 validation.
+///
+/// # Safety
+/// `bytes` must preserve the UTF-8 validity invariant of `self`.
+@Unsafe
+public func String.pushBytesUnchecked(self: mut ref String, bytes: []u8): void {
+    pushBytesUnchecked(self, bytes)
 }
 
 /// Borrows the initialized bytes as a `str` view without copying.

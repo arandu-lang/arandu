@@ -44,12 +44,18 @@ func allocationFits(capacity: usize, element_size: usize): bool {
 }
 
 extern "C" {
-    /// Host allocator for a raw byte buffer.
-    func ar_vec_malloc(size: usize): ptr[u8]
-    /// Host deallocator for a raw byte buffer.
-    func ar_vec_buf_free(p: ptr[u8], size: usize): void
-    /// Host allocator that resizes a raw byte buffer.
-    func ar_vec_realloc(p: ptr[u8], oldSize: usize, newSize: usize): ptr[u8]
+    /// Allocator for typed buffers using target-provided alignment.
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    /// Matching deallocator for `ar_rt_alloc_aligned`.
+    func ar_rt_free_aligned(p: ptr[u8], size: usize, align: usize): void
+}
+
+func smallVecAllocAlign<T>(): usize {
+    let a = mem.alignOf<Option<T>>()
+    if a < (16 as usize) {
+        return 16 as usize
+    }
+    return a
 }
 
 /// Small vector optimized for holding up to 4 elements inline on the stack without heap allocation.
@@ -145,7 +151,7 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
             allocationFailure()
         }
         unsafe {
-            let raw = ar_vec_malloc(new_cap * elem_size)
+            let raw = ar_rt_alloc_aligned(new_cap * elem_size, smallVecAllocAlign<T>())
             let nullp: ptr[u8] = nil
             if raw == nullp {
                 allocationFailure()
@@ -193,12 +199,22 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
             allocationFailure()
         }
         unsafe {
-            let raw = ar_vec_realloc(self.data as ptr[u8], self.capacity * elem_size, new_cap * elem_size)
+            let align = smallVecAllocAlign<T>()
+            let raw = ar_rt_alloc_aligned(new_cap * elem_size, align)
             let nullp: ptr[u8] = nil
             if raw == nullp {
                 allocationFailure()
             }
-            self.data = raw as ptr[Option<T>]
+            let new_ptr = raw as ptr[Option<T>]
+            let mut idx: usize = 0 as usize
+            while idx < self.len {
+                let src = mem.ptrOffset<Option<T>>(self.data, idx as isize)
+                let dst = mem.ptrOffset<Option<T>>(new_ptr, idx as isize)
+                mem.ptrWrite<Option<T>>(dst, mem.ptrRead<Option<T>>(src))
+                idx = idx + (1 as usize)
+            }
+            ar_rt_free_aligned(self.data as ptr[u8], self.capacity * elem_size, align)
+            self.data = new_ptr
         }
         self.capacity = new_cap
     }
@@ -423,7 +439,7 @@ func destroySmallVec<T>(v: mut ref SmallVec4<T>): void {
     if v.is_heap {
         let elem_size = mem.sizeOf<Option<T>>()
         unsafe {
-            ar_vec_buf_free(v.data as ptr[u8], v.capacity * elem_size)
+            ar_rt_free_aligned(v.data as ptr[u8], v.capacity * elem_size, smallVecAllocAlign<T>())
         }
         v.data = nil
         v.is_heap = false

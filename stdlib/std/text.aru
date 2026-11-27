@@ -32,6 +32,7 @@
 module std.text
 
 import std.alloc.string as string
+import std.core.char as chars
 import std.core.str as core_str
 import std.core.slice as slice
 import std.core.intrinsics as intrinsics
@@ -54,10 +55,15 @@ public func isDigitByte(b: u8): bool {
 }
 
 func appendBytes(res: mut ref string.String, bytes: []u8, start: usize, end: usize): void {
-    let mut i = start
-    while i < end {
-        res.pushScalar(bytes[i] as char)
-        i = i + 1
+    let len = end - start
+    if len == 0 {
+        return
+    }
+    // Callers only slice at ASCII whitespace boundaries, so `bytes[start..end]`
+    // preserves the UTF-8 validity of the source `str`.
+    unsafe {
+        let sub = intrinsics.sliceSubslice<u8>(bytes, start, len)
+        res.pushBytesUnchecked(sub)
     }
 }
 
@@ -127,6 +133,9 @@ public func trim(s: str): string.String {
 /// Returns a newly allocated `String` where ASCII lowercase characters are converted to uppercase.
 public func toUpper(s: str): string.String {
     let slen = core_str.len(s)
+    if slen == 0 {
+        return string.String.new()
+    }
     let mut res = string.String.withCapacity(slen)
     let bytes = intrinsics.strBytes(s)
     let mut i: usize = 0
@@ -137,7 +146,11 @@ public func toUpper(s: str): string.String {
         } else {
             b
         }
-        res.pushScalar(outB as char)
+        // Only ASCII bytes (0x61..=0x7A) are mapped; all multibyte UTF-8 bytes
+        // (>= 0x80) are copied verbatim, preserving valid UTF-8.
+        unsafe {
+            res.pushByteUnchecked(outB)
+        }
         i = i + 1
     }
     return res
@@ -146,6 +159,9 @@ public func toUpper(s: str): string.String {
 /// Returns a newly allocated `String` where ASCII uppercase characters are converted to lowercase.
 public func toLower(s: str): string.String {
     let slen = core_str.len(s)
+    if slen == 0 {
+        return string.String.new()
+    }
     let mut res = string.String.withCapacity(slen)
     let bytes = intrinsics.strBytes(s)
     let mut i: usize = 0
@@ -156,7 +172,11 @@ public func toLower(s: str): string.String {
         } else {
             b
         }
-        res.pushScalar(outB as char)
+        // Only ASCII bytes (0x41..=0x5A) are mapped; all multibyte UTF-8 bytes
+        // (>= 0x80) are copied verbatim, preserving valid UTF-8.
+        unsafe {
+            res.pushByteUnchecked(outB)
+        }
         i = i + 1
     }
     return res
@@ -178,14 +198,15 @@ public func repeat(s: str, count: usize): string.String {
     return res
 }
 
-/// Pads `s` on the left with `fill` until it reaches `width` UTF-8 bytes.
+/// Pads `s` on the left with `fill` until it reaches `width` Unicode scalar values.
 public func padLeft(s: str, width: usize, fill: char): string.String {
-    let slen = core_str.len(s)
-    if slen >= width {
+    let scount = core_str.charCount(s)
+    if scount >= width {
         return string.String.from(s)
     }
-    let pad = width - slen
-    let mut res = string.String.withCapacity(width)
+    let pad = width - scount
+    let fillLen = chars.lenUtf8(fill) as usize
+    let mut res = string.String.withCapacity(core_str.len(s) + pad * fillLen)
     let mut i: usize = 0
     while i < pad {
         res.pushScalar(fill)
@@ -195,14 +216,15 @@ public func padLeft(s: str, width: usize, fill: char): string.String {
     return res
 }
 
-/// Pads `s` on the right with `fill` until it reaches `width` UTF-8 bytes.
+/// Pads `s` on the right with `fill` until it reaches `width` Unicode scalar values.
 public func padRight(s: str, width: usize, fill: char): string.String {
-    let slen = core_str.len(s)
-    if slen >= width {
+    let scount = core_str.charCount(s)
+    if scount >= width {
         return string.String.from(s)
     }
-    let pad = width - slen
-    let mut res = string.String.withCapacity(width)
+    let pad = width - scount
+    let fillLen = chars.lenUtf8(fill) as usize
+    let mut res = string.String.withCapacity(core_str.len(s) + pad * fillLen)
     let _, _ = res.pushStr(s)
     let mut i: usize = 0
     while i < pad {
@@ -212,16 +234,17 @@ public func padRight(s: str, width: usize, fill: char): string.String {
     return res
 }
 
-/// Centers `s` in a string of `width` UTF-8 bytes, padding with `fill`.
+/// Centers `s` in a string of `width` Unicode scalar values, padding with `fill`.
 public func center(s: str, width: usize, fill: char): string.String {
-    let slen = core_str.len(s)
-    if slen >= width {
+    let scount = core_str.charCount(s)
+    if scount >= width {
         return string.String.from(s)
     }
-    let pad = width - slen
+    let pad = width - scount
     let leftPad = pad / 2
     let rightPad = pad - leftPad
-    let mut res = string.String.withCapacity(width)
+    let fillLen = chars.lenUtf8(fill) as usize
+    let mut res = string.String.withCapacity(core_str.len(s) + pad * fillLen)
     let mut i: usize = 0
     while i < leftPad {
         res.pushScalar(fill)

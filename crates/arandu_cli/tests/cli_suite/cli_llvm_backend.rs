@@ -176,7 +176,7 @@ fn explicit_output_outside_the_profile_builds_without_incremental_noise() {
     );
     fs::write(
         project.join("src/main.aru"),
-        "func main(): int { let raw: u32 = 7 as u32 return 0 }\n",
+        "func main(): int { let raw: u32 = 7 as u32; return 0 }\n",
     )
     .expect("write main");
 

@@ -2610,15 +2610,15 @@ fn cooperative_task_table_matches_in_both_backends() {
         "rt_task_table",
         r#"
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
+    func ar_rt_cancel_i64(handle: i64): void
 }
 async func answer(): int { return 42 }
 func main(): int {
     let job = answer()
     let handle = unsafe { ar_rt_spawn_i64(job as ptr[u8]) }
-    return unsafe { ar_rt_join_i64(handle) }
+    return unsafe { ar_rt_join_i64(handle) } as int
 }
 "#,
     );
@@ -2630,9 +2630,9 @@ fn cooperative_cancel_before_join_recovers_slot_in_c() {
     let (amir, tc) = compile_src(
         r#"
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
+    func ar_rt_cancel_i64(handle: i64): void
 }
 async func answer(): int { return 42 }
 func main(): int {
@@ -2644,7 +2644,7 @@ func main(): int {
     if handle2 != handle {
         return 1
     }
-    return unsafe { ar_rt_join_i64(handle2) }
+    return unsafe { ar_rt_join_i64(handle2) } as int
 }
 "#,
     );
@@ -2661,9 +2661,9 @@ fn cooperative_cancel_before_join_matches_across_backends() {
         "rt_task_cancel_parity",
         r#"
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
+    func ar_rt_cancel_i64(handle: i64): void
 }
 async func answer(): int { return 42 }
 func main(): int {
@@ -2672,7 +2672,7 @@ func main(): int {
     unsafe { ar_rt_cancel_i64(handle) }
     let job2 = answer()
     let handle2 = unsafe { ar_rt_spawn_i64(job2 as ptr[u8]) }
-    let result = unsafe { ar_rt_join_i64(handle2) }
+    let result = unsafe { ar_rt_join_i64(handle2) } as int
     unsafe { ar_rt_cancel_i64(handle2) }
     return result
 }
@@ -2687,9 +2687,9 @@ fn cooperative_cached_join_reuses_result_without_polling() {
         "rt_task_cached",
         r#"
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
+    func ar_rt_cancel_i64(handle: i64): void
 }
 async func answer(): int { return 42 }
 func main(): int {
@@ -2697,7 +2697,7 @@ func main(): int {
     let handle = unsafe { ar_rt_spawn_i64(job as ptr[u8]) }
     let first = unsafe { ar_rt_join_i64(handle) }
     let cached = unsafe { ar_rt_join_i64(handle) }
-    if first != 42 || cached != 42 {
+    if first != (42 as i64) || cached != (42 as i64) {
         return 1
     }
     unsafe { ar_rt_cancel_i64(handle) }
@@ -4644,8 +4644,8 @@ fn c_user_print_names_preserve_return_values_and_side_effects() {
         r#"
 import io
 struct User {}
-func print(value: str): int { io.print(value) return 7 }
-func User.println(value: str): int { io.print(value) return 9 }
+func print(value: str): int { io.print(value); return 7 }
+func User.println(value: str): int { io.print(value); return 9 }
 func main(): int {
     let left = print("left")
     let right = User.println("right")

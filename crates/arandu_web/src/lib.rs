@@ -416,7 +416,7 @@ pub struct RawCompileResponse {
 /// # Safety
 /// `ptr` is null or points at `len` readable bytes that outlive `'a`.
 unsafe fn utf8_from_raw<'a>(ptr: *const u8, len: usize) -> &'a str {
-    if ptr.is_null() || len == 0 {
+    if ptr.is_null() || len == 0 || len > isize::MAX as usize {
         ""
     } else {
         let slice = unsafe { std::slice::from_raw_parts(ptr, len) };

@@ -371,6 +371,8 @@ public func DirListing.isDir(self: ref DirListing, index: usize): bool {
 ///
 /// The view borrows `self`; the bytes remain valid while the listing owns its
 /// blob. This method does not allocate or decode the name as text.
+/// Unix hosts preserve the exact filename bytes. Windows hosts return the
+/// UTF-8 bytes of the lossy conversion of the native filename.
 public func DirListing.name(self: ref DirListing, index: usize): []u8 {
     if index >= self.count {
         unsafe {
@@ -392,7 +394,9 @@ public func DirListing.name(self: ref DirListing, index: usize): []u8 {
 ///
 /// Each entry has its own stable descriptor in the listing blob. Multiple
 /// name views may coexist; all become invalid when the listing is closed or dropped.
-/// This method does not allocate or mutate the listing.
+/// Invalid Unix filename bytes are replaced with U+FFFD in this text view;
+/// use `name` when the exact native bytes are needed. This method does not
+/// allocate or mutate the listing.
 public func DirListing.nameStr(self: ref DirListing, index: usize): ref str {
     if index >= self.count {
         unsafe {
@@ -624,7 +628,11 @@ public func Dir.writeFile(self: ref Dir, subpath: str, content: str): Result<usi
     return self.writeBytes(subpath, intrinsics.strBytes(content))
 }
 
-/// Writes `bytes` to `path` (relative to the current directory or absolute), creating or truncating the file.
+/// Writes `bytes` to a normal relative path under the current directory,
+/// creating or truncating the file. Absolute paths and `.`/`..` components
+/// are rejected by the directory capability. On macOS, BSD, and Windows, use
+/// one path component per call; open each child directory explicitly for
+/// nested paths. Use `Dir.open` to write beneath another directory.
 @Effects(FileWrite, Foreign)
 public func writeBytes(path: str, bytes: []u8): Result<usize, io.IoError> {
     let .Ok(mut dir) = Dir.open(".") else {
@@ -635,7 +643,8 @@ public func writeBytes(path: str, bytes: []u8): Result<usize, io.IoError> {
     return res
 }
 
-/// Writes `content` to `path` (relative to the current directory or absolute), creating or truncating the file.
+/// Writes `content` to a normal relative path under the current directory,
+/// creating or truncating the file. See `writeBytes` for path restrictions.
 @Effects(FileWrite, Foreign)
 public func write(path: str, content: str): Result<usize, io.IoError> {
     return writeBytes(path, intrinsics.strBytes(content))

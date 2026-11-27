@@ -47,7 +47,7 @@ public func main(): int {
                         recvBuf.push(0 as u8)
                         i = i + 1
                     }
-                    let packet = server.recvPacket(recvBuf.asSlice())
+                    let packet = server.recvPacket(recvBuf.asMutSlice())
                     match packet {
                         Result.Ok(pkt) => {
                             if pkt.bytes_received != (4 as usize) { return 5 }

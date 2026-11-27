@@ -26,7 +26,7 @@ module std.runtime.mutex
 // Host wake bridge for the release path (same symbol as `std.runtime.waker`).
 extern "C" {
     /// Host signal for a wake token.
-    func ar_rt_waker_wake(id: int): void
+    func ar_rt_waker_wake(id: i64): void
 }
 
 /// Value and lock flag for a cooperative locking protocol.
@@ -38,7 +38,7 @@ public struct AsyncMutex<T> {
     /// Whether the mutex is held.
     is_locked: bool
     /// Host wake token for a waiting task.
-    waker_id: int
+    waker_id: i64
 }
 
 /// Creates a new `AsyncMutex<T>` protecting `initial`.

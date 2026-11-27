@@ -1123,6 +1123,49 @@ fn labeled_loops_and_breaks_parse() {
 }
 
 #[test]
+fn zig_style_labeled_loops_and_breaks_parse() {
+    let source = r#"
+    func test_loops(): void {
+        outer: while true {
+            inner: for let mut i = 0; i < 10; i = i + 1 {
+                if i == 5 {
+                    break :outer;
+                }
+                if i == 2 {
+                    continue :inner;
+                }
+            }
+        }
+    }
+    "#;
+    let program = parse(source).expect("zig-style labeled loop should parse");
+    let has_outer_while = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::While { label: Some(l), .. } if l == "outer"));
+    let has_inner_for = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::For { label: Some(l), .. } if l == "inner"));
+    let has_break_outer = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::Break { label: Some(l), .. } if l == "outer"));
+    let has_continue_inner = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::Continue { label: Some(l), .. } if l == "inner"));
+    assert!(has_outer_while, "expected while with label outer");
+    assert!(has_inner_for, "expected for with label inner");
+    assert!(has_break_outer, "expected break with label :outer");
+    assert!(has_continue_inner, "expected continue with label :inner");
+}
+
+#[test]
 fn an_uppercase_static_mut_is_an_assignment_target() {
     let program = parse(
         "static mut COUNTER: int = 0\nfunc bump(): void {\n    unsafe {\n        COUNTER = COUNTER + 1\n        COUNTER += 2\n    }\n}\n",

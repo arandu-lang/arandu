@@ -165,12 +165,12 @@ fn run_local_inferred_join() {
 module tests.cli.local_infer_join
 
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
 }
 
 struct SyncExecutor { flags: int }
-struct TaskHandle { id: int }
+struct TaskHandle { id: i64 }
 
 func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle {
     unsafe {
@@ -229,7 +229,7 @@ func main(): int {
     let h = ex.spawn(answer())
     let result = ex.join(h)
     ex.cancel(h)
-    if mem.sizeOf<rt.TaskHandle<int>>() != mem.sizeOf<int>() { return 1 }
+    if mem.sizeOf<rt.TaskHandle<int>>() != mem.sizeOf<i64>() { return 1 }
     return result
 }
 "#,
@@ -256,12 +256,12 @@ fn run_generic_spawn_join_explicit() {
 module tests.cli.generic_spawn
 
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
 }
 
 struct SyncExecutor { flags: int }
-struct TaskHandle { id: int }
+struct TaskHandle { id: i64 }
 
 func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle {
     unsafe {

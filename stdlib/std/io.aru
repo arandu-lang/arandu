@@ -74,6 +74,17 @@ public func IoError.new(kind: IoErrorKind, os_code: int): IoError {
     }
 }
 
+/// Returns the portable category assigned to this I/O error.
+public func IoError.kind(self: ref IoError): IoErrorKind {
+    return self.kind
+}
+
+/// Returns the portable host error code when available, or the value supplied
+/// to `IoError.new`.
+public func IoError.osCode(self: ref IoError): int {
+    return self.os_code
+}
+
 /// Maps a stable host error code to a structured `IoError`.
 ///
 /// Hosts never leak raw errno across backends; the portable contract is:

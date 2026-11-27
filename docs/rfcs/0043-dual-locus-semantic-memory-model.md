@@ -4,7 +4,7 @@
 - **Título:** Dual-Locus Semantic Memory Model: Unificação de Posse OSSA, Promoção de Armazenamento de Custo Zero e Preservação de ABI Nativa
 - **Autor(es):** Bruno Bispo dos Santos
 - **Data de Início:** 2026-10-27
-- **Status:** `Planned`
+- **Status:** `Implemented` (v0.3.0 — Cranelift, C, LLVM e CTFE; `wasm32` ainda reporta `T099`)
 - **Área Principal:** `Middle-end` / `Backend` / `Memória` / `Type System`
 - **Evolui e Estende:** RFC 0001 (GenRef) e RFC 0007 (Semantic Memory Model)
 

@@ -107,7 +107,7 @@ struct Counter<T> { value: T }
 func Counter.destroy<T>(own self: Counter<T>): void {}
 struct Wrapper { counter: Counter<int> }
 func make(): Wrapper { return Wrapper { counter: Counter<int> { value: 1 } } }
-func main(): int { let wrapped = make() return 0 }
+func main(): int { let wrapped = make(); return 0 }
 "#
         .into(),
     );
@@ -229,7 +229,7 @@ fn final_unit_rejects_a_borrow_without_formal_origin() {
     let mut db = DatabaseImpl::new();
     let file = db.new_file(
         "main.aru".into(),
-        "@NoFallback\nfunc selected(): ref int { let local = 42 return ref local }".into(),
+        "@NoFallback\nfunc selected(): ref int { let local = 42; return ref local }".into(),
     );
     let checked = runtime_unit(&db, instance(&db, file, "selected", Vec::new()));
     assert!(checked.result.as_ref().expect_err("invalid escaping borrow").iter().any(|diagnostic| diagnostic.code == arandu_middle::DiagCode::O010EscapeOfBorrowedValue), "{:?}", checked.result);
@@ -260,7 +260,7 @@ fn a_recursive_call_alone_cannot_invent_a_formal_borrow_origin() {
 #[test]
 fn generic_calls_in_loop_initializer_and_step_are_both_specialized() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "func identity<T>(x: T): T { return x }\nfunc selected(): int { let mut i = 0 for i = identity<int>(0); i < 3; i = identity<int>(i + 1) {} return i }".into());
+    let file = db.new_file("main.aru".into(), "func identity<T>(x: T): T { return x }\nfunc selected(): int { let mut i = 0; for i = identity<int>(0); i < 3; i = identity<int>(i + 1) {} return i }".into());
     let checked = runtime_raw_unit(&db, instance(&db, file, "selected", Vec::new()));
     let raw = checked.result.as_ref().expect("loop unit");
     let identity = symbol(&db, file, "identity");
@@ -608,7 +608,7 @@ fn nominal_arguments_with_equal_short_names_keep_distinct_backend_names() {
 #[test]
 fn nested_nominal_definitions_keep_qualified_backend_identity() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "module app\nmodule left { public struct User { public value: int } }\nmodule right { public struct User { public value: int } }\nfunc identity<T>(value: T): T { return value }\nfunc main(): int { let a = identity(left.User { value: 20 }) let b = identity(right.User { value: 22 }) return a.value + b.value }".into());
+    let file = db.new_file("main.aru".into(), "module app\nmodule left { public struct User { public value: int } }\nmodule right { public struct User { public value: int } }\nfunc identity<T>(value: T): T { return value }\nfunc main(): int { let a = identity(left.User { value: 20 }); let b = identity(right.User { value: 22 }); return a.value + b.value }".into());
     let composed = arandu_query::runtime::runtime_program(&db, file);
     assert!(
         composed.diagnostics.is_empty(),
@@ -829,7 +829,7 @@ fn a_concrete_type_from_the_caller_brings_declarations_not_sibling_bodies() {
         "module generic\npublic func identity<T>(value: T): T { return value }".into(),
     );
     db.new_file("owner.aru".into(), "module owner\npublic struct Owner { public value: int }\nfunc broken(): int { return absent }".into());
-    let file = db.new_file("main.aru".into(), "import generic\nimport owner\nfunc main(): int { let value = generic.identity(owner.Owner { value: 42 }) return value.value }".into());
+    let file = db.new_file("main.aru".into(), "import generic\nimport owner\nfunc main(): int { let value = generic.identity(owner.Owner { value: 42 }); return value.value }".into());
     log.clear();
     let composed = arandu_query::runtime::runtime_program(&db, file);
     assert!(
@@ -857,7 +857,7 @@ fn specialized_function_values_are_executable_dependencies_too() {
 #[test]
 fn equivalent_literal_receiver_shapes_share_one_destructor_instance() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "struct Counter<T, A = int> { value: T tag: A }\n@Destructor\nfunc Counter.destroy<T, A>(self: Counter<T, A>): void {}\nfunc inspect<T>(c: ref Counter<T>): T { return c.value }\nfunc main(): int { let c: Counter<int> = Counter { value: 42, tag: 1 } return inspect(c) }".into());
+    let file = db.new_file("main.aru".into(), "struct Counter<T, A = int> { value: T tag: A }\n@Destructor\nfunc Counter.destroy<T, A>(self: Counter<T, A>): void {}\nfunc inspect<T>(c: ref Counter<T>): T { return c.value }\nfunc main(): int { let c: Counter<int> = Counter { value: 42, tag: 1 }; return inspect(c) }".into());
     let composed = arandu_query::runtime::runtime_program(&db, file);
     assert!(
         composed.diagnostics.is_empty(),
@@ -968,7 +968,7 @@ fn a_selected_function_with_own_error_does_not_get_a_dummy_hir() {
 #[test]
 fn declaration_context_preserves_constants_and_consuming_receiver_modes() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "const ANSWER = 42\nstruct Owner { value: int }\nfunc Owner.consume(self: own Owner): int { return self.value }\nfunc selected(): int { let owner = Owner { value: ANSWER } return owner.consume() }".into());
+    let file = db.new_file("main.aru".into(), "const ANSWER = 42\nstruct Owner { value: int }\nfunc Owner.consume(self: own Owner): int { return self.value }\nfunc selected(): int { let owner = Owner { value: ANSWER }; return owner.consume() }".into());
     let selected = symbol(&db, file, "selected");
     let lowered = instance_hir(&db, instance(&db, file, "selected", Vec::new()));
     let lowered = &lowered.artifacts;

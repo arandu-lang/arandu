@@ -305,7 +305,7 @@ pub fn parse_syntax_arc(text: Arc<str>) -> SyntaxTree {
     let fallback = || {
         let spans = find_top_level_item_spans(&text, &tokens, text.len() as u32);
         let green = build_green(text.as_ref(), &tokens, &spans);
-        if SyntaxNode::new_root(green.clone()).text().to_string() == text.as_ref() {
+        if SyntaxNode::new_root(green.clone()).text() == text.as_ref() {
             green
         } else {
             // Malformed item structure can make the heuristic sink omit a
@@ -315,7 +315,7 @@ pub fn parse_syntax_arc(text: Arc<str>) -> SyntaxTree {
     };
     let flat_fallback = || build_green(text.as_ref(), &tokens, &[]);
     let green = super::events::build_green_from_events(text.as_ref(), &events)
-        .filter(|green| SyntaxNode::new_root(green.clone()).text().to_string() == text.as_ref())
+        .filter(|green| SyntaxNode::new_root(green.clone()).text() == text.as_ref())
         .unwrap_or_else(|| {
             if parse_succeeded {
                 fallback()

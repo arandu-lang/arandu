@@ -31,7 +31,12 @@ struct ArenaChunk {
 
 impl ArenaChunk {
     fn new(min_capacity: usize, min_align: usize) -> Self {
-        let align = min_align.max(DEFAULT_CHUNK_ALIGN).next_power_of_two();
+        let Some(align) = min_align
+            .max(DEFAULT_CHUNK_ALIGN)
+            .checked_next_power_of_two()
+        else {
+            std::process::abort();
+        };
         let capacity = min_capacity
             .max(DEFAULT_CHUNK_CAPACITY)
             .checked_next_multiple_of(align)
@@ -120,7 +125,10 @@ impl TaskArena {
         let align = if align.is_power_of_two() {
             align
         } else {
-            align.max(1).next_power_of_two()
+            let Some(pow2) = align.max(1).checked_next_power_of_two() else {
+                std::process::abort();
+            };
+            pow2
         };
         let mask = align.wrapping_sub(1);
         let cur = self.cur;
@@ -200,9 +208,8 @@ impl TaskArena {
         let chunk_idx = (mark >> 32) as usize;
         let cursor = (mark & 0xFFFF_FFFF) as usize;
         if chunk_idx == self.current_chunk {
-            let target = self.base.wrapping_add(cursor);
-            if target <= self.cur {
-                self.cur = target;
+            if cursor <= self.cur.saturating_sub(self.base) {
+                self.cur = self.base + cursor;
             }
             return;
         }

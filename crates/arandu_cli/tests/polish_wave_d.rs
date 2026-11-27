@@ -314,3 +314,57 @@ func main(): int {
     }
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn std_text_preserves_multibyte_utf8_and_scalar_padding() {
+    let source = r#"module wave_d_text_utf8
+
+import std.text as text
+import std.core.str as core_str
+
+func main(): int {
+    let t = text.trim("  olá mundo 🌍 \t\n")
+    if t.asStr() != "olá mundo 🌍" { return 1 }
+
+    let ts = text.trimStart(" \t café")
+    if ts.asStr() != "café" { return 2 }
+
+    let te = text.trimEnd("ação  \n")
+    if te.asStr() != "ação" { return 3 }
+
+    let up = text.toUpper("olá Café 🌍")
+    if up.asStr() != "OLá CAFé 🌍" { return 4 }
+
+    let lo = text.toLower("OLÁ Café 🌍")
+    if lo.asStr() != "olÁ café 🌍" { return 5 }
+
+    let pl = text.padLeft("olá", 5 as usize, '·')
+    if pl.asStr() != "··olá" { return 6 }
+    if pl.charCount() != (5 as usize) { return 7 }
+
+    let pr = text.padRight("a", 4 as usize, 'é')
+    if pr.asStr() != "aééé" { return 8 }
+    if pr.charCount() != (4 as usize) { return 9 }
+
+    let c = text.center("olá", 5 as usize, '─')
+    if c.asStr() != "─olá─" { return 10 }
+    if c.charCount() != (5 as usize) { return 11 }
+
+    let no_pad = text.padLeft("olá", 3 as usize, '·')
+    if no_pad.asStr() != "olá" { return 12 }
+
+    if !core_str.isValidUtf8(t.asBytes()) { return 13 }
+    if !core_str.isValidUtf8(up.asBytes()) { return 14 }
+    if !core_str.isValidUtf8(c.asBytes()) { return 15 }
+    return 0
+}
+"#;
+    let output = run_source("text_utf8", source);
+    assert!(
+        output.status.success(),
+        "std.text UTF-8 E2E failed (status {:?}):\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

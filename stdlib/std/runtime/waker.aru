@@ -22,19 +22,19 @@ module std.runtime.waker
 
 extern "C" {
     /// Host wake token creation.
-    func ar_rt_waker_create(): int
+    func ar_rt_waker_create(): i64
     /// Host signal for a wake token.
-    func ar_rt_waker_wake(id: int): void
+    func ar_rt_waker_wake(id: i64): void
     /// Host wait for a wake token or timeout.
-    func ar_rt_waker_wait(id: int, timeout_ms: int): int
+    func ar_rt_waker_wait(id: i64, timeout_ms: i64): i64
     /// Host wake token destruction.
-    func ar_rt_waker_destroy(id: int): void
+    func ar_rt_waker_destroy(id: i64): void
 }
 
 /// experimental — not Minimal 0.1
 public struct Waker {
     /// Opaque host handle.
-    id: int
+    id: i64
 }
 
 /// experimental — not Minimal 0.1
@@ -68,7 +68,7 @@ public func Waker.wake(self: ref Waker): void {
 /// of `-1` requests an indefinite wait from the host.
 public func Waker.wait(self: ref Waker, timeoutMs: int): int {
     unsafe {
-        return ar_rt_waker_wait(self.id, timeoutMs)
+        return ar_rt_waker_wait(self.id, timeoutMs as i64) as int
     }
 }
 

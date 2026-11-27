@@ -478,8 +478,15 @@ count()       last()        nth(n)         iter(slice)
 ```text
 Dir.writeBytes(subpath, bytes): Result<usize, io.IoError>
 Dir.writeFile(subpath, content): Result<usize, io.IoError>
-writeBytes(path, bytes)        write(path, content)   // raiz ambiente
+writeBytes(path, bytes)        write(path, content)   // capability relativa ao cwd
 ```
+
+As funções de escrita no nível do módulo aceitam caminhos relativos normais sob
+o diretório atual; caminhos absolutos e componentes `.`/`..` são rejeitados.
+Para escrever sob outra raiz, abra-a com `Dir.open` e use `Dir.writeBytes` ou
+`Dir.writeFile`. macOS, BSD e Windows exigem um componente por chamada de
+capability; no Linux, caminhos relativos com múltiplos componentes são
+resolvidos pelo `openat2`.
 
 Os adaptadores de `core.iter` e os métodos de `core.slice` devolvem views e
 iteradores que preservam a dependência do owner; `get`, `first`, `last` e

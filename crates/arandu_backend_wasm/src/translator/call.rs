@@ -442,7 +442,7 @@ impl<'a> FuncTranslator<'a> {
                 }
                 true
             }
-            IntrinsicKind::Abort => {
+            IntrinsicKind::Abort | IntrinsicKind::AbortWithMessage => {
                 self.code.push(Instruction::Unreachable);
                 true
             }
@@ -738,7 +738,7 @@ impl<'a> FuncTranslator<'a> {
                 true
             }
             // Built as a value when AMIR is lowered; no call remains.
-            IntrinsicKind::DropInPlace | IntrinsicKind::TypeInfo => false,
+            IntrinsicKind::DropInPlace | IntrinsicKind::Forget | IntrinsicKind::TypeInfo => false,
         }
     }
 

@@ -29,7 +29,7 @@ import std.core.marker as marker
 import std.core.option as option
 import std.core.slice as slice
 
-const MAX_SMALLVEC_CAPACITY = 2147483647 as usize
+// Allocation capacity ceiling uses `mem.maxAllocBytes()` at call sites.
 
 func allocationFailure(): void {
     unsafe { intrinsics.abort() }
@@ -39,7 +39,7 @@ func allocationFits(capacity: usize, element_size: usize): bool {
     if element_size == (0 as usize) {
         return false
     }
-    let max_bytes: usize = MAX_SMALLVEC_CAPACITY
+    let max_bytes: usize = mem.maxAllocBytes()
     return capacity <= max_bytes / element_size
 }
 
@@ -57,6 +57,8 @@ extern "C" {
 /// Follows LLVM SmallVector's Data-Oriented Design (DoD):
 /// - Uses inline buffer for <= 4 elements.
 /// - Spills to heap memory only when exceeding 4 elements.
+@UnsafeSend
+@UnsafeSync
 public struct SmallVec4<T> {
     /// Pointer to heap elements when the vector has spilled.
     data: ptr[Option<T>]
@@ -277,6 +279,82 @@ func getRef<T>(self: ref SmallVec4<T>, index: usize): Option<ref T> {
 /// is cleared, or is dropped. This works for both inline and heap storage.
 public func SmallVec4.getRef<T>(self: ref SmallVec4<T>, index: usize): Option<ref T> {
     return getRef<T>(self, index)
+}
+
+/// Shared indexing (`sv[idx]`), aborting if `idx` is out of bounds.
+public func SmallVec4.index<T>(self: ref SmallVec4<T>, idx: usize): ref T {
+    if idx >= self.len {
+        unsafe { intrinsics.abort() }
+    }
+    if self.is_heap {
+        let slots = unsafe {
+            intrinsics.sliceFromRaw<SmallVec4<T>, Option<T>>(self, self.data, self.len)
+        }
+        match slots[idx].asRef() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (0 as usize) {
+        match self.inline_buf[0].asRef() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (1 as usize) {
+        match self.inline_buf[1].asRef() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (2 as usize) {
+        match self.inline_buf[2].asRef() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    match self.inline_buf[3].asRef() {
+        Some(r) => { return r }
+        None => { unsafe { intrinsics.abort() } }
+    }
+}
+
+/// Mutable indexing (`sv[idx] = val`, `mut ref sv[idx]`), aborting if `idx` is out of bounds.
+public func SmallVec4.indexMut<T>(self: mut ref SmallVec4<T>, idx: usize): mut ref T {
+    if idx >= self.len {
+        unsafe { intrinsics.abort() }
+    }
+    if self.is_heap {
+        let mut slots = unsafe {
+            intrinsics.mutSliceFromRaw<SmallVec4<T>, Option<T>>(self, self.data, self.len)
+        }
+        match slots[idx].asMut() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (0 as usize) {
+        match self.inline_buf[0].asMut() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (1 as usize) {
+        match self.inline_buf[1].asMut() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (2 as usize) {
+        match self.inline_buf[2].asMut() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    match self.inline_buf[3].asMut() {
+        Some(r) => { return r }
+        None => { unsafe { intrinsics.abort() } }
+    }
 }
 
 /// Decreases the length and returns the former last element, or `None` if empty.

@@ -234,6 +234,7 @@ impl<'a> Resolver<'a> {
                             Some(LangItem::RwLockWriteGuard)
                         }
                         (Some("std.core.marker"), "PhantomData") => Some(LangItem::PhantomData),
+                        (Some("std.core.pointer"), "NonNull") => Some(LangItem::NonNull),
                         (Some("std.core.fmt"), "Formatter") => Some(LangItem::Formatter),
                         (Some("std.sync.mutex"), "Mutex") => Some(LangItem::Mutex),
                         (Some("std.sync.mutex"), "MutexGuard") => Some(LangItem::MutexGuard),
@@ -398,6 +399,8 @@ impl<'a> Resolver<'a> {
                         (Some("std.core.marker"), "Clone") => Some(LangItem::Clone),
                         (Some("std.core.marker"), "Send") => Some(LangItem::Send),
                         (Some("std.core.marker"), "Sync") => Some(LangItem::Sync),
+                        (Some("std.core.ops"), "Index") => Some(LangItem::Index),
+                        (Some("std.core.ops"), "IndexMut") => Some(LangItem::IndexMut),
                         (Some("std.core.cmp"), "PartialEq") => Some(LangItem::PartialEq),
                         (Some("std.core.cmp"), "Eq") => Some(LangItem::Eq),
                         (Some("std.core.cmp"), "Ord") => Some(LangItem::Ord),

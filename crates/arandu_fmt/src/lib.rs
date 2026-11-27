@@ -1002,4 +1002,23 @@ mod tests {
         let a = actions_for_expected_semicolon(10, 11, "expected SEMICOLON").unwrap();
         assert_eq!(a.edits[0].new_text, ";");
     }
+
+    #[test]
+    fn onda_b_type_forms_round_trip_cleanly() {
+        let src = concat!(
+            "func keep(f: func(int) -> int, g: own (int) -> int + Send, h: own once (int) -> int + Send): func(int) -> int {\n",
+            "    return f\n",
+            "}\n",
+            "func nullableTypes(a: []int?, b: [4]int?, c: ref int?, d: ([]int)?, e: (ref int)?, p: ptr[u8]?): void {\n",
+            "    let _ = a\n",
+            "}\n",
+        );
+        let out = format_source(src);
+        assert!(parses_clean(&out), "{out}");
+        assert_eq!(format_source(&out), out);
+        assert!(out.contains("func(int) -> int"));
+        assert!(out.contains("own once (int) -> int + Send"));
+        assert!(out.contains("([]int)?"));
+        assert!(out.contains("(ref int)?"));
+    }
 }

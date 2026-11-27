@@ -217,6 +217,7 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     current_ty_id = checker.intern(ArType::Error);
                     break;
                 }
+                let mut is_trait_index = false;
                 match &actual_base_ty {
                     ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)
@@ -243,21 +244,36 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                         current_ty_id = interner.type_args(*args)[0];
                     }
                     _ => {
-                        let err_id = checker.intern(ArType::Error);
-                        checker.add_constraint(
-                            actual_base_ty_id,
-                            err_id,
-                            ConstraintOrigin::InvalidIndex {
-                                base_span: place.span,
-                                index_span: checker.pool.expr_span(*expr),
-                                is_base_error: true,
-                            },
-                        );
-                        current_ty_id = err_id;
+                        if let Some((_idx_ty, out_ty)) =
+                            super::super::synth::field::resolve_trait_index(
+                                checker,
+                                &actual_base_ty,
+                                Some(*expr),
+                                index_ty_id,
+                                true,
+                                place.span,
+                                checker.pool.expr_span(*expr),
+                            )
+                        {
+                            is_trait_index = true;
+                            current_ty_id = out_ty;
+                        } else {
+                            let err_id = checker.intern(ArType::Error);
+                            checker.add_constraint(
+                                actual_base_ty_id,
+                                err_id,
+                                ConstraintOrigin::InvalidIndex {
+                                    base_span: place.span,
+                                    index_span: checker.pool.expr_span(*expr),
+                                    is_base_error: true,
+                                },
+                            );
+                            current_ty_id = err_id;
+                        }
                     }
                 }
                 let index_ty = checker.resolve(index_ty_id);
-                if !index_ty.is_error() && !index_ty.is_integer() {
+                if !is_trait_index && !index_ty.is_error() && !index_ty.is_integer() {
                     checker.add_constraint(
                         ArType::Primitive(Primitive::Int),
                         index_ty_id,

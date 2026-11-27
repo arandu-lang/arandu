@@ -229,23 +229,23 @@ func main(): int {
 "#;
     for (body, expected) in [
         (
-            "let immutable = data.asSlice(); let mut copied = immutable; simd.F32x4.splat(9.0).storeUnaligned<vec.Vec<f32>>(mut ref copied)",
+            "let immutable = data.asSlice(); simd.F32x4.splat(9.0).storeUnaligned(immutable)",
             "T003",
         ),
         (
-            "let view = data.asMutSlice(); let moved = data; simd.F32x4.splat(9.0).storeUnalignedSlice(view); moved.len()",
+            "let view = data.asMutSlice(); let moved = data; simd.F32x4.splat(9.0).storeUnaligned(view); moved.len()",
             "O0",
         ),
         (
-            "let view = data.asMutSlice(); data.push(5.0 as f32); simd.F32x4.splat(9.0).storeUnalignedSlice(view)",
+            "let view = data.asMutSlice(); data.push(5.0 as f32); simd.F32x4.splat(9.0).storeUnaligned(view)",
             "O0",
         ),
         (
-            "let view = data.asMutSlice(); let first = view; let second = view; simd.F32x4.splat(9.0).storeUnalignedSlice(first); simd.F32x4.splat(9.0).storeUnalignedSlice(second)",
+            "let view = data.asMutSlice(); let first = view; let second = view; simd.F32x4.splat(9.0).storeUnaligned(first); simd.F32x4.splat(9.0).storeUnaligned(second)",
             "O0",
         ),
         (
-            "let view = data.asMutSlice(); let immutable = data.asSlice(); simd.F32x4.splat(9.0).storeUnalignedSlice(view); immutable[0]",
+            "let view = data.asMutSlice(); let immutable = data.asSlice(); simd.F32x4.splat(9.0).storeUnaligned(view); immutable[0]",
             "O0",
         ),
     ] {
@@ -264,7 +264,7 @@ func main(): int {
     }
     let body = r#"
     let mut view = data.asMutSlice()
-    if !simd.F32x4.splat(9.0).storeUnalignedSlice(view) { return 1 }
+    if !simd.F32x4.splat(9.0).storeUnaligned(view) { return 1 }
     if data[0] != (9.0 as f32) { return 2 }
     return 0
 }"#;

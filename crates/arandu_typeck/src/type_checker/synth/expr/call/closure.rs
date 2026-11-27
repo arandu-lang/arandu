@@ -1551,7 +1551,7 @@ fn mint(
             ^ identity.end.wrapping_mul(0x85EB_CA6B)
             ^ identity.owner_hash.wrapping_mul(0x27D4_EB2F)
             ^ role.wrapping_mul(0xC2B2_AE35);
-        let local = SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x7FFF_FFFF);
+        let local = SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x3FFF_FFFF);
         let id = SymbolId::new(file_id, local);
         if reserved.insert(local) && checker.symbols.try_get(id).is_none() {
             return id;

@@ -90,8 +90,33 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                     if is_repr_c {
                         checker.type_info.struct_repr_c.insert(symbol_id);
                     }
+                    if checker.symbols.get(symbol_id).lang_item
+                        == Some(arandu_middle::symbol_table::LangItem::NonNull)
+                    {
+                        checker.type_info.non_null_types.insert(symbol_id);
+                    }
                     if struct_decl.attrs.iter().any(|attr| attr.name == "NoCopy") {
                         checker.type_info.non_copy_types.insert(symbol_id);
+                    }
+                    if struct_decl.attrs.iter().any(|attr| attr.name == "NoSend") {
+                        checker.type_info.non_send_types.insert(symbol_id);
+                    }
+                    if struct_decl.attrs.iter().any(|attr| attr.name == "NoSync") {
+                        checker.type_info.non_sync_types.insert(symbol_id);
+                    }
+                    if struct_decl
+                        .attrs
+                        .iter()
+                        .any(|attr| attr.name == "UnsafeSend")
+                    {
+                        checker.type_info.unsafe_send_types.insert(symbol_id);
+                    }
+                    if struct_decl
+                        .attrs
+                        .iter()
+                        .any(|attr| attr.name == "UnsafeSync")
+                    {
+                        checker.type_info.unsafe_sync_types.insert(symbol_id);
                     }
                     checker.type_info.struct_fields.insert(
                         symbol_id,
@@ -127,6 +152,18 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                 };
                 if enum_decl.attrs.iter().any(|attr| attr.name == "NoCopy") {
                     checker.type_info.non_copy_types.insert(enum_symbol_id);
+                }
+                if enum_decl.attrs.iter().any(|attr| attr.name == "NoSend") {
+                    checker.type_info.non_send_types.insert(enum_symbol_id);
+                }
+                if enum_decl.attrs.iter().any(|attr| attr.name == "NoSync") {
+                    checker.type_info.non_sync_types.insert(enum_symbol_id);
+                }
+                if enum_decl.attrs.iter().any(|attr| attr.name == "UnsafeSend") {
+                    checker.type_info.unsafe_send_types.insert(enum_symbol_id);
+                }
+                if enum_decl.attrs.iter().any(|attr| attr.name == "UnsafeSync") {
+                    checker.type_info.unsafe_sync_types.insert(enum_symbol_id);
                 }
                 let params = super::super::super::types::extract_generic_param_symbols(
                     checker,

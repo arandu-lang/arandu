@@ -8,7 +8,7 @@ use crate::type_checker::types::ArType;
 use arandu_middle::types::type_interner::TypeId;
 
 /// Returns true when the call is rejected because the target has no OS.
-/// WebAssembly keeps its `U001` and returns false so the existing spawn
+/// WebAssembly emits `T099` and returns false so the existing spawn
 /// checks still run.
 pub(crate) fn check_target_thread_capabilities(
     checker: &mut TypeChecker<'_>,
@@ -53,7 +53,7 @@ pub(crate) fn check_target_thread_capabilities(
         arandu_middle::symbol_table::LangItem::ThreadParkTimeout => {
             checker.diagnostics.push(
                 crate::Diagnostic::error(
-                    crate::DiagCode::U001FeatureNotSupported,
+                    crate::DiagCode::T099RequiresOperatingSystem,
                     "`parkTimeout` requires target thread support to wake on unpark, which is unavailable on wasm32; use `std.thread.sleep` for a non-interruptible delay",
                     span,
                 )
@@ -68,7 +68,7 @@ pub(crate) fn check_target_thread_capabilities(
         | arandu_middle::symbol_table::LangItem::ThreadSpawn => {
             checker.diagnostics.push(
                 crate::Diagnostic::error(
-                    crate::DiagCode::U001FeatureNotSupported,
+                    crate::DiagCode::T099RequiresOperatingSystem,
                     "thread synchronization and spawning are unsupported on single-threaded WebAssembly targets; use cooperative tasks or async execution instead",
                     span,
                 )

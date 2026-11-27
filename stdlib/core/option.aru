@@ -26,6 +26,7 @@
 module std.core.option
 
 import std.core.intrinsics as intrinsics
+import std.core.mem as mem
 
 /// Algebraic data type representing either the presence (`Some`) or absence (`None`) of a value.
 ///
@@ -151,10 +152,10 @@ public func Option.unwrapOr<T>(self: own Option<T>, defaultVal: T): T {
     }
 }
 
-/// Unwraps the value contained in `Some`, or aborts the program with a fatal trap if `None`.
+/// Unwraps the value contained in `Some`, or aborts the program with `reason` on `None`.
 ///
 /// # Traps / Abort
-/// If `self` is `None`, execution is terminated immediately and deterministically (`intrinsics.abort`).
+/// If `self` is `None`, `reason` is written to standard error and execution terminates immediately (`intrinsics.abortWithMessage`).
 ///
 /// # Examples
 /// ```arandu
@@ -170,7 +171,7 @@ public func Option.expectOrAbort<T>(self: own Option<T>, reason: str): T {
         }
         None => {
             unsafe {
-                intrinsics.abort()
+                intrinsics.abortWithMessage(reason)
             }
         }
     }
@@ -283,4 +284,14 @@ public func Option.zip<T, U>(self: own Option<T>, other: own Option<U>): Option<
             return Option.None
         }
     }
+}
+
+/// Takes the value out of the option, leaving `Option.None` in its place.
+public func Option.take<T>(self: mut ref Option<T>): Option<T> {
+    return mem.replace<Option<T>>(self, Option.None)
+}
+
+/// Replaces the actual value in the option with `value`, returning the old value.
+public func Option.replace<T>(self: mut ref Option<T>, value: T): Option<T> {
+    return mem.replace<Option<T>>(self, Option.Some(value))
 }

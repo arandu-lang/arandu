@@ -451,6 +451,7 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
             span,
             params,
             result,
+            is_bare_func,
         } => {
             let param_list = pool.type_expr_list(*params);
             let params_str = param_list
@@ -458,15 +459,20 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
                 .map(|&p| dump_type(pool.type_expr(p), pool))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let tag = if *is_bare_func {
+                "BareFuncType"
+            } else {
+                "FuncType"
+            };
             match result {
                 Some(result) => {
                     format!(
-                        "FuncType {} ({params_str}) {}",
+                        "{tag} {} ({params_str}) {}",
                         dump_span(*span),
                         dump_result_type(result, pool)
                     )
                 }
-                None => format!("FuncType {} ({params_str})", dump_span(*span)),
+                None => format!("{tag} {} ({params_str})", dump_span(*span)),
             }
         }
         TypeExpr::Tuple { span, items } => {
@@ -488,7 +494,7 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
         TypeExpr::OwnFunc {
             span,
             func,
-            bound,
+            bounds,
             once,
         } => {
             let func = dump_type(pool.type_expr(*func), pool);
@@ -497,13 +503,16 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
             } else {
                 "OwnFuncType"
             };
-            match bound {
-                Some(bound) => format!(
-                    "{kind} {} ({func}) + ({})",
-                    dump_span(*span),
-                    dump_type(pool.type_expr(*bound), pool)
-                ),
-                None => format!("{kind} {} ({func})", dump_span(*span)),
+            let bound_list = pool.type_expr_list(*bounds);
+            if bound_list.is_empty() {
+                format!("{kind} {} ({func})", dump_span(*span))
+            } else {
+                let bounds_str = bound_list
+                    .iter()
+                    .map(|b| format!("+ ({})", dump_type(pool.type_expr(*b), pool)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{kind} {} ({func}) {bounds_str}", dump_span(*span))
             }
         }
     }

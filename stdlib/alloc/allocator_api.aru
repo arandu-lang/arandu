@@ -91,7 +91,7 @@ public func global(): GlobalAllocator {
 /// On success, the caller owns the returned buffer and must pass it to
 /// `globalDealloc` or `globalRealloc`.
 public func globalAlloc(size: usize): Result<ptr[u8], AllocError> {
-    let maxSize: usize = 2147483647 as usize
+    let maxSize: usize = mem.maxAllocBytes()
     if size == (0 as usize) || size > maxSize {
         return Result.Err(AllocError.InvalidLayout)
     }
@@ -124,7 +124,7 @@ public func globalDealloc(p: ptr[u8], size: usize): void {
 /// for later access or release.
 @Unsafe
 public func globalRealloc(p: ptr[u8], oldSize: usize, newSize: usize): Result<ptr[u8], AllocError> {
-    let maxSize: usize = 2147483647 as usize
+    let maxSize: usize = mem.maxAllocBytes()
     if newSize == (0 as usize) || newSize > maxSize || oldSize > maxSize {
         return Result.Err(AllocError.InvalidLayout)
     }
@@ -155,7 +155,7 @@ public struct BumpArena {
 /// Returns `InvalidLayout` for zero capacity and `OutOfMemory` when the host
 /// cannot allocate the buffer. Backing memory is released automatically on drop.
 public func BumpArena.tryNew(capacity: usize): Result<BumpArena, AllocError> {
-    let maxCapacity: usize = 2147483647 as usize
+    let maxCapacity: usize = mem.maxAllocBytes()
     if capacity == (0 as usize) || capacity > maxCapacity {
         return Result.Err(AllocError.InvalidLayout)
     }
@@ -174,7 +174,7 @@ public func BumpArena.tryNew(capacity: usize): Result<BumpArena, AllocError> {
 }
 
 func bumpAlloc(a: mut ref BumpArena, size: usize, align: usize): Result<ptr[u8], AllocError> {
-    let maxCapacity: usize = 2147483647 as usize
+    let maxCapacity: usize = mem.maxAllocBytes()
     let nullp: ptr[u8] = nil
     if a.buffer == nullp || a.capacity == (0 as usize) || a.offset > a.capacity || a.capacity > maxCapacity {
         return Result.Err(AllocError.OutOfMemory)

@@ -286,3 +286,69 @@ fn no_copy_invalidates_module_signature_hash() {
         "adding @NoCopy must invalidate module_signatures"
     );
 }
+
+#[test]
+fn concurrency_attributes_validate_targets_arguments_conflicts_and_hashes() {
+    let _guard = COUNTER_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut db = DatabaseImpl::new();
+
+    for attr in ["NoSend", "NoSync", "UnsafeSend", "UnsafeSync"] {
+        let bad_target = db.new_file(
+            format!("bad-target-{attr}.aru"),
+            format!("@{attr}\nfunc f() {{}}\n"),
+        );
+        let checked = type_check(&db, bad_target);
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code == arandu_middle::DiagCode::N013InvalidAnnotationTarget),
+            "@{attr} on function must emit N013: {:?}",
+            checked.diagnostics
+        );
+
+        let bad_args = db.new_file(
+            format!("bad-args-{attr}.aru"),
+            format!("@{attr}(\"x\")\nstruct S {{ x: int }}\n"),
+        );
+        let checked = type_check(&db, bad_args);
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code == arandu_middle::DiagCode::N014InvalidAnnotationArguments),
+            "@{attr} with args must emit N014: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    let conflict = db.new_file(
+        "conflict-send.aru".into(),
+        "@NoSend\n@UnsafeSend\nstruct S { x: int }\n".into(),
+    );
+    let checked = type_check(&db, conflict);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == arandu_middle::DiagCode::N015DuplicateAnnotation),
+        "@NoSend + @UnsafeSend must conflict: {:?}",
+        checked.diagnostics
+    );
+
+    let file = db.new_file(
+        "nosend-cutoff.aru".into(),
+        "public struct Handle { id: int }\n".into(),
+    );
+    let sig_before = module_signatures(&db, file).clone();
+    file.set_text(&mut db).to(Arc::from(
+        "@NoSend\n@NoSync\npublic struct Handle { id: int }\n",
+    ));
+    let sig_after = module_signatures(&db, file).clone();
+    assert!(
+        sig_before != sig_after,
+        "adding @NoSend/@NoSync must invalidate module_signatures"
+    );
+}

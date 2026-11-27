@@ -77,6 +77,16 @@ extern "arandu-intrinsic" {
     /// `p` must be a valid, non-null pointer pointing to an initialized instance of `T`.
     /// Reading `*p` after `dropInPlace` without reinitializing it via `ptrWrite` is undefined behavior.
     func dropInPlace<T>(p: ptr[T]) : void
+
+    /// Compiler-internal move sink that suppresses lexical destruction of `value`.
+    func forgetValue<T>(value: T) : void
+}
+
+/// Consumes `value` and suppresses its lexical destructor without releasing resources.
+///
+/// Any owned resources remain alive indefinitely (equivalent to Rust's `core::mem::forget`).
+public func forget<T>(value: own T): void {
+    unsafe { forgetValue<T>(value) }
 }
 
 /// Swaps the values referenced by `x` and `y` in-place without extra allocation.
@@ -117,6 +127,21 @@ public func replace<T>(dest: mut ref T, src: T): T {
         ptrWrite<T>(dest as ptr[T], src)
         return old
     }
+}
+
+/// Returns the maximum allocation size in bytes for the target (`isize.max`).
+public func maxAllocBytes(): usize {
+    let bits = sizeOf<usize>() * (8 as usize)
+    return ((1 as usize) << (bits - (1 as usize))) - (1 as usize)
+}
+
+/// Returns the maximum number of `T` elements that fit in `maxAllocBytes()`.
+public func maxAllocElements<T>(): usize {
+    let elem = sizeOf<T>()
+    if elem == (0 as usize) {
+        return maxAllocBytes()
+    }
+    return maxAllocBytes() / elem
 }
 
 /// Replaces the value at `dest` with `Option.None`, returning the previous value.

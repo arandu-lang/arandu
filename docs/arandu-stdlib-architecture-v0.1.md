@@ -197,11 +197,11 @@ interrompido por unpark, consumindo o mesmo token coalescente.
 
 Os seis tipos canônicos de `std.core.simd` usam ArType::Vector desde a fonte.
 Máscaras privadas, comparações e seleção possuem nós AMIR e lowering nos três
-backends. Loads recebem []T; stores seguros usam MutableSlice<Owner,T>, afim e
-ligada a mut ref Owner. Vec.asMutSlice mantém o proprietário exclusivamente
-emprestado; raw constructors e stores por descritor compartilhado exigem unsafe.
-Isso impede tratar a cópia de uma fatia imutável como permissão de escrita.
-Bounds e acessos escalares permitem endereços sem alinhamento vetorial. Backing
+backends. Loads recebem `[]T`; stores seguros recebem `mut []T`, vista afim
+ligada exclusivamente ao proprietário (`Vec.asMutSlice`); construtores brutos
+(`intrinsics.mutSliceFromRaw`) exigem `unsafe`. Isso impede tratar a cópia de
+uma fatia imutável (`[]T`) como permissão de escrita (`MutableSlice<Owner,T>` foi
+aposentado na `0.3.1`). Bounds e acessos escalares permitem endereços sem alinhamento vetorial. Backing
 do compilador tem alinhamento mínimo 16, com par de liberação correspondente.
 
 Identidades privilegiadas e a ABI arandu-intrinsic exigem autoridade de origem
@@ -330,7 +330,7 @@ arandu_core
  ├─ borrow       # Abstrações de empréstimo (Borrow, BorrowMut)
  ├─ fmt          # Formatação e diagnostics de baixo nível (Debug, Display, formatting engines)
  ├─ panic        # Handlers básicos de pânico e asserções estáticas
- ├─ intrinsics   # abort, abortGenerationalMismatch (traps; zero heap)
+ ├─ intrinsics   # abort, abortWithMessage, abortGenerationalMismatch (traps; zero heap)
  ├─ simd         # Seis vetores nativos, máscaras e acesso a vistas exclusivas (RFC 0038)
  ├─ atomic       # Lowering local C/Cranelift/Wasm; todos os acessos SeqCst
  └─ arch         # Especificações arquiteturais específicas (x86_64, AArch64, RISC-V)

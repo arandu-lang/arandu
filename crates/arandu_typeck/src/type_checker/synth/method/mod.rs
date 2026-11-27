@@ -29,6 +29,53 @@ pub(crate) fn validate_exclusive_receiver_autoref(
         return;
     }
 
+    if let ExprKind::Index {
+        base: container,
+        index,
+    } = checker.pool.expr(base)
+        && let Some(raw_container_ty_id) = checker.type_info.expr_type_id(*container)
+    {
+        let mut peeled_id = raw_container_ty_id;
+        for _ in 0..8 {
+            match checker.resolve(peeled_id) {
+                ArType::Ref(i) | ArType::RefMut(i) => peeled_id = i,
+                _ => break,
+            }
+        }
+        let peeled_ty = checker.resolve(peeled_id);
+        if !super::field::is_builtin_index_base(&peeled_ty, &checker.symbols) {
+            let idx_ty_id = checker
+                .type_info
+                .expr_type_id(*index)
+                .unwrap_or_else(|| checker.intern(ArType::Error));
+            if super::field::resolve_trait_index(
+                checker,
+                &peeled_ty,
+                Some(*index),
+                idx_ty_id,
+                true,
+                checker.pool.expr_span(*container),
+                checker.pool.expr_span(*index),
+            )
+            .is_none()
+            {
+                let ty_disp = peeled_ty.display(&checker.symbols, &checker.type_info.type_interner);
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T026CannotAssignImmutable,
+                        format!("cannot mutably index `{ty_disp}`: missing `IndexMut` (`indexMut`) implementation"),
+                        checker.pool.expr_span(base),
+                    )
+                    .with_label(
+                        checker.pool.expr_span(base),
+                        "exclusive access to indexed element requires `IndexMut`",
+                    ),
+                );
+                return;
+            }
+        }
+    }
+
     let Some(symbol_id) = receiver_root_symbol(checker, base) else {
         return;
     };

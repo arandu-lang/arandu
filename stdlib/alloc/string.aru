@@ -41,11 +41,12 @@ import std.core.result as core_result
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 import std.core.char as chars
+import std.core.fmt as fmt
 import std.core.str as core_str
 import std.core.hash as hash
 
 func maxBufferCapacity(): usize {
-    return 2147483647 as usize
+    return mem.maxAllocBytes()
 }
 
 extern "C" {
@@ -81,6 +82,8 @@ func pushStr(s: mut ref String, value: str): Result<void, alloc.AllocError> {
 }
 
 /// Owned UTF-8 string buffer.
+@UnsafeSend
+@UnsafeSync
 public struct String {
     /// Pointer to the owned byte buffer.
     data: ptr[u8]
@@ -389,8 +392,56 @@ public func String.pushScalar(self: mut ref String, c: char): void {
 /// Borrows the initialized bytes as a `str` view without copying.
 ///
 /// Dropping or reallocating the owner invalidates the view.
-public func String.asStr(self: ref String): ref str {
-    return asStr(self)
+public func String.asStr(self: ref String): str {
+    return *asStr(self)
+}
+
+func tryFormatDisplay<T: fmt.Display>(value: ref T, out: mut ref String): Result<usize, fmt.FmtError> {
+    let mut buf = unsafe {
+        intrinsics.mutSliceFromRaw<String, u8>(out, out.data, out.capacity)
+    }
+    let mut f = fmt.Formatter.new(buf)
+    match value.fmt(mut ref f) {
+        Ok(_) => {
+            return Result.Ok(f.len())
+        }
+        Err(err) => {
+            return Result.Err(err)
+        }
+    }
+}
+
+/// Formats a `Display` value into an owned `String`, growing the buffer as needed.
+public func String.fromDisplay<T: fmt.Display>(value: ref T): String {
+    let mut cap: usize = 64 as usize
+    let maxCap = mem.maxAllocBytes()
+    while true {
+        let mut out = withCapacity(cap)
+        let mut wrote: usize = 0 as usize
+        let mut ok = false
+        let mut invalid = false
+        match tryFormatDisplay<T>(value, mut ref out) {
+            Ok(n) => {
+                wrote = n
+                ok = true
+            }
+            Err(err) => {
+                match err {
+                    BufferFull => {}
+                    InvalidFormat => { invalid = true }
+                }
+            }
+        }
+        if ok {
+            out.len = wrote
+            return out
+        }
+        if invalid || cap >= maxCap / (2 as usize) {
+            return out
+        }
+        cap = cap * (2 as usize)
+    }
+    return new()
 }
 
 /// Borrows initialized bytes as a slice without copying.

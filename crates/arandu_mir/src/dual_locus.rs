@@ -19,8 +19,8 @@
 
 use crate::Span;
 use crate::amir::{
-    AmirFunc, AmirOperand, AmirPlace, AmirProjection, AmirRvalue, AmirStmt, AmirTemp,
-    AmirTerminator, BlockId, LocalId, TempId,
+    AmirFunc, AmirLocal, AmirOperand, AmirPlace, AmirProjection, AmirRvalue, AmirStmt, AmirTemp,
+    AmirTerminator, BlockId, Dominators, LocalId, TempId,
 };
 use crate::escape_analysis::{
     EscapeCheckOptions, EscapeEvent, EscapeKind, find_escapes, find_escapes_with_type_info,
@@ -263,14 +263,32 @@ fn apply_dual_locus_promotion_impl(
     let mut ordered_locals: Vec<LocalId> = promoted_layouts.keys().copied().collect();
     ordered_locals.sort_by_key(|l| l.as_usize());
 
-    // Identify which promoted locals are strictly block-scoped inside a non-entry
-    // block `B` (`B != bb0`) with an explicit `StorageDead(L)` and no return/indirect escape,
-    // making them eligible for `ArenaCheckpoint` + `ArenaRewind`.
-    let mut loop_scoped_block: FxHashMap<LocalId, BlockId> = FxHashMap::default();
+    // Classify each promoted local's TaskArena placement:
+    // - FunctionEntry: allocated once in bb0 (outside loops).
+    // - SingleBlockRewind(B): fast path when local + carriers live strictly inside one block B.
+    // - MultiBlockLoopRewind: allocated + checkpointed at StorageLive(L) in `live_block`,
+    //   rewound before every `StorageDead(L)` across branched loop bodies.
+    // - PerIterationAlloc(live_block): loop-scoped local whose borrow escapes the iteration;
+    //   allocated per iteration at `StorageLive(L)` to prevent loop-carried aliasing.
+    let doms = Dominators::new(func);
+    let loops = discover_natural_loops(func, &doms);
+    let mut placements: FxHashMap<LocalId, DualLocusPlacement> = FxHashMap::default();
     for &local in &ordered_locals {
-        if let Some(block_id) = find_rewindable_block(func, local, &events) {
-            loop_scoped_block.insert(local, block_id);
-        }
+        let placement = if let Some(block_id) = find_rewindable_block(func, local, &events) {
+            DualLocusPlacement::SingleBlockRewind(block_id)
+        } else if let Some((live_block, dead_blocks)) =
+            find_rewindable_loop_region(func, local, &events, &doms, &loops, interner, type_info)
+        {
+            DualLocusPlacement::MultiBlockLoopRewind {
+                live_block,
+                dead_blocks,
+            }
+        } else if let Some(live_block) = find_loop_storage_live_block(func, local, &loops) {
+            DualLocusPlacement::PerIterationAlloc(live_block)
+        } else {
+            DualLocusPlacement::FunctionEntry
+        };
+        placements.insert(local, placement);
     }
 
     // 1. Rewrite every existing AmirPlace referencing a promoted local `L` by
@@ -307,17 +325,41 @@ fn apply_dual_locus_promotion_impl(
         }
     }
 
-    // 3. Insert `ArenaAlloc` (and `ArenaCheckpoint`/`ArenaRewind` for block-scoped
-    //    loop locals) into the basic blocks.
+    // 2.5 Allocate persistent checkpoint slots for multi-block loop rewinds.
     let i64_ty = interner.intern(ArType::Primitive(Primitive::I64));
+    let mut mark_locals: FxHashMap<LocalId, LocalId> = FxHashMap::default();
+    for &local in &ordered_locals {
+        if matches!(
+            placements.get(&local),
+            Some(DualLocusPlacement::MultiBlockLoopRewind { .. })
+        ) {
+            let mark_id = LocalId::from_usize(func.locals.len());
+            let span = local_span(func, local);
+            func.locals.push(AmirLocal {
+                id: mark_id,
+                ty: i64_ty,
+                is_memory: true,
+                symbol: None,
+                span,
+                use_span: None,
+            });
+            mark_locals.insert(local, mark_id);
+        }
+    }
+
+    // 3. Insert `ArenaAlloc` (and `ArenaCheckpoint`/`ArenaRewind` for loop-scoped
+    //    locals) into the basic blocks.
     for bi in 0..func.blocks.len() {
         let bid = func.blocks[bi].id;
-        let old_ids: Vec<_> = func.block_stmt_ids(bid).collect();
-        let mut new_stmts = Vec::with_capacity(old_ids.len() + ordered_locals.len() * 2);
+        let old_ids: Vec<_> = func.block_stmts_ids_or_empty(bid);
+        let mut new_stmts = Vec::with_capacity(old_ids.len() + ordered_locals.len() * 3);
 
         if bi == 0 {
             for &local in &ordered_locals {
-                if loop_scoped_block.contains_key(&local) {
+                if !matches!(
+                    placements.get(&local),
+                    Some(DualLocusPlacement::FunctionEntry)
+                ) {
                     continue;
                 }
                 let (size, align, payload_ty) = promoted_layouts[&local];
@@ -342,13 +384,11 @@ fn apply_dual_locus_promotion_impl(
             }
         }
 
-        // For any loop-scoped locals assigned to this block `bid`, emit
-        // `ArenaCheckpoint` + `ArenaAlloc` before their first use in `bid`,
-        // and `ArenaRewind` right before their `StorageDead(local)`.
-        let block_loop_locals: Vec<LocalId> = ordered_locals
+        // Single-block fast path locals assigned to this block `bid`.
+        let block_single_locals: Vec<LocalId> = ordered_locals
             .iter()
             .copied()
-            .filter(|l| loop_scoped_block.get(l) == Some(&bid))
+            .filter(|l| matches!(placements.get(l), Some(DualLocusPlacement::SingleBlockRewind(b)) if *b == bid))
             .collect();
         let mut active_marks: FxHashMap<LocalId, TempId> = FxHashMap::default();
 
@@ -356,7 +396,7 @@ fn apply_dual_locus_promotion_impl(
             let Some(stmt) = func.stmts.get(sid).cloned() else {
                 continue;
             };
-            for &local in &block_loop_locals {
+            for &local in &block_single_locals {
                 if !active_marks.contains_key(&local) && stmt_mentions_local(&stmt, local) {
                     let (size, align, payload_ty) = promoted_layouts[&local];
                     let ptr_ty = interner.intern(ArType::Ptr(payload_ty));
@@ -385,12 +425,78 @@ fn apply_dual_locus_promotion_impl(
                     active_marks.insert(local, t_mark);
                 }
             }
-            if let AmirStmt::StorageDead(dead_local) = &stmt
-                && let Some(&t_mark) = active_marks.get(dead_local)
-            {
-                new_stmts.push(AmirStmt::ArenaRewind(AmirOperand::Copy(t_mark)));
+            if let AmirStmt::StorageDead(dead_local) = &stmt {
+                if let Some(&t_mark) = active_marks.get(dead_local) {
+                    new_stmts.push(AmirStmt::ArenaRewind(AmirOperand::Copy(t_mark)));
+                } else if let Some(DualLocusPlacement::MultiBlockLoopRewind { dead_blocks, .. }) =
+                    placements.get(dead_local)
+                    && dead_blocks.contains(&bid)
+                    && let Some(&mark_local) = mark_locals.get(dead_local)
+                {
+                    let span = local_span(func, *dead_local);
+                    let t_load = alloc_temp(func, i64_ty, span);
+                    new_stmts.push(AmirStmt::Assign {
+                        lhs: t_load,
+                        rhs: AmirRvalue::Load(AmirPlace {
+                            local: mark_local,
+                            projections: smallvec![],
+                        }),
+                    });
+                    new_stmts.push(AmirStmt::ArenaRewind(AmirOperand::Copy(t_load)));
+                }
             }
+            let live_local_init = match &stmt {
+                AmirStmt::StorageLive(live_local) => match placements.get(live_local) {
+                    Some(DualLocusPlacement::MultiBlockLoopRewind { live_block, .. })
+                        if *live_block == bid =>
+                    {
+                        Some((*live_local, true))
+                    }
+                    Some(DualLocusPlacement::PerIterationAlloc(live_block))
+                        if *live_block == bid =>
+                    {
+                        Some((*live_local, false))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
             new_stmts.push(stmt);
+            if let Some((live_local, with_checkpoint)) = live_local_init {
+                let (size, align, payload_ty) = promoted_layouts[&live_local];
+                let ptr_ty = interner.intern(ArType::Ptr(payload_ty));
+                let span = local_span(func, live_local);
+                if with_checkpoint && let Some(&mark_local) = mark_locals.get(&live_local) {
+                    let t_mark = alloc_temp(func, i64_ty, span);
+                    new_stmts.push(AmirStmt::Assign {
+                        lhs: t_mark,
+                        rhs: AmirRvalue::ArenaCheckpoint,
+                    });
+                    new_stmts.push(AmirStmt::Store {
+                        lhs: AmirPlace {
+                            local: mark_local,
+                            projections: smallvec![],
+                        },
+                        rhs: AmirOperand::Copy(t_mark),
+                    });
+                }
+                let t_alloc = alloc_temp(func, ptr_ty, span);
+                new_stmts.push(AmirStmt::Assign {
+                    lhs: t_alloc,
+                    rhs: AmirRvalue::ArenaAlloc {
+                        size,
+                        align,
+                        payload_ty,
+                    },
+                });
+                new_stmts.push(AmirStmt::Store {
+                    lhs: AmirPlace {
+                        local: live_local,
+                        projections: smallvec![],
+                    },
+                    rhs: AmirOperand::Copy(t_alloc),
+                });
+            }
         }
 
         let start = func.stmts.len();
@@ -402,6 +508,244 @@ fn apply_dual_locus_promotion_impl(
     }
 
     promoted_layouts.into_keys().collect()
+}
+
+enum DualLocusPlacement {
+    FunctionEntry,
+    SingleBlockRewind(BlockId),
+    MultiBlockLoopRewind {
+        live_block: BlockId,
+        dead_blocks: FxHashSet<BlockId>,
+    },
+    PerIterationAlloc(BlockId),
+}
+
+struct NaturalLoop {
+    header: BlockId,
+    body: FxHashSet<BlockId>,
+}
+
+fn discover_natural_loops(func: &AmirFunc, doms: &Dominators) -> Vec<NaturalLoop> {
+    let mut headers: Vec<BlockId> = Vec::new();
+    let mut back_edges: Vec<(BlockId, BlockId)> = Vec::new();
+    for block in &func.blocks {
+        let bid = block.id;
+        for &succ in func.successors(bid) {
+            if doms.dominates(succ, bid) {
+                back_edges.push((bid, succ));
+                if !headers.contains(&succ) {
+                    headers.push(succ);
+                }
+            }
+        }
+    }
+    let mut loops = Vec::with_capacity(headers.len());
+    for header in headers {
+        let mut body = FxHashSet::default();
+        body.insert(header);
+        let mut worklist: Vec<BlockId> = back_edges
+            .iter()
+            .filter(|&&(_, target)| target == header)
+            .map(|&(src, _)| src)
+            .filter(|src| body.insert(*src))
+            .collect();
+        while let Some(block) = worklist.pop() {
+            for &pred in func.predecessors(block) {
+                if pred != header && body.insert(pred) {
+                    worklist.push(pred);
+                }
+            }
+        }
+        loops.push(NaturalLoop { header, body });
+    }
+    loops
+}
+
+trait BlockStmtIdsExt {
+    fn block_stmts_ids_or_empty(&self, block: BlockId) -> Vec<crate::amir::InstrId>;
+}
+
+impl BlockStmtIdsExt for AmirFunc {
+    fn block_stmts_ids_or_empty(&self, block: BlockId) -> Vec<crate::amir::InstrId> {
+        self.block_stmt_ids(block).collect()
+    }
+}
+
+fn innermost_loop_containing(loops: &[NaturalLoop], block: BlockId) -> Option<&NaturalLoop> {
+    loops
+        .iter()
+        .filter(|lp| lp.body.contains(&block))
+        .min_by_key(|lp| lp.body.len())
+}
+
+fn find_loop_storage_live_block(
+    func: &AmirFunc,
+    local: LocalId,
+    loops: &[NaturalLoop],
+) -> Option<BlockId> {
+    let mut live_block: Option<BlockId> = None;
+    for block in &func.blocks {
+        for stmt in func.block_stmts(block.id) {
+            if matches!(stmt, AmirStmt::StorageLive(l) if *l == local) {
+                match live_block {
+                    None => live_block = Some(block.id),
+                    Some(prev) if prev != block.id => return None,
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    let bid = live_block?;
+    if bid == BlockId::from_usize(0) {
+        return None;
+    }
+    innermost_loop_containing(loops, bid).map(|_| bid)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_rewindable_loop_region(
+    func: &AmirFunc,
+    local: LocalId,
+    events: &[EscapeEvent],
+    doms: &Dominators,
+    loops: &[NaturalLoop],
+    interner: &TypeInterner,
+    type_info: Option<&dyn AmirTypeContext>,
+) -> Option<(BlockId, FxHashSet<BlockId>)> {
+    if events
+        .iter()
+        .any(|ev| ev.place_local == local && ev.kind == EscapeKind::Return)
+    {
+        return None;
+    }
+
+    let live_block = find_loop_storage_live_block(func, local, loops)?;
+    let lp = innermost_loop_containing(loops, live_block)?;
+
+    let mut dead_blocks = FxHashSet::default();
+    for block in &func.blocks {
+        for stmt in func.block_stmts(block.id) {
+            if matches!(stmt, AmirStmt::StorageDead(l) if *l == local) {
+                dead_blocks.insert(block.id);
+            }
+        }
+    }
+    if dead_blocks.is_empty() {
+        return None;
+    }
+    if dead_blocks
+        .iter()
+        .any(|&b| !lp.body.contains(&b) || !doms.dominates(live_block, b))
+    {
+        return None;
+    }
+
+    // Reject if `local` is mentioned anywhere before `StorageLive(local)` in
+    // `live_block`, after `StorageDead(local)` in a dead block, or outside
+    // `(lp.body & dominated by live_block)`.
+    for block in &func.blocks {
+        let mut saw_live = false;
+        let mut saw_dead = false;
+        for stmt in func.block_stmts(block.id) {
+            if matches!(stmt, AmirStmt::StorageLive(l) if *l == local) {
+                saw_live = true;
+                continue;
+            }
+            if matches!(stmt, AmirStmt::StorageDead(l) if *l == local) {
+                saw_dead = true;
+                continue;
+            }
+            if !stmt_mentions_local(stmt, local) {
+                continue;
+            }
+            if !lp.body.contains(&block.id) || !doms.dominates(live_block, block.id) {
+                return None;
+            }
+            if block.id == live_block && !saw_live {
+                return None;
+            }
+            if saw_dead {
+                return None;
+            }
+        }
+    }
+
+    // Trace all paths starting from `live_block` up to `dead_blocks`.
+    // Every path must reach `StorageDead(local)` before exiting `lp.body`,
+    // reaching `Return`/`Unreachable`, or taking a back-edge to `lp.header`.
+    let mut region_blocks = FxHashSet::default();
+    let mut worklist = vec![live_block];
+    while let Some(bid) = worklist.pop() {
+        if !region_blocks.insert(bid) {
+            continue;
+        }
+        if !lp.body.contains(&bid) || !doms.dominates(live_block, bid) {
+            return None;
+        }
+        if dead_blocks.contains(&bid) {
+            continue;
+        }
+        let succs = func.successors(bid);
+        if succs.is_empty() {
+            return None;
+        }
+        for &succ in succs {
+            if succ == lp.header || !lp.body.contains(&succ) || !doms.dominates(live_block, succ) {
+                return None;
+            }
+            worklist.push(succ);
+        }
+    }
+
+    // Check indirect stores and borrow-carrying local variables inside `region_blocks`.
+    let mut carrier_locals = FxHashSet::default();
+    for &bid in &region_blocks {
+        for stmt in func.block_stmts(bid) {
+            if let AmirStmt::Store { lhs, .. } = stmt {
+                if lhs
+                    .projections
+                    .iter()
+                    .any(|p| matches!(p, AmirProjection::Deref))
+                {
+                    return None;
+                }
+                if lhs.local != local
+                    && let Some(local_info) = func.locals.get(lhs.local.as_usize())
+                    && (crate::borrow_facts::type_may_carry_borrow(local_info.ty, interner)
+                        || type_is_borrow_carrier(local_info.ty, interner, type_info))
+                {
+                    carrier_locals.insert(lhs.local);
+                }
+            }
+        }
+    }
+
+    // Any borrow-carrying local written inside the lifetime region must stay
+    // confined to `region_blocks` (and never read after `StorageDead(local)`).
+    if !carrier_locals.is_empty() {
+        for block in &func.blocks {
+            let mut saw_dead = false;
+            for stmt in func.block_stmts(block.id) {
+                if matches!(stmt, AmirStmt::StorageDead(l) if *l == local) {
+                    saw_dead = true;
+                }
+                for &carrier in &carrier_locals {
+                    if !stmt_mentions_local(stmt, carrier) {
+                        continue;
+                    }
+                    if !region_blocks.contains(&block.id) {
+                        return None;
+                    }
+                    let is_carrier_dead = matches!(stmt, AmirStmt::StorageDead(c) if *c == carrier);
+                    if saw_dead && !is_carrier_dead {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
+    Some((live_block, dead_blocks))
 }
 
 /// Determines whether `local` and all local carriers receiving `&local` are
@@ -771,5 +1115,405 @@ mod tests {
             .any(|s| matches!(s, AmirStmt::ArenaRewind(_)));
         assert!(has_checkpoint, "Block 1 must contain ArenaCheckpoint");
         assert!(has_rewind, "Block 1 must contain ArenaRewind");
+    }
+
+    #[test]
+    fn dual_locus_rewinds_multi_block_branched_loop_local() {
+        let interner = TypeInterner::new();
+        let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+        let ref_int_ty = interner.intern(ArType::Ref(int_ty));
+        let holder_sym = SymbolId::new(0, 1);
+        let holder_ty = interner.intern(ArType::named(holder_sym, &[], &interner));
+
+        let mut stmts = AmirStmtTable::new();
+        // bb0: entry -> bb1
+        // bb1: loop header -> SwitchInt -> bb2 (body entry) / bb6 (exit)
+        // bb2: StorageLive(s0), StorageLive(s1) -> SwitchInt -> bb3 / bb4
+        // bb3: _1 = &s0; _2 = Holder { value: _1 }; s1 = _2 -> Goto bb5
+        // bb4: _1 = &s0; _2 = Holder { value: _1 }; s1 = _2 -> Goto bb5
+        // bb5: StorageDead(s1); StorageDead(s0) -> Goto bb1
+        // bb6: Return
+        let bb2_start = stmts.len();
+        stmts.push(AmirStmt::StorageLive(LocalId::from_usize(0)));
+        stmts.push(AmirStmt::StorageLive(LocalId::from_usize(1)));
+        let bb2_len = stmts.len() - bb2_start;
+
+        let bb3_start = stmts.len();
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Borrow(AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec![],
+            }),
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(2),
+            rhs: AmirRvalue::StructLiteral {
+                struct_symbol: holder_sym,
+                fields: vec![("value".into(), AmirOperand::Copy(TempId::from_usize(1)))],
+            },
+        });
+        stmts.push(AmirStmt::Store {
+            lhs: AmirPlace {
+                local: LocalId::from_usize(1),
+                projections: smallvec![],
+            },
+            rhs: AmirOperand::Copy(TempId::from_usize(2)),
+        });
+        let bb3_len = stmts.len() - bb3_start;
+
+        let bb4_start = stmts.len();
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Borrow(AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec![],
+            }),
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(2),
+            rhs: AmirRvalue::StructLiteral {
+                struct_symbol: holder_sym,
+                fields: vec![("value".into(), AmirOperand::Copy(TempId::from_usize(1)))],
+            },
+        });
+        stmts.push(AmirStmt::Store {
+            lhs: AmirPlace {
+                local: LocalId::from_usize(1),
+                projections: smallvec![],
+            },
+            rhs: AmirOperand::Copy(TempId::from_usize(2)),
+        });
+        let bb4_len = stmts.len() - bb4_start;
+
+        let bb5_start = stmts.len();
+        stmts.push(AmirStmt::StorageDead(LocalId::from_usize(1)));
+        stmts.push(AmirStmt::StorageDead(LocalId::from_usize(0)));
+        let bb5_len = stmts.len() - bb5_start;
+
+        let blocks = vec![
+            AmirBasicBlock {
+                id: BlockId::from_usize(0),
+                statements: DenseRange::empty(),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(1),
+                statements: DenseRange::empty(),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Copy(TempId::from_usize(0)),
+                    if_true: BlockId::from_usize(2),
+                    if_false: BlockId::from_usize(6),
+                    true_args: vec![],
+                    false_args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(2),
+                statements: DenseRange::new(bb2_start, bb2_len),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Copy(TempId::from_usize(0)),
+                    if_true: BlockId::from_usize(3),
+                    if_false: BlockId::from_usize(4),
+                    true_args: vec![],
+                    false_args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(3),
+                statements: DenseRange::new(bb3_start, bb3_len),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(5),
+                    args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(4),
+                statements: DenseRange::new(bb4_start, bb4_len),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(5),
+                    args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(5),
+                statements: DenseRange::new(bb5_start, bb5_len),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(6),
+                statements: DenseRange::empty(),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Return,
+            },
+        ];
+        let cfg = compute_cfg_edges(&blocks);
+        let mut func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: int_ty,
+            receiver: None,
+            params: vec![],
+            locals: vec![
+                AmirLocal {
+                    id: LocalId::from_usize(0),
+                    ty: int_ty,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 0, 1),
+                    use_span: None,
+                },
+                AmirLocal {
+                    id: LocalId::from_usize(1),
+                    ty: holder_ty,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 2, 3),
+                    use_span: None,
+                },
+            ],
+            temps: vec![
+                AmirTemp {
+                    id: TempId::from_usize(0),
+                    ty: int_ty,
+                    is_copy: true,
+                    is_nullable: false,
+                    span: Span::new(0, 0, 1),
+                },
+                AmirTemp {
+                    id: TempId::from_usize(1),
+                    ty: ref_int_ty,
+                    is_copy: true,
+                    is_nullable: false,
+                    span: Span::new(0, 0, 1),
+                },
+                AmirTemp {
+                    id: TempId::from_usize(2),
+                    ty: holder_ty,
+                    is_copy: false,
+                    is_nullable: false,
+                    span: Span::new(0, 2, 3),
+                },
+            ],
+            blocks,
+            block_params: Vec::new(),
+            stmts,
+            cfg,
+        };
+
+        let promoted = apply_dual_locus_promotion_with_interner(
+            &mut func,
+            &interner,
+            DataLayout::ptr_width(8),
+            &EscapeCheckOptions::default(),
+        );
+        assert!(promoted.contains(&LocalId::from_usize(0)));
+        assert!(
+            !func.block_stmts(BlockId::from_usize(0)).any(|s| matches!(
+                s,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::ArenaAlloc { .. },
+                    ..
+                }
+            )),
+            "bb0 must not allocate loop-scoped local"
+        );
+        assert!(func.block_stmts(BlockId::from_usize(2)).any(|s| matches!(
+            s,
+            AmirStmt::Assign {
+                rhs: AmirRvalue::ArenaCheckpoint,
+                ..
+            }
+        )));
+        assert!(func.block_stmts(BlockId::from_usize(2)).any(|s| matches!(
+            s,
+            AmirStmt::Assign {
+                rhs: AmirRvalue::ArenaAlloc { .. },
+                ..
+            }
+        )));
+        assert!(
+            func.block_stmts(BlockId::from_usize(5))
+                .any(|s| matches!(s, AmirStmt::ArenaRewind(_))),
+            "merge block bb5 must contain ArenaRewind"
+        );
+    }
+
+    #[test]
+    fn dual_locus_allocates_per_iteration_when_loop_borrow_escapes_outer_carrier() {
+        let interner = TypeInterner::new();
+        let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+        let ref_int_ty = interner.intern(ArType::Ref(int_ty));
+        let holder_sym = SymbolId::new(0, 1);
+        let holder_ty = interner.intern(ArType::named(holder_sym, &[], &interner));
+
+        let mut stmts = AmirStmtTable::new();
+        // s1 (outer carrier) declared in bb0; loop body bb2 allocates s0 via
+        // StorageLive(s0) and overwrites s1 outside bb2's StorageDead scope.
+        let bb2_start = stmts.len();
+        stmts.push(AmirStmt::StorageLive(LocalId::from_usize(0)));
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Borrow(AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec![],
+            }),
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(2),
+            rhs: AmirRvalue::StructLiteral {
+                struct_symbol: holder_sym,
+                fields: vec![("value".into(), AmirOperand::Copy(TempId::from_usize(1)))],
+            },
+        });
+        stmts.push(AmirStmt::Store {
+            lhs: AmirPlace {
+                local: LocalId::from_usize(1),
+                projections: smallvec![],
+            },
+            rhs: AmirOperand::Copy(TempId::from_usize(2)),
+        });
+        stmts.push(AmirStmt::StorageDead(LocalId::from_usize(0)));
+        let bb2_len = stmts.len() - bb2_start;
+
+        let bb3_start = stmts.len();
+        stmts.push(AmirStmt::StorageDead(LocalId::from_usize(1)));
+        let bb3_len = stmts.len() - bb3_start;
+
+        let blocks = vec![
+            AmirBasicBlock {
+                id: BlockId::from_usize(0),
+                statements: DenseRange::empty(),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(1),
+                statements: DenseRange::empty(),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Copy(TempId::from_usize(0)),
+                    if_true: BlockId::from_usize(2),
+                    if_false: BlockId::from_usize(3),
+                    true_args: vec![],
+                    false_args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(2),
+                statements: DenseRange::new(bb2_start, bb2_len),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: vec![],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(3),
+                statements: DenseRange::new(bb3_start, bb3_len),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Return,
+            },
+        ];
+        let cfg = compute_cfg_edges(&blocks);
+        let mut func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: int_ty,
+            receiver: None,
+            params: vec![],
+            locals: vec![
+                AmirLocal {
+                    id: LocalId::from_usize(0),
+                    ty: int_ty,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 0, 1),
+                    use_span: None,
+                },
+                AmirLocal {
+                    id: LocalId::from_usize(1),
+                    ty: holder_ty,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 2, 3),
+                    use_span: None,
+                },
+            ],
+            temps: vec![
+                AmirTemp {
+                    id: TempId::from_usize(0),
+                    ty: int_ty,
+                    is_copy: true,
+                    is_nullable: false,
+                    span: Span::new(0, 0, 1),
+                },
+                AmirTemp {
+                    id: TempId::from_usize(1),
+                    ty: ref_int_ty,
+                    is_copy: true,
+                    is_nullable: false,
+                    span: Span::new(0, 0, 1),
+                },
+                AmirTemp {
+                    id: TempId::from_usize(2),
+                    ty: holder_ty,
+                    is_copy: false,
+                    is_nullable: false,
+                    span: Span::new(0, 2, 3),
+                },
+            ],
+            blocks,
+            block_params: Vec::new(),
+            stmts,
+            cfg,
+        };
+
+        let promoted = apply_dual_locus_promotion_with_interner(
+            &mut func,
+            &interner,
+            DataLayout::ptr_width(8),
+            &EscapeCheckOptions::default(),
+        );
+        assert!(promoted.contains(&LocalId::from_usize(0)));
+        assert!(
+            !func.block_stmts(BlockId::from_usize(0)).any(|s| matches!(
+                s,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::ArenaAlloc { .. },
+                    ..
+                }
+            )),
+            "bb0 must not allocate per-iteration loop local"
+        );
+        assert!(
+            func.block_stmts(BlockId::from_usize(2)).any(|s| matches!(
+                s,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::ArenaAlloc { .. },
+                    ..
+                }
+            )),
+            "loop body bb2 must perform per-iteration ArenaAlloc"
+        );
+        assert!(
+            !func
+                .block_stmts(BlockId::from_usize(2))
+                .any(|s| matches!(s, AmirStmt::ArenaRewind(_))),
+            "outer-escaping borrow must NOT be rewound per iteration"
+        );
     }
 }

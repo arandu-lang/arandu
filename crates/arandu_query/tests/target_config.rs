@@ -211,7 +211,7 @@ fn imported_layout_intrinsics_do_not_depend_on_sibling_bodies() {
 }
 
 #[test]
-fn wasm32_target_rejects_thread_park_timeout_with_u001() {
+fn wasm32_target_rejects_thread_park_timeout_with_t099() {
     let mut db = DatabaseImpl::new();
     let wasm_identity = arandu_middle::db::TargetIdentity {
         os: "wasi".into(),
@@ -243,20 +243,20 @@ func main(): void {
         .into(),
     );
     let result = type_check(&db, file);
-    let u001 = result
+    let t099 = result
         .diagnostics
         .iter()
-        .find(|d| d.code == DiagCode::U001FeatureNotSupported)
-        .expect("expected U001FeatureNotSupported on wasm32 for parkTimeout");
+        .find(|d| d.code == DiagCode::T099RequiresOperatingSystem)
+        .expect("expected T099RequiresOperatingSystem on wasm32 for parkTimeout");
     assert!(
-        u001.message.contains("requires target thread support"),
+        t099.message.contains("requires target thread support"),
         "unexpected message: {}",
-        u001.message
+        t099.message
     );
 }
 
 #[test]
-fn wasm32_target_rejects_thread_park_and_unpark_with_u001() {
+fn wasm32_target_rejects_thread_park_and_unpark_with_t099() {
     let mut db = DatabaseImpl::new();
     let wasm_identity = arandu_middle::db::TargetIdentity {
         os: "wasi".into(),
@@ -289,14 +289,14 @@ func main(): void {
         .into(),
     );
     let result = type_check(&db, file);
-    let u001_count = result
+    let t099_count = result
         .diagnostics
         .iter()
-        .filter(|d| d.code == DiagCode::U001FeatureNotSupported)
+        .filter(|d| d.code == DiagCode::T099RequiresOperatingSystem)
         .count();
     assert_eq!(
-        u001_count, 2,
-        "expected two U001 diagnostics for park and unpark on wasm32"
+        t099_count, 2,
+        "expected two T099 diagnostics for park and unpark on wasm32"
     );
 }
 

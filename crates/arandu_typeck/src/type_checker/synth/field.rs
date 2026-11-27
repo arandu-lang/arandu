@@ -330,6 +330,170 @@ pub(crate) fn resolve_field_type(
     }
 }
 
+/// Returns `true` for types handled natively by built-in indexing codegen.
+pub(crate) fn is_builtin_index_base(ty: &ArType, symbols: &arandu_middle::SymbolTable) -> bool {
+    matches!(
+        ty,
+        ArType::Array(_, _)
+            | ArType::ConstArray(_, _)
+            | ArType::Slice(_)
+            | ArType::MutSlice(_)
+            | ArType::Ptr(_)
+            | ArType::Error
+    ) || arandu_middle::types::is_vec_type(ty, symbols)
+}
+
+fn validate_trait_index_arg(
+    checker: &mut TypeChecker<'_>,
+    expected_idx_ty: TypeId,
+    index_expr: Option<ExprId>,
+    actual_idx_ty: TypeId,
+    base_span: arandu_lexer::Span,
+    index_span: arandu_lexer::Span,
+) {
+    let actual = checker.resolve(actual_idx_ty);
+    let expected = checker.resolve(expected_idx_ty);
+    if actual.is_error() || expected.is_error() {
+        return;
+    }
+    if !checker.unify_ids(expected_idx_ty, actual_idx_ty)
+        && !checker.is_assignable(actual_idx_ty, expected_idx_ty)
+    {
+        checker.add_constraint(
+            expected_idx_ty,
+            actual_idx_ty,
+            ConstraintOrigin::InvalidIndex {
+                base_span,
+                index_span,
+                is_base_error: false,
+            },
+        );
+    } else if matches!(actual, ArType::IntLiteral)
+        && expected.is_integer()
+        && let Some(eid) = index_expr
+    {
+        checker.record_expr_type(eid, expected_idx_ty);
+    }
+}
+
+/// Resolve `Index<Idx, Out>` or `IndexMut<Idx, Out>` for a non-built-in receiver
+/// (concrete nominal type or generic `TypeParam` bounded by `Index`/`IndexMut`).
+pub(crate) fn resolve_trait_index(
+    checker: &mut TypeChecker<'_>,
+    actual_base_ty: &ArType,
+    index_expr: Option<ExprId>,
+    index_ty_id: TypeId,
+    mutable: bool,
+    base_span: arandu_lexer::Span,
+    index_span: arandu_lexer::Span,
+) -> Option<(TypeId, TypeId)> {
+    if let ArType::Named(param_sym, args) = actual_base_ty
+        && args.is_empty()
+        && checker
+            .symbols
+            .try_get(*param_sym)
+            .is_some_and(|s| s.kind == arandu_middle::SymbolKind::TypeParam)
+    {
+        let target_lang = if mutable {
+            arandu_middle::symbol_table::LangItem::IndexMut
+        } else {
+            arandu_middle::symbol_table::LangItem::Index
+        };
+        let matched = checker
+            .type_info
+            .param_constraints
+            .get(param_sym)
+            .and_then(|bounds| {
+                bounds.iter().find_map(|b| {
+                    let is_target = checker
+                        .symbols
+                        .try_get(b.iface_sym)
+                        .is_some_and(|iface| iface.lang_item == Some(target_lang));
+                    (is_target && b.type_args.len() == 2).then(|| (b.type_args[0], b.type_args[1]))
+                })
+            });
+        if let Some((idx_ty, out_ty)) = matched {
+            validate_trait_index_arg(
+                checker,
+                idx_ty,
+                index_expr,
+                index_ty_id,
+                base_span,
+                index_span,
+            );
+            return Some((idx_ty, out_ty));
+        }
+        return None;
+    }
+
+    let ArType::Named(type_sym, type_args) = actual_base_ty else {
+        return None;
+    };
+    let method_name = if mutable { "indexMut" } else { "index" };
+    let method_sym = checker
+        .symbols
+        .lookup_associated_member(*type_sym, method_name)?;
+    let method_ty = checker.decl_type(method_sym)?;
+    let arg_vec = checker.type_info.type_interner.type_args(*type_args);
+    let subst = if !arg_vec.is_empty() {
+        let concrete_args: Vec<ArType> = arg_vec.iter().map(|&a| checker.resolve(a)).collect();
+        if let Some(gp) = checker.type_info.generic_params.get(&method_sym) {
+            let n = gp.len().min(concrete_args.len());
+            Some(crate::type_checker::types::build_subst(
+                &gp[..n],
+                &concrete_args[..n],
+            ))
+        } else if let Some(gp) = checker.type_info.generic_params.get(type_sym) {
+            let n = gp.len().min(concrete_args.len());
+            Some(crate::type_checker::types::build_subst(
+                &gp[..n],
+                &concrete_args[..n],
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let inst_method_ty = match subst {
+        Some(ref map) => crate::type_checker::types::substitute_type(
+            &method_ty,
+            map,
+            &checker.type_info.type_interner,
+        ),
+        None => method_ty,
+    };
+    let ArType::Func(params_id, ret_id) = inst_method_ty else {
+        return None;
+    };
+    let params = checker.type_info.type_interner.type_args(params_id);
+    if params.len() != 2 {
+        return None;
+    }
+    let recv_ok = matches!(
+        (mutable, checker.resolve(params[0])),
+        (false, ArType::Ref(_)) | (true, ArType::RefMut(_))
+    );
+    let out_ty = match (mutable, checker.resolve(ret_id)) {
+        (false, ArType::Ref(inner)) => inner,
+        (true, ArType::RefMut(inner)) => inner,
+        _ => return None,
+    };
+    if !recv_ok {
+        return None;
+    }
+    let idx_ty = params[1];
+    validate_trait_index_arg(
+        checker,
+        idx_ty,
+        index_expr,
+        index_ty_id,
+        base_span,
+        index_span,
+    );
+    Some((idx_ty, out_ty))
+}
+
 #[tracing::instrument(level = "trace", target = "arandu_typeck", skip(checker))]
 pub(crate) fn resolve_index(
     checker: &mut TypeChecker<'_>,
@@ -369,6 +533,10 @@ pub(crate) fn resolve_index(
         return checker.intern(ArType::Error);
     }
 
+    let index_ty = checker.resolve(index_ty_id);
+    let is_range_index = super::expr_range::range_parts(checker, &index_ty).is_some();
+
+    let mut is_trait_index = false;
     let elem_ty_id = match &actual_base_ty {
         ArType::Array(_, inner)
         | ArType::ConstArray(_, inner)
@@ -394,23 +562,35 @@ pub(crate) fn resolve_index(
             checker.type_info.type_interner.type_args(*args)[0]
         }
         _ => {
-            checker.add_constraint(
-                actual_base_ty_id,
-                ArType::Error,
-                ConstraintOrigin::InvalidIndex {
-                    base_span: checker.pool.expr_span(base),
-                    index_span: checker.pool.expr_span(index),
-                    is_base_error: true,
-                },
-            );
-            checker.intern(ArType::Error)
+            if !is_range_index
+                && let Some((_idx_ty, out_ty)) = resolve_trait_index(
+                    checker,
+                    &actual_base_ty,
+                    Some(index),
+                    index_ty_id,
+                    false,
+                    checker.pool.expr_span(base),
+                    checker.pool.expr_span(index),
+                )
+            {
+                is_trait_index = true;
+                out_ty
+            } else {
+                checker.add_constraint(
+                    actual_base_ty_id,
+                    ArType::Error,
+                    ConstraintOrigin::InvalidIndex {
+                        base_span: checker.pool.expr_span(base),
+                        index_span: checker.pool.expr_span(index),
+                        is_base_error: true,
+                    },
+                );
+                checker.intern(ArType::Error)
+            }
         }
     };
 
-    let index_ty = checker.resolve(index_ty_id);
-    let is_range_index = super::expr_range::range_parts(checker, &index_ty).is_some();
-
-    if !index_ty.is_error() && !index_ty.is_integer() && !is_range_index {
+    if !is_trait_index && !index_ty.is_error() && !index_ty.is_integer() && !is_range_index {
         checker.add_constraint(
             ArType::Primitive(Primitive::Int),
             index_ty_id,

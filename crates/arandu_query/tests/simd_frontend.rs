@@ -592,3 +592,49 @@ fn u8x16_bitmask_and_load_unaligned_fold_at_comptime_and_require_unsafe() {
         **gate_diags
     );
 }
+
+#[test]
+fn arandu_intrinsic_authority_requires_trusted_stdlib_regardless_of_module_name() {
+    let mut db = database();
+    let spoofed = db.new_file(
+        "user_spoof.aru".into(),
+        r#"
+        module std.core.spoof
+        extern "arandu-intrinsic" {
+            func spoofed(): void
+        }
+        func main(): int { return 0 }
+        "#
+        .into(),
+    );
+    let spoof_diags = arandu_query::passes::type_check(&db, spoofed)
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == arandu_diagnostics::DiagCode::U001FeatureNotSupported)
+        .count();
+    assert_eq!(
+        spoof_diags, 1,
+        "user source pretending to be std.core must report exactly one U001"
+    );
+
+    let trusted_non_core = db.new_stdlib_file(
+        "stdlib/alloc/internal_intrinsics.aru".into(),
+        r#"
+        module std.alloc.internal
+        extern "arandu-intrinsic" {
+            func stdAllocHook(): void
+        }
+        func main(): int { return 0 }
+        "#
+        .into(),
+    );
+    let trusted_u001 = arandu_query::passes::type_check(&db, trusted_non_core)
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == arandu_diagnostics::DiagCode::U001FeatureNotSupported)
+        .count();
+    assert_eq!(
+        trusted_u001, 0,
+        "trusted stdlib source outside std.core must be allowed to declare arandu-intrinsic"
+    );
+}

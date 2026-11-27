@@ -62,7 +62,7 @@ fn method_symbol_from_field(
         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
             tc.symbols.builtins.float_type
         }
-        ArType::Slice(_) => tc.symbols.builtins.slice_type,
+        ArType::Slice(_) | ArType::MutSlice(_) => tc.symbols.builtins.slice_type,
         _ => None,
     };
     type_id
@@ -116,6 +116,7 @@ pub(in crate::passes::monomorphize) fn instantiation_key_for_call(
                 },
                 ArType::Result(ok, err) => vec![ok, err],
                 ArType::Option(inner) => vec![inner],
+                ArType::Slice(elem) | ArType::MutSlice(elem) => vec![elem],
                 _ => Vec::new(),
             };
             let call_info = CallSiteInfo {

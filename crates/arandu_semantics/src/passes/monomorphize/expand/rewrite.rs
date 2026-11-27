@@ -403,6 +403,7 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                                 | ArType::Option(_)
                                 | ArType::Primitive(_)
                                 | ArType::Slice(_)
+                                | ArType::MutSlice(_)
                         ) {
                             break;
                         }
@@ -424,7 +425,7 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
                             tc.symbols.builtins.float_type
                         }
-                        ArType::Slice(_) => tc.symbols.builtins.slice_type,
+                        ArType::Slice(_) | ArType::MutSlice(_) => tc.symbols.builtins.slice_type,
                         _ => None,
                     };
                     let pointer = || {

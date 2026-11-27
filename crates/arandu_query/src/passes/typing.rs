@@ -526,12 +526,20 @@ pub fn ide_type_check(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Type
         arandu_parser::syntax::lower_syntax_to_program_recovering(tree.value.as_ref(), file_id)
             .program;
 
-    let locals = arandu_resolve::resolve_local_in_module_with_poll(
+    let mut locals = arandu_resolve::resolve_local_in_module_with_poll(
         file_id,
         &program,
         super::symbols::implicit_module(db, file).as_deref(),
         || db.unwind_if_revision_cancelled(),
     );
+    if db
+        .as_db_impl()
+        .is_some_and(|db| db.is_trusted_stdlib_source(file))
+    {
+        Arc::make_mut(&mut locals.symbols).trusted_stdlib = true;
+    } else {
+        Arc::make_mut(&mut locals.symbols).clear_source_lang_items();
+    }
     let resolved = arandu_resolve::resolve_imports_and_bodies_with_poll(
         &arandu_resolve::SourceDbLoader(db.as_source_db()),
         &program,

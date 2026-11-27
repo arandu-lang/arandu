@@ -106,7 +106,8 @@ fn derived_roots(
                     let operand = match rhs {
                         AmirRvalue::Use(operand)
                         | AmirRvalue::SliceSubslice { slice: operand, .. }
-                        | AmirRvalue::SliceView { owner: operand, .. } => operand,
+                        | AmirRvalue::SliceView { owner: operand, .. }
+                        | AmirRvalue::StrView { owner: operand } => operand,
                         _ => continue,
                     };
                     (*lhs, sources_of(&roots, operand))

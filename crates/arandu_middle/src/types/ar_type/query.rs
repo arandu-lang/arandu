@@ -58,12 +58,11 @@ impl ArType {
 
     /// Returns true if this type has an intrinsic order (<, <=, >, >=).
     ///
-    /// Specifically: numeric primitives (int, uint, float), unresolved numeric literals, and `char`.
-    /// Does NOT include `bool`, `str`, `struct`, `tuple`, `ptr`, etc.
+    /// Specifically: numeric primitives (int, uint, float), unresolved numeric literals, `char`, and `str`.
     #[must_use]
     pub fn is_orderable(&self) -> bool {
         match self {
-            ArType::Primitive(p) => p.is_numeric() || matches!(p, Primitive::Char),
+            ArType::Primitive(p) => p.is_numeric() || matches!(p, Primitive::Char | Primitive::Str),
             ArType::IntLiteral | ArType::FloatLiteral => true,
             _ => false,
         }

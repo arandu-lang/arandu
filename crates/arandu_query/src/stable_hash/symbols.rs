@@ -378,6 +378,9 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::Formatter => 76,
         LangItem::FmtError => 77,
         LangItem::PhantomData => 78,
+        LangItem::NonNull => 79,
+        LangItem::Index => 80,
+        LangItem::IndexMut => 81,
     }
 }
 
@@ -438,6 +441,7 @@ pub(super) fn hash_symbol_table_until(
     include_spans: bool,
     body_from: Option<u32>,
 ) {
+    hasher.update(&[u8::from(table.trusted_stdlib)]);
     hasher.update(&u64_le(table.unresolved_module_aliases.len() as u64));
     for alias in &table.unresolved_module_aliases {
         hash_str(hasher, alias);

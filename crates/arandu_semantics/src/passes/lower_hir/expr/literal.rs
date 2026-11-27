@@ -32,6 +32,28 @@ pub(super) fn lower_unary(
     else {
         unreachable!();
     };
+    if matches!(
+        op,
+        arandu_parser::UnaryOp::Ref | arandu_parser::UnaryOp::RefMut
+    ) {
+        let mut target = *inner_expr;
+        while let ExprKind::Group { expr: inner, .. } = pool.expr(target) {
+            target = *inner;
+        }
+        if let ExprKind::Index { base, index } = pool.expr(target)
+            && let Some(kind) = super::access::try_lower_trait_index_ref(
+                type_check,
+                pool,
+                hir_pool,
+                *base,
+                *index,
+                matches!(op, arandu_parser::UnaryOp::RefMut),
+                pool.expr_span(expr),
+            )?
+        {
+            return Ok(kind);
+        }
+    }
     Ok({
         let inner_id = super::lower_expr(type_check, pool, hir_pool, *inner_expr)?;
         HirExprKind::Unary {
@@ -160,6 +182,7 @@ pub(super) fn lower_interpolated_string(
                         has_expr = true;
                         let lowered = super::lower_expr(type_check, pool, hir_pool, *inner_expr)?;
                         let wrapped = super::text::wrap_user_to_str(type_check, hir_pool, lowered);
+                        let wrapped = super::text::wrap_user_display(type_check, hir_pool, wrapped);
                         hir_parts.push(HirStringPart::Expr(wrapped));
                     }
                 }

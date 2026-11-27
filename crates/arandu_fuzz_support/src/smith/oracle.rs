@@ -596,7 +596,7 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
         .join("../../stdlib")
         .canonicalize()
         .map_err(|error| format!("canonicalize stdlib root: {error}"))?;
-    let sources: [(&str, &str); 41] = [
+    let sources: [(&str, &str); 44] = [
         (
             "alloc/bitset.aru",
             include_str!("../../../../stdlib/alloc/bitset.aru"),
@@ -670,6 +670,10 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
             include_str!("../../../../stdlib/core/fixed.aru"),
         ),
         (
+            "core/fmt.aru",
+            include_str!("../../../../stdlib/core/fmt.aru"),
+        ),
+        (
             "core/mem.aru",
             include_str!("../../../../stdlib/core/mem.aru"),
         ),
@@ -700,6 +704,14 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
         (
             "core/option.aru",
             include_str!("../../../../stdlib/core/option.aru"),
+        ),
+        (
+            "core/ops.aru",
+            include_str!("../../../../stdlib/core/ops.aru"),
+        ),
+        (
+            "core/pointer.aru",
+            include_str!("../../../../stdlib/core/pointer.aru"),
         ),
         (
             "core/range.aru",

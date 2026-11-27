@@ -99,19 +99,13 @@ pub(crate) fn satisfies(
                 if declaration.lang_item == Some(LangItem::TaskHandle) {
                     return false;
                 }
+                if (capability == LangItem::Send && info.non_send_types.contains(&symbol))
+                    || (capability == LangItem::Sync && info.non_sync_types.contains(&symbol))
+                {
+                    return false;
+                }
                 let arguments = interner.type_args(arguments);
                 match declaration.lang_item {
-                    Some(
-                        LangItem::RwLockReadGuard
-                        | LangItem::RwLockWriteGuard
-                        | LangItem::MutexGuard,
-                    ) => return false,
-                    Some(LangItem::Condvar) => {
-                        if capability == LangItem::Copy || !arguments.is_empty() {
-                            return false;
-                        }
-                        continue;
-                    }
                     Some(LangItem::Arc | LangItem::ArcWeak) => {
                         if capability == LangItem::Copy || arguments.len() != 1 {
                             return false;
@@ -151,27 +145,23 @@ pub(crate) fn satisfies(
                         continue;
                     }
                     Some(LangItem::Closure | LangItem::OnceClosure) => return false,
-                    Some(LangItem::String) => {
-                        if capability == LangItem::Copy || !arguments.is_empty() {
-                            return false;
-                        }
-                        continue;
-                    }
-                    Some(LangItem::Vec) => {
-                        if capability == LangItem::Copy {
-                            return false;
-                        }
-                        pending.extend(
-                            arguments
-                                .iter()
-                                .map(|&argument| (argument, capability, depth + 1)),
-                        );
-                        continue;
-                    }
                     _ => {}
                 }
                 if capability == LangItem::Copy && info.is_nominal_copy_blocked(symbol) {
                     return false;
+                }
+                if (capability == LangItem::Send && info.unsafe_send_types.contains(&symbol))
+                    || (capability == LangItem::Sync && info.unsafe_sync_types.contains(&symbol))
+                {
+                    if info.is_nominal_copy_blocked(symbol) && capability == LangItem::Copy {
+                        return false;
+                    }
+                    pending.extend(
+                        arguments
+                            .iter()
+                            .map(|&argument| (argument, capability, depth + 1)),
+                    );
+                    continue;
                 }
                 // Include phantom arguments: an empty wrapper must not launder
                 // a resource's negative transfer constraint.

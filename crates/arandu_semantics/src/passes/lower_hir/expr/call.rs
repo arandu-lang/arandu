@@ -147,10 +147,64 @@ pub(super) fn lower_call(
                 ExprKind::Generic { callee: inner, .. } => pool.expr_span(*inner),
                 _ => pool.expr_span(callee_id),
             };
+            let expects_mut_self = method_base.is_some()
+                && type_check
+                    .type_info
+                    .expr_type_id(callee_id)
+                    .is_some_and(|tid| {
+                        let interner = &type_check.type_info.type_interner;
+                        match interner.resolve(tid) {
+                            ArType::Func(params, _) => interner
+                                .type_args(params)
+                                .first()
+                                .is_some_and(|&p| matches!(interner.resolve(p), ArType::RefMut(_))),
+                            _ => false,
+                        }
+                    });
+            let peel_group = |mut e: ExprId| {
+                while let ExprKind::Group { expr: inner, .. } = pool.expr(e) {
+                    e = *inner;
+                }
+                e
+            };
+            let mut_trait_index_base = method_base.filter(|&b| {
+                expects_mut_self && matches!(pool.expr(peel_group(b)), ExprKind::Index { .. })
+            });
             let prev_suppress = hir_pool
                 .suppress_export_thunk_span
                 .replace(direct_callee_span);
-            let callee_res = super::lower_expr(type_check, pool, hir_pool, callee_id);
+            let callee_res = if let Some(mut_base) = mut_trait_index_base
+                && let ExprKind::Field { base: _, field } = pool.expr(callee_id)
+                && let Some(field_expr_ty) = type_check.type_info.expr_type_id(callee_id)
+            {
+                let base_expr_id = peel_group(mut_base);
+                let kind = super::access::lower_index_with_mut(
+                    type_check,
+                    pool,
+                    hir_pool,
+                    base_expr_id,
+                    true,
+                )?;
+                let base_ty = type_check
+                    .type_info
+                    .expr_type_id(base_expr_id)
+                    .unwrap_or(fallback_ty);
+                let base_vid = hir_pool.alloc_expr(HirExpr {
+                    kind,
+                    ty: base_ty,
+                    span: pool.expr_span(base_expr_id),
+                });
+                Ok(hir_pool.alloc_expr(HirExpr {
+                    kind: HirExprKind::Field {
+                        base: base_vid,
+                        field: field.clone(),
+                    },
+                    ty: field_expr_ty,
+                    span: direct_callee_span,
+                }))
+            } else {
+                super::lower_expr(type_check, pool, hir_pool, callee_id)
+            };
             hir_pool.suppress_export_thunk_span = prev_suppress;
             let mut callee_vid = callee_res?;
             // A called generic path stays a path: the call instantiates it.
@@ -161,7 +215,27 @@ pub(super) fn lower_call(
             }
             let mut hir_args = Vec::new();
             if let Some(base_id) = method_base {
-                hir_args.push(super::lower_expr(type_check, pool, hir_pool, base_id)?);
+                if let Some(mut_base) = mut_trait_index_base {
+                    let base_expr_id = peel_group(mut_base);
+                    let kind = super::access::lower_index_with_mut(
+                        type_check,
+                        pool,
+                        hir_pool,
+                        base_expr_id,
+                        true,
+                    )?;
+                    let base_ty = type_check
+                        .type_info
+                        .expr_type_id(base_expr_id)
+                        .unwrap_or(fallback_ty);
+                    hir_args.push(hir_pool.alloc_expr(HirExpr {
+                        kind,
+                        ty: base_ty,
+                        span: pool.expr_span(base_expr_id),
+                    }));
+                } else {
+                    hir_args.push(super::lower_expr(type_check, pool, hir_pool, base_id)?);
+                }
             }
             for &arg_id in arg_ids {
                 hir_args.push(super::lower_expr(type_check, pool, hir_pool, arg_id)?);

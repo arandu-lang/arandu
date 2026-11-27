@@ -178,6 +178,7 @@ extern "arandu-intrinsic" {
 
     /// Unconditional fatal trap (out-of-bounds, failed assertions, etc.).
     func abort(): !
+    func abortWithMessage(reason: str): !
 
     /// Generational ref mismatch trap: slot was recycled (use-after-free detected).
     /// Used by `std.alloc.gen_arena` verification paths and compiler-lowered `GenGet` nodes.

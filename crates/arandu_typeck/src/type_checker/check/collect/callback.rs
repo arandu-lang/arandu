@@ -26,6 +26,21 @@ pub(super) fn implicit_callback_params(
         if param.is_receiver || !matches!(checker.resolve(*ty), ArType::Func(..)) {
             continue;
         }
+        // `func(A) -> R` denotes a concrete bare non-capturing function pointer,
+        // NOT an implicit generic borrowed callback parameter.
+        let mut raw_ty = param.ty;
+        while let arandu_parser::TypeExpr::Group { inner, .. } = checker.pool.type_expr(raw_ty) {
+            raw_ty = *inner;
+        }
+        if matches!(
+            checker.pool.type_expr(raw_ty),
+            arandu_parser::TypeExpr::Func {
+                is_bare_func: true,
+                ..
+            }
+        ) {
+            continue;
+        }
         let symbol = callback_param_symbol(function, index);
         let name = checker
             .resolve(*ty)
@@ -58,6 +73,6 @@ fn callback_param_symbol(function: SymbolId, index: usize) -> SymbolId {
         ^ 0x00C0_FFEE;
     SymbolId::new(
         function.file_id,
-        SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x7FFF_FFFF),
+        SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x3FFF_FFFF),
     )
 }

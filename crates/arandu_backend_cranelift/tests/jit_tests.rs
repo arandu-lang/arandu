@@ -16,7 +16,8 @@ fn compile_src(
     arandu_semantics::TypeInfo,
 ) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -39,7 +40,8 @@ fn compile_src_mono(
     arandu_semantics::TypeInfo,
 ) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,

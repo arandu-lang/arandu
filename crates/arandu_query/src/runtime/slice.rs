@@ -128,6 +128,7 @@ fn restricted_symbols(
 ) -> arandu_middle::SymbolTable {
     let kept = |symbol: &SymbolId| keep.contains(symbol);
     let mut table = arandu_middle::SymbolTable::new(arandu_middle::db::FileId::MAX);
+    table.trusted_stdlib = symbols.trusted_stdlib;
     for symbol in symbols.iter().filter(|symbol| kept(&symbol.id)) {
         table.register_imported_symbol(symbol.clone());
     }

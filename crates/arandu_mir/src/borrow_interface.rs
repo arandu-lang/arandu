@@ -174,7 +174,7 @@ fn infer_function_interface_with_layout(
     summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
     data_layout: arandu_middle::layout::DataLayout,
 ) -> (ReturnBorrowSummary, Vec<BorrowPath>) {
-    let expected = match type_info.borrow_paths(function.return_type) {
+    let expected = match type_info.may_borrow_paths(function.return_type) {
         Ok(expected) => expected,
         Err(_) => return (ReturnBorrowSummary::default(), vec![BorrowPath::root()]),
     };
@@ -191,10 +191,10 @@ fn infer_function_interface_with_layout(
         let Some(parameter) = function.temps.get(temp.as_usize()) else {
             continue;
         };
-        let Ok(paths) = type_info.borrow_paths(parameter.ty) else {
+        let Ok(paths) = type_info.may_borrow_paths(parameter.ty) else {
             continue;
         };
-        for (path, _) in paths {
+        for (path, _, _) in paths {
             temps[temp.as_usize()]
                 .entry(path.clone())
                 .or_default()
@@ -245,9 +245,11 @@ fn infer_function_interface_with_layout(
     let returned = temps.first().cloned().unwrap_or_default();
     let mut summary = ReturnBorrowSummary::default();
     let mut missing = Vec::new();
-    for (result_path, kind) in expected {
+    for (result_path, kind, required) in expected {
         let Some(raw_sources) = returned.get(&result_path).filter(|s| !s.is_empty()) else {
-            missing.push(result_path);
+            if required {
+                missing.push(result_path);
+            }
             continue;
         };
         let sources = raw_sources
@@ -605,12 +607,12 @@ fn static_origins(
     let ArType::Ptr(pointee) = type_info.resolve_type_id(temp.ty) else {
         return Origins::new();
     };
-    let Ok(paths) = type_info.borrow_paths(pointee) else {
+    let Ok(paths) = type_info.may_borrow_paths(pointee) else {
         return Origins::new();
     };
     paths
         .into_iter()
-        .map(|(path, _)| {
+        .map(|(path, _, _)| {
             let source = BorrowSource {
                 parameter_index: STATIC_SOURCE,
                 parameter_path: path.clone(),

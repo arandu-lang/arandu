@@ -184,8 +184,10 @@ mod tests {
 
     fn run_counted_lifetimes(source: &str, level: OptLevel) -> (i32, usize, usize) {
         let ast = arandu_parser::parse(source).unwrap();
+        let mut resolution = resolve_for_test(0, &ast);
+        std::sync::Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
         let mut checked = type_check(
-            resolve_for_test(0, &ast),
+            resolution,
             &ast,
             arandu_semantics::TargetInfo { pointer_width: 64 },
         );

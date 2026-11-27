@@ -453,7 +453,7 @@ fn file_staging(
     file: crate::SourceFile,
     symbol: arandu_middle::SymbolId,
 ) -> (bool, bool) {
-    if *super::is_derived_method(db, file, symbol) {
+    if symbol.export_thunk_target().is_some() || *super::is_derived_method(db, file, symbol) {
         return (false, false);
     }
     let source = item_source_input(db, file, symbol);

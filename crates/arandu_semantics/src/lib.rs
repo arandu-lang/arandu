@@ -52,7 +52,7 @@ pub use passes::lower_amir::{
 pub use passes::lower_hir::{
     MaterializationError, link_hir_module, lower_block_to_hir, lower_closure_hir,
     lower_ctfe_declarations_to_hir, lower_ctfe_function_to_hir, lower_declarations_to_hir,
-    lower_derived_method_hir, lower_expression_to_hir, lower_extern_to_hir, lower_function_to_hir,
-    lower_to_hir, materialize_ctfe_scalar, materialize_ctfe_value,
+    lower_derived_method_hir, lower_export_thunk_hir, lower_expression_to_hir, lower_extern_to_hir,
+    lower_function_to_hir, lower_to_hir, materialize_ctfe_scalar, materialize_ctfe_value,
 };
 pub use passes::monomorphize::monomorphize_program;

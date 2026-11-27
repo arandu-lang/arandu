@@ -57,7 +57,7 @@ func main(): int {
     }
 
     let old_capacity = text.capacity()
-    if text.tryReserve(2147483647 as usize).isOk() || text.capacity() != old_capacity {
+    if text.tryReserve(mem.maxAllocBytes()).isOk() || text.capacity() != old_capacity {
         return -7
     }
     text.clear()

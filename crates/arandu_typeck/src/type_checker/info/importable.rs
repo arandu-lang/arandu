@@ -44,6 +44,11 @@ impl TypeInfo {
         view.private_fields.retain(kept);
         view.interior_mutable_types.retain(kept);
         view.non_copy_types.retain(kept);
+        view.non_send_types.retain(kept);
+        view.non_sync_types.retain(kept);
+        view.unsafe_send_types.retain(kept);
+        view.unsafe_sync_types.retain(kept);
+        view.non_null_types.retain(kept);
         view.enum_variants.retain(|symbol, _| kept(symbol));
         view.enum_variant_tags.retain(|symbol, _| kept(symbol));
         view.destructors.retain(|symbol, _| kept(symbol));

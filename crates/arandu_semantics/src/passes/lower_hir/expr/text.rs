@@ -177,6 +177,109 @@ pub(super) fn wrap_user_to_str(
     })
 }
 
+/// When `lowered` implements `std.core.fmt.Display` (and did not already use
+/// `toStr`), format it via `String.fromDisplay<T>(ref value): String`.
+pub(super) fn wrap_user_display(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    lowered: HirExprId,
+) -> HirExprId {
+    let lowered_expr = hir_pool.expr(lowered);
+    let lowered_ty = lowered_expr.ty;
+    let span = lowered_expr.span;
+    if is_string(type_check, lowered_ty) {
+        return lowered;
+    }
+    let peeled_ty_id = {
+        let interner = &type_check.type_info.type_interner;
+        let mut id = lowered_ty;
+        for _ in 0..4 {
+            match interner.resolve(id) {
+                ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => id = inner,
+                _ => break,
+            }
+        }
+        id
+    };
+    let peeled_resolved = type_check.type_info.type_interner.resolve(peeled_ty_id);
+    if peeled_resolved.is_to_str_v01() || peeled_resolved.is_error() {
+        return lowered;
+    }
+    let has_display = match &peeled_resolved {
+        ArType::Named(sym, _) => {
+            let is_type_param = type_check
+                .symbols
+                .try_get(*sym)
+                .is_some_and(|s| s.kind == arandu_middle::SymbolKind::TypeParam);
+            if is_type_param {
+                type_check
+                    .type_info
+                    .param_constraints
+                    .get(sym)
+                    .is_some_and(|bounds| {
+                        bounds.iter().any(|b| {
+                            type_check
+                                .symbols
+                                .try_get(b.iface_sym)
+                                .is_some_and(|iface| iface.lang_item == Some(LangItem::Display))
+                        })
+                    })
+            } else {
+                type_check
+                    .symbols
+                    .lookup_associated_member(*sym, "fmt")
+                    .is_some()
+            }
+        }
+        _ => false,
+    };
+    if !has_display {
+        return lowered;
+    }
+    let Some((string_ty, from_display)) = string_member(type_check, "fromDisplay") else {
+        return lowered;
+    };
+    let interner = &type_check.type_info.type_interner;
+    let ref_peeled = interner.intern(ArType::Ref(peeled_ty_id));
+    let func_ty_id = interner.intern(ArType::func(&[ref_peeled], string_ty, interner));
+    let arg_expr = if matches!(
+        interner.resolve(lowered_ty),
+        ArType::Ref(_) | ArType::RefMut(_)
+    ) {
+        lowered
+    } else {
+        hir_pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Unary {
+                op: arandu_middle::ops::UnaryOp::Ref,
+                expr: lowered,
+            },
+            ty: ref_peeled,
+            span,
+        })
+    };
+    let path_expr = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path {
+            symbol: from_display,
+        },
+        ty: func_ty_id,
+        span,
+    });
+    let callee = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Generic {
+            callee: path_expr,
+            args: vec![peeled_ty_id],
+        },
+        ty: func_ty_id,
+        span,
+    });
+    let args = hir_pool.alloc_expr_list(&[arg_expr]);
+    hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call { callee, args },
+        ty: string_ty,
+        span,
+    })
+}
+
 /// The `String` type and one of its associated functions.
 fn string_member(
     type_check: &TypeCheckResult,
@@ -282,31 +385,9 @@ pub(super) fn vec_slice_view(
     }))
 }
 
-/// `*String.asStr(ref value)`: the `str` view of a `String`, or of a
+/// `String.asStr(ref value)`: the `str` view of a `String`, or of a
 /// reference to one.
 pub(super) fn string_view(
-    type_check: &mut TypeCheckResult,
-    hir_pool: &mut crate::hir::HirPool,
-    value: HirExprId,
-    span: Span,
-) -> Option<HirExprId> {
-    let view = string_ref_view(type_check, hir_pool, value, span)?;
-    let str_ty = type_check
-        .type_info
-        .type_interner
-        .intern(ArType::Primitive(Primitive::Str));
-    Some(hir_pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Unary {
-            op: arandu_middle::ops::UnaryOp::Deref,
-            expr: view,
-        },
-        ty: str_ty,
-        span,
-    }))
-}
-
-/// `String.asStr(ref value)`: a `ref str` borrowing the buffer of `value`.
-pub(super) fn string_ref_view(
     type_check: &mut TypeCheckResult,
     hir_pool: &mut crate::hir::HirPool,
     value: HirExprId,
@@ -315,9 +396,8 @@ pub(super) fn string_ref_view(
     let (string_ty, as_str) = string_member(type_check, "asStr")?;
     let interner = &type_check.type_info.type_interner;
     let str_ty = interner.intern(ArType::Primitive(Primitive::Str));
-    let ref_str = interner.intern(ArType::Ref(str_ty));
     let ref_string = interner.intern(ArType::Ref(string_ty));
-    let as_str_ty = interner.intern(ArType::func(&[ref_string], ref_str, interner));
+    let as_str_ty = interner.intern(ArType::func(&[ref_string], str_ty, interner));
     let value_ty = hir_pool.expr(value).ty;
     let borrowed = if matches!(
         interner.resolve(value_ty),
@@ -334,14 +414,31 @@ pub(super) fn string_ref_view(
             span,
         })
     };
-    Some(call(
-        hir_pool,
-        as_str,
-        as_str_ty,
-        &[borrowed],
-        ref_str,
+    Some(call(hir_pool, as_str, as_str_ty, &[borrowed], str_ty, span))
+}
+
+/// `ref (String.asStr(ref value))`: a `ref str` view of `value`.
+pub(super) fn string_ref_view(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    value: HirExprId,
+    span: Span,
+) -> Option<HirExprId> {
+    let view = string_view(type_check, hir_pool, value, span)?;
+    let ref_str = type_check.type_info.type_interner.intern(ArType::Ref(
+        type_check
+            .type_info
+            .type_interner
+            .intern(ArType::Primitive(Primitive::Str)),
+    ));
+    Some(hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Unary {
+            op: arandu_middle::ops::UnaryOp::Ref,
+            expr: view,
+        },
+        ty: ref_str,
         span,
-    ))
+    }))
 }
 
 /// `String.from(interpolation)`: the owned result of interpolating `parts`,

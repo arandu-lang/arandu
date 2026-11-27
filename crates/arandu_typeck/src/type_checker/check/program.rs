@@ -36,17 +36,16 @@ pub fn check_bodies(checker: &mut TypeChecker<'_>, program: &Program) {
             }
             TopLevelDecl::Extern(extern_decl)
                 if arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
-                    == arandu_parser::AbiKind::AranduIntrinsic =>
+                    == arandu_parser::AbiKind::AranduIntrinsic
+                    && !checker.symbols.trusted_stdlib =>
             {
-                let module_name = program
-                    .module
-                    .as_ref()
-                    .map(|m| m.path.join("."))
-                    .unwrap_or_default();
-                if !module_name.starts_with("std.core") {
+                let already_reported = checker.diagnostics.iter().any(|d| {
+                    d.code == crate::DiagCode::U001FeatureNotSupported && d.span == extern_decl.span
+                });
+                if !already_reported {
                     checker.diagnostics.push(crate::Diagnostic::error(
                         crate::DiagCode::U001FeatureNotSupported,
-                        "the 'arandu-intrinsic' ABI is restricted to the std.core module"
+                        "the 'arandu-intrinsic' ABI requires a trusted standard-library source"
                             .to_string(),
                         extern_decl.span,
                     ));

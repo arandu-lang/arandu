@@ -62,6 +62,8 @@ func vecAllocAlign<T>(): usize {
 }
 
 /// Growable contiguous buffer of `T`.
+@UnsafeSend
+@UnsafeSync
 public struct Vec<T> {
     /// Pointer to the owned element buffer.
     private data: ptr[T]
@@ -173,7 +175,7 @@ func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): Result<void
     if v.capacity >= minCap {
         return nil
     }
-    let maxCap: usize = 2147483647 as usize
+    let maxCap: usize = mem.maxAllocBytes()
     if minCap > maxCap {
         return Result.Err(alloc.AllocError.InvalidLayout)
     }
@@ -229,7 +231,7 @@ func Vec.ensureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): void {
 }
 
 func Vec.tryReserveImpl<T>(v: mut ref Vec<T>, additional: usize): Result<void, alloc.AllocError> {
-    let maxCap: usize = 2147483647 as usize
+    let maxCap: usize = mem.maxAllocBytes()
     if additional > maxCap - v.len {
         return Result.Err(alloc.AllocError.InvalidLayout)
     }
@@ -246,7 +248,7 @@ func Vec.reserveImpl<T>(v: mut ref Vec<T>, additional: usize): void {
 }
 
 func Vec.tryPushImpl<T>(v: mut ref Vec<T>, value: T): Result<void, alloc.AllocError> {
-    let maxCap: usize = 2147483647 as usize
+    let maxCap: usize = mem.maxAllocBytes()
     if v.len >= maxCap {
         return Result.Err(alloc.AllocError.InvalidLayout)
     }
@@ -314,7 +316,7 @@ public func Vec.takeSome<T>(self: mut ref Vec<Option<T>>, index: usize): Option<
 }
 
 func Vec.getCopyImpl<Element: marker.Copy>(v: ref Vec<Element>, index: usize): Option<Element> {
-    let maxCap: usize = 2147483647 as usize
+    let maxCap: usize = mem.maxAllocBytes()
     if index >= v.len || index > maxCap {
         return Option.None
     }
@@ -424,7 +426,7 @@ public func Vec.getCopy<Element: marker.Copy>(self: ref Vec<Element>, index: usi
 ///
 /// An out-of-range index returns `false` without changing the vector.
 public func Vec.set<T>(self: mut ref Vec<T>, index: usize, value: T): bool {
-    let maxCap: usize = 2147483647 as usize
+    let maxCap: usize = mem.maxAllocBytes()
     if index >= self.len || index > maxCap {
         return false
     }
@@ -464,6 +466,28 @@ public func Vec.asMutSlice<T>(self: mut ref Vec<T>): mut []T {
     unsafe {
         return intrinsics.mutSliceFromRaw<Vec<T>, T>(self, self.data, self.len)
     }
+}
+
+/// Shared indexing (`v[idx]`), aborting if `idx` is out of bounds.
+public func Vec.index<T>(self: ref Vec<T>, idx: usize): ref T {
+    if idx >= self.len {
+        unsafe {
+            intrinsics.abort()
+        }
+    }
+    let view = Vec.asSliceImpl<T>(self)
+    return ref view[idx]
+}
+
+/// Mutable indexing (`v[idx] = val`, `mut ref v[idx]`), aborting if `idx` is out of bounds.
+public func Vec.indexMut<T>(self: mut ref Vec<T>, idx: usize): mut ref T {
+    if idx >= self.len {
+        unsafe {
+            intrinsics.abort()
+        }
+    }
+    let view = self.asMutSlice()
+    return mut ref view[idx]
 }
 
 /// Ensures room for `additional` elements beyond the current length.

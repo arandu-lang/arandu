@@ -320,7 +320,7 @@ public func StringBuilder.clear(self: mut ref StringBuilder): void {
 }
 
 /// Borrows the current contents of the builder as an immutable string slice.
-public func StringBuilder.asStr(self: ref StringBuilder): ref str {
+public func StringBuilder.asStr(self: ref StringBuilder): str {
     return self.buf.asStr()
 }
 

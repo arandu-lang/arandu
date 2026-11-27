@@ -18,6 +18,10 @@ pub enum AnnotationId {
     Forbid,
     NoFallback,
     NoCopy,
+    NoSend,
+    NoSync,
+    UnsafeSend,
+    UnsafeSync,
     Destructor,
     Unsafe,
     Effects,
@@ -217,6 +221,46 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         repeatable: false,
         availability: AnnotationAvailability::Implemented,
         summary: "Opts a struct or enum out of structural Copy, giving it move-only semantics.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::NoSend,
+        canonical_name: "NoSend",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Opts a struct or enum out of structural Send, preventing cross-thread transfer.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::NoSync,
+        canonical_name: "NoSync",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Opts a struct or enum out of structural Sync, preventing cross-thread sharing.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::UnsafeSend,
+        canonical_name: "UnsafeSend",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Unsafely asserts structural Send for a type whose fields include raw pointers while still propagating generic T: Send bounds.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::UnsafeSync,
+        canonical_name: "UnsafeSync",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Unsafely asserts structural Sync for a type whose fields include raw pointers while still propagating generic T: Sync bounds.",
     },
     AnnotationSpec {
         id: AnnotationId::Destructor,
@@ -627,6 +671,28 @@ pub fn validate_attributes(
             out.diagnostics.push(Diagnostic::error(
                 DiagCode::N015DuplicateAnnotation,
                 format!("annotation '@{}' cannot be repeated", spec.canonical_name),
+                attr.name_span,
+            ));
+            continue;
+        }
+        let conflict = match spec.id {
+            AnnotationId::NoSend if out.ids.contains(&AnnotationId::UnsafeSend) => {
+                Some("UnsafeSend")
+            }
+            AnnotationId::UnsafeSend if out.ids.contains(&AnnotationId::NoSend) => Some("NoSend"),
+            AnnotationId::NoSync if out.ids.contains(&AnnotationId::UnsafeSync) => {
+                Some("UnsafeSync")
+            }
+            AnnotationId::UnsafeSync if out.ids.contains(&AnnotationId::NoSync) => Some("NoSync"),
+            _ => None,
+        };
+        if let Some(other) = conflict {
+            out.diagnostics.push(Diagnostic::error(
+                DiagCode::N015DuplicateAnnotation,
+                format!(
+                    "conflicting concurrency annotations '@{}' and '@{other}' on the same declaration",
+                    spec.canonical_name
+                ),
                 attr.name_span,
             ));
             continue;

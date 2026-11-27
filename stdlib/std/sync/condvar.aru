@@ -20,6 +20,8 @@ extern "C" {
 }
 
 /// An atomic sequence event with safe guard-based waiting.
+@UnsafeSend
+@UnsafeSync
 public struct Condvar {
     private sequence: cell.UnsafeCell<usize>,
 }

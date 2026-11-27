@@ -369,6 +369,61 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
                 UnaryOp::RefMut => {
                     let expr_ty_id = synth_expr(checker, inner_id);
                     let expr_ty = checker.resolve(expr_ty_id);
+                    if let ExprKind::Index { base, index } = checker.pool.expr(inner_id)
+                        && let Some(raw_base_ty_id) = checker.type_info.expr_type_id(*base)
+                    {
+                        let mut peeled_id = raw_base_ty_id;
+                        for _ in 0..8 {
+                            match checker.resolve(peeled_id) {
+                                ArType::Ref(i) | ArType::RefMut(i) => peeled_id = i,
+                                _ => break,
+                            }
+                        }
+                        let peeled_ty = checker.resolve(peeled_id);
+                        if !crate::type_checker::synth::field::is_builtin_index_base(
+                            &peeled_ty,
+                            &checker.symbols,
+                        ) {
+                            let idx_ty_id = checker
+                                .type_info
+                                .expr_type_id(*index)
+                                .unwrap_or_else(|| checker.intern(ArType::Error));
+                            let base_span = checker.pool.expr_span(*base);
+                            let idx_span = checker.pool.expr_span(*index);
+                            if let Some((_idx_ty, out_ty)) =
+                                crate::type_checker::synth::field::resolve_trait_index(
+                                    checker,
+                                    &peeled_ty,
+                                    Some(*index),
+                                    idx_ty_id,
+                                    true,
+                                    base_span,
+                                    idx_span,
+                                )
+                            {
+                                let out_ref_mut = checker.intern(ArType::RefMut(out_ty));
+                                crate::type_checker::synth::method::validate_exclusive_receiver_autoref(
+                                    checker,
+                                    inner_id,
+                                    out_ref_mut,
+                                    out_ty,
+                                );
+                                return Some(out_ref_mut);
+                            } else {
+                                let ty_disp = peeled_ty
+                                    .display(&checker.symbols, &checker.type_info.type_interner);
+                                checker.diagnostics.push(
+                                    crate::Diagnostic::error(
+                                        crate::DiagCode::T026CannotAssignImmutable,
+                                        format!("cannot mutably index `{ty_disp}`: missing `IndexMut` (`indexMut`) implementation"),
+                                        span,
+                                    )
+                                    .with_label(span, "mutable indexing requires `IndexMut`"),
+                                );
+                                return Some(checker.intern(ArType::Error));
+                            }
+                        }
+                    }
                     let inner_id = if expr_ty.is_error() {
                         checker.intern(ArType::Error)
                     } else {

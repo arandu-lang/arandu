@@ -539,6 +539,7 @@ impl Shift {
                 span,
                 params,
                 result,
+                ..
             } => {
                 self.span(span);
                 self.type_expr_range(params);
@@ -547,11 +548,11 @@ impl Shift {
                 }
             }
             TypeExpr::OwnFunc {
-                span, func, bound, ..
+                span, func, bounds, ..
             } => {
                 self.span(span);
                 self.type_expr_id(func);
-                self.opt_type_expr(bound);
+                self.type_expr_range(bounds);
             }
         }
     }

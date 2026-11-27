@@ -171,7 +171,7 @@ pub(crate) fn synthetic_local(
             ^ role.wrapping_mul(0xC2B2_AE35);
         let id = SymbolId::new(
             file_id,
-            SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x7FFF_FFFF),
+            SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x3FFF_FFFF),
         );
         match type_check.symbols.try_get(id) {
             None => {

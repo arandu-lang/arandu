@@ -1,4 +1,4 @@
-mod access;
+pub(crate) mod access;
 mod aggregate;
 mod call;
 mod control;
@@ -9,6 +9,7 @@ pub(crate) mod temporary;
 pub(crate) mod text;
 
 pub(crate) use path::captured_value;
+pub use path::lower_export_thunk_hir;
 
 use crate::diagnostics::Diagnostic;
 use crate::hir::{HirExpr, HirExprKind};

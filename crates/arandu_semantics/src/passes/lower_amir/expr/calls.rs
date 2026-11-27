@@ -481,6 +481,14 @@ impl LowerCtx<'_> {
                 name,
                 symbols.get(symbol).lang_item,
             );
+            if kind == Some(arandu_middle::IntrinsicKind::Forget)
+                && let (Some(&arg), [value]) = (args_slice.first(), arg_ops.as_slice())
+            {
+                let value_ty = self.hir.pool.expr(arg).ty;
+                let sink = self.new_temp_id(value_ty);
+                self.emit_assign_temp(sink, AmirRvalue::Use(*value));
+                return Ok(AmirOperand::Constant(AmirConstant::Nil));
+            }
             if kind == Some(arandu_middle::IntrinsicKind::DropInPlace)
                 && let (Some(&arg), [pointer]) = (args_slice.first(), arg_ops.as_slice())
             {
@@ -553,10 +561,16 @@ impl LowerCtx<'_> {
         // `abort` never returns (Rust's `!`): code after it is unreachable,
         // and a path ending in it needs no return value.
         if callee_symbol.is_some_and(|symbol| {
-            arandu_middle::IntrinsicKind::from_declared_name(
-                symbols.get(symbol).name.as_str(),
-                symbols.get(symbol).lang_item,
-            ) == Some(arandu_middle::IntrinsicKind::Abort)
+            matches!(
+                arandu_middle::IntrinsicKind::from_declared_name(
+                    symbols.get(symbol).name.as_str(),
+                    symbols.get(symbol).lang_item,
+                ),
+                Some(
+                    arandu_middle::IntrinsicKind::Abort
+                        | arandu_middle::IntrinsicKind::AbortWithMessage
+                )
+            )
         }) {
             self.builder.current_block = None;
         }

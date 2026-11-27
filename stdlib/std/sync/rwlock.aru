@@ -39,12 +39,16 @@ public func RwLock.new<T>(value: T): RwLock<T> {
 }
 
 /// Owned read admission tied to a shared borrow of the lock.
+@NoSend
+@NoSync
 public struct RwLockReadGuard<T> {
     private lock: ref RwLock<T>,
     private data: ptr[T],
 }
 
 /// Owned writer admission; shared receiver acquisition is synchronized natively.
+@NoSend
+@NoSync
 public struct RwLockWriteGuard<T> {
     private lock: ref RwLock<T>,
     private data: ptr[T],

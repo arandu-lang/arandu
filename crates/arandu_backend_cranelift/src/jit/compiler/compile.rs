@@ -203,9 +203,13 @@ impl<M: Module> AranduModule<M> {
             let c_name = sym.name.split('.').next_back().unwrap_or(&sym.name);
             // PAN / Invariant 5: do not import libc `abort`. Unix inlines a CPU
             // trap; Windows calls `ar_rt_trap` from the translator.
-            if arandu_middle::IntrinsicKind::from_declared_name(c_name, sym.lang_item)
-                == Some(arandu_middle::IntrinsicKind::Abort)
-            {
+            if matches!(
+                arandu_middle::IntrinsicKind::from_declared_name(c_name, sym.lang_item),
+                Some(
+                    arandu_middle::IntrinsicKind::Abort
+                        | arandu_middle::IntrinsicKind::AbortWithMessage
+                )
+            ) {
                 continue;
             }
             let fixed_param_types: &[ArType] =

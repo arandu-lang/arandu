@@ -175,6 +175,24 @@ impl<'a> FuncTranslator<'a> {
                 .unwrap_or(false)
     }
 
+    /// Whether `temp` holds a direct pointer to a local's or parameter's
+    /// aggregate cell (from an empty-projection `Load` or entry param) rather
+    /// than a freshly allocated independent cell.
+    pub(in crate::translator) fn temp_aliases_local_cell(&self, temp: TempId) -> bool {
+        if self.func.params.contains(&temp) {
+            return true;
+        }
+        self.func.stmts.payloads.iter().any(|stmt| {
+            matches!(
+                stmt,
+                arandu_middle::amir::AmirStmt::Assign {
+                    lhs,
+                    rhs: arandu_middle::amir::AmirRvalue::Load(place),
+                } if *lhs == temp && place.projections.is_empty()
+            )
+        })
+    }
+
     /// Emit a Store: `lhs_place = rhs`.
     ///
     /// Empty-projection places are value copies into the local (`local.set`).
@@ -197,7 +215,14 @@ impl<'a> FuncTranslator<'a> {
                 return;
             };
             if self.is_owned_aggregate(local_ty)
-                && let AmirOperand::Copy(t) = rhs
+                && let AmirOperand::Copy(t) | AmirOperand::Move(t) = rhs
+                && (matches!(rhs, AmirOperand::Copy(_))
+                    || (self
+                        .func
+                        .temps
+                        .get(t.as_usize())
+                        .is_some_and(|temp| temp.is_copy)
+                        && self.temp_aliases_local_cell(*t)))
                 && !self.binds_param_by_move(*t)
             {
                 let size = self.layout_of_id(local_ty).size as i32;
@@ -246,7 +271,14 @@ impl<'a> FuncTranslator<'a> {
                 // its contents, not its heap cell. Reclaim that temporary
                 // source cell after copying; the destination belongs to the
                 // containing aggregate.
-                if matches!(rhs, AmirOperand::Move(_)) {
+                if let AmirOperand::Move(t) = rhs
+                    && !(self
+                        .func
+                        .temps
+                        .get(t.as_usize())
+                        .is_some_and(|temp| temp.is_copy)
+                        && self.temp_aliases_local_cell(*t))
+                {
                     self.code.push(Instruction::LocalGet(self.scratch));
                     self.code.push(Instruction::Call(self.free_func_idx));
                 }

@@ -145,13 +145,30 @@ pub(crate) fn lower_place(
                 });
             }
             PlaceSuffix::Index { span, expr } => {
-                let actual_base_ty = interner.resolve(current_ty);
+                let mut peeled_id = current_ty;
+                for _ in 0..4 {
+                    match interner.resolve(peeled_id) {
+                        ArType::Ref(inner) | ArType::RefMut(inner) => peeled_id = inner,
+                        _ => break,
+                    }
+                }
+                let actual_base_ty = interner.resolve(peeled_id);
                 let elem_ty = match &actual_base_ty {
                     ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)
                     | ArType::Slice(inner)
+                    | ArType::MutSlice(inner)
                     | ArType::Ptr(inner) => *inner,
-                    _ => error_id,
+                    ArType::Named(_, args)
+                        if arandu_middle::types::is_vec_type(
+                            &actual_base_ty,
+                            &type_check.symbols,
+                        ) =>
+                    {
+                        interner.type_args(*args)[0]
+                    }
+                    _ => super::expr::access::resolve_trait_index_sig(type_check, peeled_id, true)
+                        .map_or(error_id, |(_, _, out_ty)| out_ty),
                 };
                 current_ty = elem_ty;
                 let eid = super::expr::lower_expr(type_check, pool, hir_pool, *expr)?;

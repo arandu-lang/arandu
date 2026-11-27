@@ -130,3 +130,115 @@ fn each_rejected_function_value_reports_one_diagnostic() {
         assert_eq!(body_errors(body), vec![*code], "{name}");
     }
 }
+
+#[test]
+fn exported_aggregate_functions_lower_via_runtime_program_same_and_cross_module() {
+    use arandu_query::runtime::runtime_program;
+
+    let mut db = DatabaseImpl::default();
+    let api_file = db.new_file(
+        "api_mod.aru".to_string(),
+        r#"
+module api_mod
+@Repr("C")
+public struct Pair {
+    public a: int
+    public b: int
+}
+@Export("api_pair_fn")
+public func api(p: Pair): Pair {
+    return Pair { a: p.a + 1, b: p.b + 2 }
+}
+"#
+        .to_string(),
+    );
+    let main_file = db.new_file(
+        "main.aru".to_string(),
+        r#"
+import api_mod as m
+@Repr("C")
+struct LocalPair {
+    x: int
+    y: int
+}
+@Export("local_pair_fn")
+public func localApi(p: LocalPair): LocalPair {
+    return LocalPair { x: p.x + 10, y: p.y + 20 }
+}
+func callCross(f: (m.Pair) -> m.Pair): int {
+    let out = f(m.Pair { a: 3, b: 4 })
+    return out.a + out.b
+}
+func main(): int {
+    let f1 = m.api
+    let f2 = m.api
+    let g = localApi
+    let lp = g(LocalPair { x: 1, y: 2 })
+    return callCross(f1) + callCross(f2) + lp.x + lp.y
+}
+"#
+        .to_string(),
+    );
+
+    let _ = type_check(&db, api_file);
+    let program = runtime_program(&db, main_file);
+    let errs: Vec<_> = program
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errs.is_empty(), "unexpected diagnostics: {errs:?}");
+
+    let thunk_count = program
+        .artifacts
+        .amir
+        .funcs
+        .iter()
+        .filter(|f| {
+            program
+                .artifacts
+                .type_check
+                .symbols
+                .try_get(f.symbol)
+                .is_some_and(|s| s.name.starts_with("__ar_export_thunk_"))
+        })
+        .count();
+    assert_eq!(
+        thunk_count, 2,
+        "expected exactly one thunk per distinct @Export aggregate function (one cross-module, one local)"
+    );
+}
+
+#[test]
+fn bare_func_pointer_parameter_can_escape_and_rejects_capturing_lambdas() {
+    let accepted = errors(
+        r#"
+            func addOne(x: int): int { return x + 1 }
+            func register(cb: func(int) -> int): func(int) -> int { return cb }
+            func main(): int {
+                let stored = register(addOne)
+                let nonCap = register((x) => x + 2)
+                return stored(10) + nonCap(20)
+            }
+        "#,
+    );
+    assert!(
+        accepted.is_empty(),
+        "bare func(A) -> R must store/return without T100: {accepted:?}"
+    );
+
+    let rejected_capture = errors(
+        r#"
+            func register(cb: func(int) -> int): func(int) -> int { return cb }
+            func main(): int {
+                let k = 5
+                let _ = register((x) => x + k)
+                return 0
+            }
+        "#,
+    );
+    assert!(
+        !rejected_capture.is_empty(),
+        "capturing lambda passed to `func(int) -> int` must be rejected"
+    );
+}

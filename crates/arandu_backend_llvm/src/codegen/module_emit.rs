@@ -140,9 +140,14 @@ impl<'a> ModuleEmitter<'a> {
                 super::escape_c_string(report.as_bytes())
             ),
         );
+        let len = self.require_posix_write();
+        (name, report.len(), len)
+    }
+
+    pub(super) fn require_posix_write(&self) -> &'static str {
         let len = ptr_int(self.layout.pointer_width());
         self.require_declaration("write", format!("declare {len} @write(i32, ptr, {len})"));
-        (name, report.len(), len)
+        len
     }
 
     pub(super) fn require_raw_malloc(&self) {

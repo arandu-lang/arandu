@@ -218,9 +218,28 @@ impl TypeInfo {
     ) -> Result<Vec<(BorrowPath, BorrowKind)>, BorrowShapeError> {
         let mut output = Vec::new();
         let mut visiting = Vec::new();
-        self.collect_borrow_paths(id, &mut SmallVec::new(), &mut visiting, &mut output)?;
-        output.sort();
-        output.dedup();
+        self.collect_borrow_paths(id, &mut SmallVec::new(), &mut visiting, false, &mut output)?;
+        let mut stripped = output
+            .into_iter()
+            .map(|(path, kind, _)| (path, kind))
+            .collect::<Vec<_>>();
+        stripped.sort();
+        stripped.dedup();
+        Ok(stripped)
+    }
+
+    /// Enumerate every path in `id` that may carry a borrow along with whether
+    /// an origin proof is required (`false` for `str`, which may be static or borrowed).
+    pub fn may_borrow_paths(
+        &self,
+        id: TypeId,
+    ) -> Result<Vec<(BorrowPath, BorrowKind, bool)>, BorrowShapeError> {
+        let mut output = Vec::new();
+        let mut visiting = Vec::new();
+        self.collect_borrow_paths(id, &mut SmallVec::new(), &mut visiting, true, &mut output)?;
+        output
+            .sort_by(|left, right| (&left.0, left.1, !left.2).cmp(&(&right.0, right.1, !right.2)));
+        output.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
         Ok(output)
     }
 
@@ -340,7 +359,8 @@ impl TypeInfo {
         id: TypeId,
         prefix: &mut SmallVec<[BorrowPathSegment; 4]>,
         visiting: &mut Vec<TypeId>,
-        output: &mut Vec<(BorrowPath, BorrowKind)>,
+        include_optional_str: bool,
+        output: &mut Vec<(BorrowPath, BorrowKind, bool)>,
     ) -> Result<(), BorrowShapeError> {
         if prefix.len() > Self::MAX_BORROW_PATH_DEPTH {
             return Err(BorrowShapeError::DepthExceeded);
@@ -354,9 +374,9 @@ impl TypeInfo {
         visiting.push(id);
         let ty = self.type_interner.resolve(id);
         match ty {
-            ArType::Ref(_) => output.push((BorrowPath(prefix.clone()), BorrowKind::Shared)),
+            ArType::Ref(_) => output.push((BorrowPath(prefix.clone()), BorrowKind::Shared, true)),
             ArType::RefMut(_) => {
-                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive));
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive, true));
             }
             ArType::Tuple(items) => {
                 let items = self.type_interner.type_args(items);
@@ -365,21 +385,27 @@ impl TypeInfo {
                         return Err(BorrowShapeError::PathCountExceeded);
                     };
                     prefix.push(BorrowPathSegment::Tuple(index));
-                    self.collect_borrow_paths(item, prefix, visiting, output)?;
+                    self.collect_borrow_paths(
+                        item,
+                        prefix,
+                        visiting,
+                        include_optional_str,
+                        output,
+                    )?;
                     prefix.pop();
                 }
             }
             ArType::Option(inner) => {
                 prefix.push(BorrowPathSegment::OptionSome);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Result(ok, err) => {
                 prefix.push(BorrowPathSegment::ResultOk);
-                self.collect_borrow_paths(ok, prefix, visiting, output)?;
+                self.collect_borrow_paths(ok, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
                 prefix.push(BorrowPathSegment::ResultErr);
-                self.collect_borrow_paths(err, prefix, visiting, output)?;
+                self.collect_borrow_paths(err, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Named(symbol, arguments) => {
@@ -405,7 +431,13 @@ impl TypeInfo {
                             f.ty
                         };
                         prefix.push(BorrowPathSegment::Field(f.name.as_str().into()));
-                        self.collect_borrow_paths(field_id, prefix, visiting, output)?;
+                        self.collect_borrow_paths(
+                            field_id,
+                            prefix,
+                            visiting,
+                            include_optional_str,
+                            output,
+                        )?;
                         prefix.pop();
                     }
                 }
@@ -436,7 +468,13 @@ impl TypeInfo {
                             };
                             prefix.push(BorrowPathSegment::Variant(tag));
                             prefix.push(BorrowPathSegment::Payload(index));
-                            self.collect_borrow_paths(item, prefix, visiting, output)?;
+                            self.collect_borrow_paths(
+                                item,
+                                prefix,
+                                visiting,
+                                include_optional_str,
+                                output,
+                            )?;
                             prefix.pop();
                             prefix.pop();
                         }
@@ -445,22 +483,22 @@ impl TypeInfo {
             }
             ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
                 prefix.push(BorrowPathSegment::ArrayElement);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Coroutine(inner) => {
                 prefix.push(BorrowPathSegment::CoroutinePayload);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Poll(inner) => {
                 prefix.push(BorrowPathSegment::PollReady);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Range(inner) => {
                 prefix.push(BorrowPathSegment::RangeElement);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Slice(_) => {
@@ -468,12 +506,18 @@ impl TypeInfo {
                 // storage. Its ptr+len runtime representation carries no
                 // provenance, so the root dependency must survive in the
                 // compile-time structural contract.
-                output.push((BorrowPath(prefix.clone()), BorrowKind::Shared));
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Shared, true));
+            }
+            ArType::Primitive(Primitive::Str) if include_optional_str => {
+                // `str` may be static or borrowed from an owner (`String.asStr`),
+                // so interprocedural return contracts track its origin without
+                // requiring an unconditional borrow proof for string literals.
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Shared, false));
             }
             ArType::MutSlice(_) => {
                 // An exclusive mutable slice view of its backing storage.
                 // Carries exclusive borrow semantics across dataflow.
-                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive));
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive, true));
             }
             ArType::Primitive(_)
             | ArType::Vector(_)

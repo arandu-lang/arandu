@@ -178,6 +178,16 @@ pub struct TypeInfo {
     pub interior_mutable_types: FxHashSet<SymbolId>,
     /// Struct/enum symbols explicitly opted out of structural Copy via `@NoCopy`.
     pub non_copy_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols explicitly opted out of structural `Send` via `@NoSend`.
+    pub non_send_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols explicitly opted out of structural `Sync` via `@NoSync`.
+    pub non_sync_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols asserting `Send` despite raw pointer fields via `@UnsafeSend`.
+    pub unsafe_send_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols asserting `Sync` despite raw pointer fields via `@UnsafeSync`.
+    pub unsafe_sync_types: FxHashSet<SymbolId>,
+    /// Canonical `std.core.pointer.NonNull<T>` wrapper guaranteeing non-zero offset-0 storage.
+    pub non_null_types: FxHashSet<SymbolId>,
     pub enum_variants: FxHashMap<SymbolId, (SymbolId, EnumPayloadShape)>,
     /// Pre-computed discriminant tag for each enum variant symbol.
     pub enum_variant_tags: FxHashMap<SymbolId, usize>,
@@ -330,6 +340,11 @@ impl TypeInfo {
             private_fields: FxHashSet::default(),
             interior_mutable_types: FxHashSet::default(),
             non_copy_types: FxHashSet::default(),
+            non_send_types: FxHashSet::default(),
+            non_sync_types: FxHashSet::default(),
+            unsafe_send_types: FxHashSet::default(),
+            unsafe_sync_types: FxHashSet::default(),
+            non_null_types: FxHashSet::default(),
             enum_variants: FxHashMap::default(),
             enum_variant_tags: FxHashMap::default(),
             destructors: FxHashMap::default(),
@@ -729,6 +744,10 @@ impl arandu_middle::layout::StructLayoutProvider for TypeInfo {
         Some(self.is_copy(ty))
     }
 
+    fn is_non_null_type(&self, sym: SymbolId) -> bool {
+        self.non_null_types.contains(&sym)
+    }
+
     fn destructor_for_type(&self, ty: TypeId) -> Option<SymbolId> {
         self.destructor_instances.get(&ty).copied()
     }
@@ -780,6 +799,20 @@ impl arandu_middle::type_context::AmirTypeContext for TypeInfo {
         BorrowShapeError,
     > {
         TypeInfo::borrow_paths(self, ty)
+    }
+
+    fn may_borrow_paths(
+        &self,
+        ty: TypeId,
+    ) -> Result<
+        Vec<(
+            arandu_middle::types::BorrowPath,
+            arandu_middle::types::BorrowKind,
+            bool,
+        )>,
+        BorrowShapeError,
+    > {
+        TypeInfo::may_borrow_paths(self, ty)
     }
 
     fn enum_variant_tag(&self, variant: SymbolId) -> Option<usize> {
@@ -960,6 +993,11 @@ mod borrow_shape_tests {
         let str_view = info.type_interner.intern(ArType::Primitive(Primitive::Str));
 
         assert!(info.borrow_paths(str_view).expect("str shape").is_empty());
+        assert_eq!(
+            info.may_borrow_paths(str_view)
+                .expect("str may-borrow shape"),
+            vec![(BorrowPath::root(), BorrowKind::Shared, false)]
+        );
         assert!(info.is_copy(str_view));
     }
 

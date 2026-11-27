@@ -25,6 +25,9 @@ impl SymbolId {
     /// span so parallel item typeck cannot collide, and they never occupy a
     /// dense slot in [`SymbolTable`]'s source vector.
     pub const SYNTHETIC_LOCAL_BIT: u32 = 0x8000_0000;
+    /// Distinguishes deterministic `@Export` wrapper thunks from other
+    /// synthetic functions (such as closures and derived methods).
+    pub const EXPORT_THUNK_BIT: u32 = 0x4000_0000;
 
     pub const DUMMY: Self = Self {
         file_id: 0,
@@ -41,6 +44,27 @@ impl SymbolId {
     #[must_use]
     pub const fn is_synthetic(self) -> bool {
         self.local_id.0 & Self::SYNTHETIC_LOCAL_BIT != 0
+    }
+
+    /// Deterministic thunk [`SymbolId`] wrapping an `@Export` function
+    /// whose ABI uses aggregates. Preserves `target.file_id`.
+    #[must_use]
+    pub const fn export_thunk_for(target: Self) -> Self {
+        Self::new(
+            target.file_id,
+            Self::SYNTHETIC_LOCAL_BIT | Self::EXPORT_THUNK_BIT | (target.local_id.0 & 0x3FFF_FFFF),
+        )
+    }
+
+    /// Extracts the underlying `@Export` target if `self` is an export thunk.
+    #[must_use]
+    pub const fn export_thunk_target(self) -> Option<Self> {
+        let mask = Self::SYNTHETIC_LOCAL_BIT | Self::EXPORT_THUNK_BIT;
+        if (self.local_id.0 & mask) == mask {
+            Some(Self::new(self.file_id, self.local_id.0 & 0x3FFF_FFFF))
+        } else {
+            None
+        }
     }
 }
 
@@ -124,6 +148,7 @@ pub enum LangItem {
     Int,
     Float,
     Ptr,
+    NonNull,
     Copy,
     Clone,
     Send,
@@ -217,6 +242,10 @@ pub enum LangItem {
     FmtError,
     /// Zero-sized type marker: `std.core.marker.PhantomData`.
     PhantomData,
+    /// Shared indexing operator: `std.core.ops.Index`.
+    Index,
+    /// Mutable indexing operator: `std.core.ops.IndexMut`.
+    IndexMut,
 }
 
 /// What an owning closure type allows (RFC 0032, L3).
@@ -375,6 +404,9 @@ pub struct SymbolTable {
     pub builtins: BuiltinTypes,
     pub builtin_alloc: Option<SymbolId>,
     pub builtin_free: Option<SymbolId>,
+    /// Whether this file was loaded from a trusted standard-library source.
+    /// Grants `extern "arandu-intrinsic"` authority without inspecting module names.
+    pub trusted_stdlib: bool,
 }
 
 impl Default for SymbolTable {
@@ -410,6 +442,7 @@ impl SymbolTable {
             builtins: BuiltinTypes::default(),
             builtin_alloc: None,
             builtin_free: None,
+            trusted_stdlib: false,
         }
     }
 }

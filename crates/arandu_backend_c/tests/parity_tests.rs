@@ -757,7 +757,8 @@ func main(): int {
 
 fn compile_src(src: &str) -> (AmirProgram, TypeCheckResult) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    std::sync::Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -2840,7 +2841,8 @@ fn compile_generic_work_thunk() -> (AmirProgram, TypeCheckResult, String) {
 /// (`_A$...`) instead of being inlined at the call site by AMIR lowering.
 fn compile_src_mono(src: &str) -> (AmirProgram, TypeCheckResult) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    std::sync::Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,

@@ -21,6 +21,7 @@ mod stmt;
 
 pub use closure::{link_generic_closure_headers, lower_closure_hir};
 pub use derive::lower_derived_method_hir;
+pub use expr::lower_export_thunk_hir;
 pub use link::link_hir_module;
 pub use materialize::{MaterializationError, materialize_ctfe_scalar, materialize_ctfe_value};
 

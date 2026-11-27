@@ -73,24 +73,12 @@ impl FuncTranslator<'_> {
             AmirStmt::Destroy(place) => {
                 self.emit_destroy(place);
             }
-            AmirStmt::ArenaRewind(op) => {
-                let i64_ty = self
-                    .interner
-                    .intern(arandu_middle::types::ArType::Primitive(
-                        arandu_middle::types::Primitive::I64,
-                    ));
-                self.emit_operand(op, i64_ty);
-                self.code.push(Instruction::I32WrapI64);
-                self.code.push(Instruction::LocalSet(self.scratch));
-                self.code
-                    .push(Instruction::GlobalGet(crate::memory::GLOBAL_FREE_LIST_HEAD));
-                self.code.push(Instruction::I32Eqz);
-                self.code
-                    .push(Instruction::If(wasm_encoder::BlockType::Empty));
-                self.code.push(Instruction::LocalGet(self.scratch));
-                self.code
-                    .push(Instruction::GlobalSet(crate::memory::GLOBAL_HEAP_PTR));
-                self.code.push(Instruction::End);
+            AmirStmt::ArenaRewind(_) => {
+                // Wasm currently shares `GLOBAL_HEAP_PTR` between `ArenaAlloc`
+                // and general aggregate/heap allocations; rewinding it inside a
+                // loop would reclaim live non-arena allocations from the same
+                // iteration. Keep rewind a no-op until Wasm has a disjoint
+                // task-arena region.
             }
             AmirStmt::Nop => {}
         }

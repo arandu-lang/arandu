@@ -317,7 +317,7 @@ pub(super) fn synth_literal_expr(
                         }
                         _ => false,
                     };
-                    let has_to_str = {
+                    let (has_to_str, has_display) = {
                         let mut base = part_ty_id;
                         for _ in 0..4 {
                             match checker.resolve(base) {
@@ -327,7 +327,8 @@ pub(super) fn synth_literal_expr(
                                 _ => break,
                             }
                         }
-                        match checker.resolve(base) {
+                        let base_resolved = checker.resolve(base);
+                        let has_to_str = match base_resolved {
                             ArType::Named(id, _) => {
                                 checker
                                     .symbols
@@ -339,13 +340,27 @@ pub(super) fn synth_literal_expr(
                                         .is_some()
                             }
                             _ => false,
-                        }
+                        };
+                        let has_display = checker
+                            .symbols
+                            .lang_item_symbol(arandu_middle::symbol_table::LangItem::Display)
+                            .is_some_and(|display_sym| {
+                                crate::type_checker::types::interfaces::type_satisfies_interface(
+                                    checker,
+                                    &base_resolved,
+                                    display_sym,
+                                    &[],
+                                    span,
+                                )
+                            });
+                        (has_to_str, has_display)
                     };
                     if part_ty.is_error()
                         || part_ty.is_to_str_v01()
                         || is_ref_str
                         || super::text::is_string(checker, &part_ty)
                         || has_to_str
+                        || has_display
                     {
                         continue;
                     }
@@ -358,7 +373,7 @@ pub(super) fn synth_literal_expr(
                             checker.pool.expr_span(*inner_expr),
                         )
                         .with_note(
-                            "only bool, integers, floats, char, str, String, and types implementing `toStr` are supported"
+                            "only bool, integers, floats, char, str, String, and types implementing `Display` or `toStr` are supported"
                                 .to_string(),
                         ),
                     );

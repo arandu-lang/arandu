@@ -182,14 +182,39 @@ pub fn lower_type_expr_ctx(
             ArType::tuple(&items, interner)
         }
         TypeExpr::OwnFunc {
-            func, bound, once, ..
-        } => lower_owning_closure(*func, *bound, *once, ctx, interner),
+            func, bounds, once, ..
+        } => lower_owning_closure(*func, *bounds, *once, ctx, interner),
     }
 }
 
-/// The capability an owning closure type's bound names: only `Send`.
+/// Checks whether a bound type expression denotes the canonical `Send` marker.
 #[must_use]
 pub(crate) fn owning_closure_bound_is_send(bound: TypeExprId, ctx: &LowerCtx<'_>) -> bool {
+    owning_closure_bound_is_marker(
+        bound,
+        ctx,
+        arandu_middle::symbol_table::LangItem::Send,
+        "Send",
+    )
+}
+
+/// Checks whether a bound type expression denotes the canonical `Sync` marker.
+#[must_use]
+pub(crate) fn owning_closure_bound_is_sync(bound: TypeExprId, ctx: &LowerCtx<'_>) -> bool {
+    owning_closure_bound_is_marker(
+        bound,
+        ctx,
+        arandu_middle::symbol_table::LangItem::Sync,
+        "Sync",
+    )
+}
+
+fn owning_closure_bound_is_marker(
+    bound: TypeExprId,
+    ctx: &LowerCtx<'_>,
+    marker: arandu_middle::symbol_table::LangItem,
+    ambient_name: &str,
+) -> bool {
     let TypeExpr::Named { name, args, .. } = ctx.pool.type_expr(bound) else {
         return false;
     };
@@ -197,11 +222,12 @@ pub(crate) fn owning_closure_bound_is_send(bound: TypeExprId, ctx: &LowerCtx<'_>
         return false;
     }
     match ctx.resolved.type_refs.get(&crate::NodeKey::from(name.span)) {
-        Some(&symbol) => ctx.symbols.try_get(symbol).is_some_and(|symbol| {
-            symbol.lang_item == Some(arandu_middle::symbol_table::LangItem::Send)
-        }),
-        // Name resolution leaves an unshadowed, unqualified `Send` unbound.
-        None => name.path.len() == 1 && name.path[0] == "Send",
+        Some(&symbol) => ctx
+            .symbols
+            .try_get(symbol)
+            .is_some_and(|symbol| symbol.lang_item == Some(marker)),
+        // Name resolution leaves an unshadowed, unqualified marker unbound.
+        None => name.path.len() == 1 && name.path[0] == ambient_name,
     }
 }
 
@@ -210,17 +236,20 @@ pub(crate) fn owning_closure_bound_is_send(bound: TypeExprId, ctx: &LowerCtx<'_>
 /// through the value is an ordinary indirect call (RFC 0032, L3).
 fn lower_owning_closure(
     func: TypeExprId,
-    bound: Option<TypeExprId>,
+    bounds: arandu_parser::IndexRange,
     once: bool,
     ctx: &LowerCtx<'_>,
     interner: &mut TypeInterner,
 ) -> ArType {
     use arandu_middle::symbol_table::{LangItem, OwningClosureKind};
-    let send = match bound {
-        None => false,
-        Some(bound) if owning_closure_bound_is_send(bound, ctx) => true,
-        Some(_) => return ArType::Error,
-    };
+    let mut send = false;
+    for &bound in ctx.pool.type_expr_list(bounds) {
+        if owning_closure_bound_is_send(bound, ctx) && !send {
+            send = true;
+        } else {
+            return ArType::Error;
+        }
+    }
     let item = LangItem::for_owning_closure(OwningClosureKind { send, once });
     let Some(symbol) = ctx.symbols.lang_item_symbol(item) else {
         return ArType::Error;
@@ -737,6 +766,7 @@ mod tests {
             span: Span::new(0, 12, 0),
             params: params_range,
             result: None,
+            is_bare_func: false,
         });
 
         let mut i = new_interner();
@@ -773,6 +803,7 @@ mod tests {
                 span: Span::new(10, 18, 0),
                 ty: ret_expr,
             }),
+            is_bare_func: false,
         });
 
         let mut i = new_interner();

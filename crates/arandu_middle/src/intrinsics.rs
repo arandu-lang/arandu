@@ -176,6 +176,8 @@ pub enum IntrinsicKind {
     TypeInfo,
     /// Abort execution (`abort`).
     Abort,
+    /// Abort execution after writing a reason message to stderr (`abortWithMessage`).
+    AbortWithMessage,
     /// Compiler barrier preventing optimization (`blackBox`).
     BlackBox,
     /// Construct slice from raw parts (`sliceFromRaw`).
@@ -192,6 +194,8 @@ pub enum IntrinsicKind {
     StrView,
     /// Runs the destructor of the value pointed to by raw pointer (`dropInPlace` / `drop_in_place`).
     DropInPlace,
+    /// Transfers ownership out without running the destructor (`forget` / `forgetValue`).
+    Forget,
     /// Spin-loop pause / yield hint to the processor (`spinLoopHint`).
     SpinLoopHint,
     /// Branch-prediction hint expecting `cond == true` (`likely`).
@@ -278,6 +282,7 @@ impl IntrinsicKind {
             || matches!(
                 self,
                 Self::Abort
+                    | Self::AbortWithMessage
                     | Self::Fma
                     | Self::SpinLoopHint
                     | Self::Likely
@@ -291,7 +296,7 @@ impl IntrinsicKind {
     /// Excludes `Abort` so cold trap wrappers do not bloat hot callers.
     #[must_use]
     pub const fn is_inline_codegen_intrinsic(self) -> bool {
-        !matches!(self, Self::Abort)
+        !matches!(self, Self::Abort | Self::AbortWithMessage)
     }
 
     /// Calls whose result may be dropped when unused: they read no memory,
@@ -488,6 +493,7 @@ impl IntrinsicKind {
             "abort" | "abort_generational_mismatch" | "abortGenerationalMismatch" => {
                 Some(Self::Abort)
             }
+            "abortWithMessage" | "abort_with_message" => Some(Self::AbortWithMessage),
             "blackBox" => Some(Self::BlackBox),
             "bitCountOnes32" | "bitCountOnes64" => Some(Self::CountOnes),
             "bitLeadingZeros32" | "bitLeadingZeros64" => Some(Self::LeadingZeros),
@@ -521,6 +527,7 @@ impl IntrinsicKind {
             s if s.starts_with("strBytes") => Some(Self::StrBytes),
             s if s.starts_with("strView") => Some(Self::StrView),
             "dropInPlace" | "drop_in_place" => Some(Self::DropInPlace),
+            "forget" | "forgetValue" | "forget_value" => Some(Self::Forget),
             _ => None,
         }
     }

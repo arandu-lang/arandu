@@ -77,21 +77,25 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
     /// The module-level bytes of a trap message, declared once per kind.
     fn trap_message_address(&mut self, kind: TrapKind, bytes: &[u8]) -> Option<Value> {
-        let data_id = match self.module.declare_data(
-            &format!("ar_trap_{kind:?}"),
-            cranelift_module::Linkage::Local,
-            false,
-            false,
-        ) {
-            Ok(id) => id,
-            Err(error) => {
-                self.record_ice(
-                    format!("failed to declare a trap message: {error:?}"),
-                    self.func_span(),
-                );
-                return None;
-            }
-        };
+        self.declare_readonly_bytes(&format!("ar_trap_{kind:?}"), bytes)
+    }
+
+    /// Declares a named read-only static byte sequence once per module.
+    pub(super) fn declare_readonly_bytes(&mut self, symbol: &str, bytes: &[u8]) -> Option<Value> {
+        let data_id =
+            match self
+                .module
+                .declare_data(symbol, cranelift_module::Linkage::Local, false, false)
+            {
+                Ok(id) => id,
+                Err(error) => {
+                    self.record_ice(
+                        format!("failed to declare a trap message: {error:?}"),
+                        self.func_span(),
+                    );
+                    return None;
+                }
+            };
         let mut data = cranelift_module::DataDescription::new();
         data.define(bytes.to_vec().into_boxed_slice());
         match self.module.define_data(data_id, &data) {

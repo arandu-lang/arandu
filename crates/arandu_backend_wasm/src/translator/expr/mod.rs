@@ -24,7 +24,14 @@ impl<'a> FuncTranslator<'a> {
             Shape::Scalar => {
                 let local = self.temp_local.get(&lhs).copied().unwrap_or(0);
                 if self.is_owned_aggregate(lhs_ty)
-                    && let AmirRvalue::Use(AmirOperand::Copy(t)) = rhs
+                    && let AmirRvalue::Use(AmirOperand::Copy(t) | AmirOperand::Move(t)) = rhs
+                    && (matches!(rhs, AmirRvalue::Use(AmirOperand::Copy(_)))
+                        || (self
+                            .func
+                            .temps
+                            .get(t.as_usize())
+                            .is_some_and(|temp| temp.is_copy)
+                            && self.temp_aliases_local_cell(*t)))
                 {
                     let size = self.layout_of_id(lhs_ty).size as i32;
                     if size > 0 {

@@ -1242,3 +1242,42 @@ fn parameterized_trailing_lambdas_parse_the_same_in_both_paths() {
         assert_eq!(direct, canonical, "{source}");
     }
 }
+
+#[test]
+fn bare_func_types_and_nullable_precedence_match_in_both_parser_paths() {
+    for source in [
+        "func keep(f: func(int, str) -> bool): func(int) -> int { return f }",
+        "func multi(f: own (int) -> int + Send + Sync) { }",
+        "func slices(a: []int?, b: [4]int?, c: mut []int?, d: ref int?, e: ([]int)?, f: (ref int)?, g: ptr[u8]?, h: (func(int) -> int)?, i: (int) -> int?) { }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+
+    let bare_dump = crate::parse_to_string("func keep(f: func(int) -> bool) { }").expect("parse");
+    assert!(bare_dump.contains("BareFuncType"), "{bare_dump}");
+    let cb_dump = crate::parse_to_string("func keep(f: (int) -> bool) { }").expect("parse");
+    assert!(
+        cb_dump.contains("FuncType") && !cb_dump.contains("BareFuncType"),
+        "{cb_dump}"
+    );
+
+    let slice_elem_opt = crate::parse_to_string("func f(a: []int?) { }").expect("parse");
+    assert!(
+        slice_elem_opt.contains("Slice @1:11-1:17 Nullable @1:13-1:17 Type @1:13-1:16 int"),
+        "expected []int? to mean [](int?), got: {slice_elem_opt}"
+    );
+
+    let slice_opt = crate::parse_to_string("func f(a: ([]int)?) { }").expect("parse");
+    assert!(
+        slice_opt.contains("Nullable @1:11-1:19 GroupType @1:11-1:18 (Slice @1:12-1:17"),
+        "expected ([]int)? to wrap GroupType in Nullable, got: {slice_opt}"
+    );
+
+    assert!(
+        parse("func bad(x: own once int) { }").is_err(),
+        "`own once` on non-function type must fail to parse"
+    );
+}

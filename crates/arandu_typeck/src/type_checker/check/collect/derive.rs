@@ -720,7 +720,7 @@ fn mint_derive_symbol(
         ^ ((method as u32).wrapping_add(1)).wrapping_mul(0x85EB_CA6B)
         ^ role.wrapping_mul(0xC2B2_AE35);
     loop {
-        let local = SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x7FFF_FFFF);
+        let local = SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x3FFF_FFFF);
         let id = SymbolId::new(file_id, local);
         let global_scope = checker.symbols.global_scope();
         if checker.symbols.try_get(id).is_none() {

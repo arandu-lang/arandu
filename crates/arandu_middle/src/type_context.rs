@@ -39,6 +39,20 @@ pub trait AmirTypeContext: StructLayoutProvider {
     /// contract cannot be published.
     fn borrow_paths(&self, ty: TypeId) -> Result<Vec<(BorrowPath, BorrowKind)>, BorrowShapeError>;
 
+    /// Every path in `ty` that may carry a borrow, plus whether an origin
+    /// proof is required (`true` for `ref`/`mut ref`/`[]T`/`mut []T`,
+    /// `false` for `str`, which may be static or borrowed).
+    fn may_borrow_paths(
+        &self,
+        ty: TypeId,
+    ) -> Result<Vec<(BorrowPath, BorrowKind, bool)>, BorrowShapeError> {
+        Ok(self
+            .borrow_paths(ty)?
+            .into_iter()
+            .map(|(path, kind)| (path, kind, true))
+            .collect())
+    }
+
     fn enum_variant_tag(&self, variant: SymbolId) -> Option<usize>;
 
     /// Return-borrow contracts already published for signatures, keyed by function.

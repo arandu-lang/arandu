@@ -104,8 +104,28 @@ impl<'a> Parser<'a> {
 
     fn parse_type_inner(&mut self) -> Result<TypeExprId, ParseError> {
         let start = self.mark();
-        let mut ty = self.parse_type_primary_inner()?;
-        if self.eat_name("QUESTION") {
+        if self.eat_name("KW_OWN") {
+            return self.parse_own_type(start);
+        }
+        if self.eat_name("KW_REF") {
+            return self.parse_reference_type(start, false, false);
+        }
+        if self.eat_name("KW_MUT") {
+            return self.parse_mut_type(start);
+        }
+        if self.eat_name("AMP") {
+            let is_mut = self.eat_name("KW_MUT");
+            return self.parse_reference_type(start, is_mut, false);
+        }
+        if self.eat_name("LBRACKET") {
+            return self.parse_array_type(start);
+        }
+        if self.eat_name("KW_FUNC") {
+            return self.parse_func_type(start);
+        }
+
+        let mut ty = self.parse_postfix_question_base(start)?;
+        if !matches!(self.pool.type_expr(ty), TypeExpr::Func { .. }) && self.eat_name("QUESTION") {
             let span = self.span_from_mark(start);
             ty = self
                 .pool
@@ -114,81 +134,98 @@ impl<'a> Parser<'a> {
         Ok(ty)
     }
 
-    // Array/slice elements share the recursion budget via `parse_type`.
-
-    fn parse_type_primary_inner(&mut self) -> Result<TypeExprId, ParseError> {
-        let start = self.mark();
-        // Canonical ownership spelling: `own T`, `ref T`, `mut ref T`.
-        // `own` is the default and lowers directly to its operand, except on
-        // a function type: `own (A) -> R [+ Send]` is an owning closure.
-        if self.eat_name("KW_OWN") {
-            // `once` is a soft keyword here, and only before a function type.
-            let once = self.at_soft_keyword("once")
-                && self
-                    .tokens
-                    .get(self.pos + 1)
-                    .is_some_and(|token| token.kind == TokenKind::LParen);
+    #[inline(never)]
+    fn parse_own_type(&mut self, start: usize) -> Result<TypeExprId, ParseError> {
+        let once = if self.at_soft_keyword("once") {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        let inner = self.parse_type()?;
+        if !matches!(
+            self.pool.type_expr(inner),
+            TypeExpr::Func {
+                is_bare_func: false,
+                ..
+            }
+        ) {
             if once {
-                self.advance();
+                let token = *self.current();
+                return Err(ParseError::new(
+                    ParseErrorCode::ExpectedToken,
+                    "`once` modifier is only valid on owning closure types `own once (A) -> R`",
+                    &token,
+                    self.file_id,
+                    self.source,
+                ));
             }
-            let inner = self.parse_type()?;
-            if !matches!(self.pool.type_expr(inner), TypeExpr::Func { .. }) {
-                return Ok(inner);
-            }
-            let bound = if self.eat_name("PLUS") {
-                Some(self.parse_type()?)
-            } else {
-                None
-            };
-            let span = self.span_from_mark(start);
-            return Ok(self.pool.alloc_type_expr(TypeExpr::OwnFunc {
-                span,
-                func: inner,
-                bound,
-                once,
-            }));
+            return Ok(inner);
         }
+        let mut bounds = Vec::new();
+        while self.eat_name("PLUS") {
+            bounds.push(self.parse_bound_type()?);
+        }
+        let bounds = self.pool.alloc_type_expr_list(&bounds);
+        let span = self.span_from_mark(start);
+        Ok(self.pool.alloc_type_expr(TypeExpr::OwnFunc {
+            span,
+            func: inner,
+            bounds,
+            once,
+        }))
+    }
+
+    #[inline(never)]
+    fn parse_mut_type(&mut self, start: usize) -> Result<TypeExprId, ParseError> {
         if self.eat_name("KW_REF") {
-            return self.parse_reference_type(start, false, false);
+            return self.parse_reference_type(start, true, false);
         }
-        if self.eat_name("KW_MUT") {
-            if self.eat_name("KW_REF") {
-                return self.parse_reference_type(start, true, false);
-            }
-            if self.eat_name("LBRACKET") {
-                self.expect_name("RBRACKET")?;
-                return self.parse_mut_slice_type(start);
-            }
-            return Err(ParseError::new(
-                ParseErrorCode::ExpectedToken,
-                "expected 'ref' or '[]' after 'mut' in type",
-                self.current(),
-                self.file_id,
-                self.source,
-            ));
+        if self.eat_name("LBRACKET") {
+            self.expect_name("RBRACKET")?;
+            return self.parse_mut_slice_type(start);
         }
-        if self.eat_name("AMP") {
-            let is_mut = self.eat_name("KW_MUT");
-            return self.parse_reference_type(start, is_mut, false);
-        }
+        Err(ParseError::new(
+            ParseErrorCode::ExpectedToken,
+            "expected 'ref' or '[]' after 'mut' in type",
+            self.current(),
+            self.file_id,
+            self.source,
+        ))
+    }
+
+    #[inline(never)]
+    fn parse_postfix_question_base(&mut self, start: usize) -> Result<TypeExprId, ParseError> {
         if self.eat_name("KW_PTR") {
             self.expect_name("LBRACKET")?;
             return self.parse_reference_type(start, false, true);
-        }
-        if self.eat_name("LBRACKET") {
-            return self.parse_array_type(start);
         }
         if self.eat_name("BANG") {
             let span = self.span_from_mark(start);
             return Ok(self.pool.alloc_type_expr(TypeExpr::Never { span }));
         }
-        if self.eat_name("KW_FUNC") {
-            return self.parse_func_type(start);
-        }
         if self.eat_name("LPAREN") {
             return self.parse_grouped_type(start);
         }
         self.parse_type_primary_dispatch(start)
+    }
+
+    #[inline(never)]
+    fn parse_bound_type(&mut self) -> Result<TypeExprId, ParseError> {
+        let start = self.mark();
+        if matches!(
+            self.current().kind,
+            TokenKind::IdentValue | TokenKind::IdentType
+        ) {
+            return self.parse_type_primary_dispatch(start);
+        }
+        Err(ParseError::new(
+            ParseErrorCode::ExpectedType,
+            "expected capability bound name after '+'",
+            self.current(),
+            self.file_id,
+            self.source,
+        ))
     }
 
     fn parse_reference_type(
@@ -285,17 +322,19 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect_name("RPAREN")?;
-        let result = if self.can_start_type() || self.at_kind_name("LPAREN") {
-            Some(self.parse_result_type()?)
-        } else {
-            None
-        };
+        let result =
+            if self.eat_name("ARROW") || self.can_start_type() || self.at_kind_name("LPAREN") {
+                Some(self.parse_result_type()?)
+            } else {
+                None
+            };
         let span = self.span_from_mark(start);
         let params_range = self.pool.alloc_type_expr_list(&params);
         Ok(self.pool.alloc_type_expr(TypeExpr::Func {
             span,
             params: params_range,
             result,
+            is_bare_func: true,
         }))
     }
 
@@ -328,6 +367,7 @@ impl<'a> Parser<'a> {
                 span,
                 params,
                 result: Some(result),
+                is_bare_func: false,
             }));
         }
         if params.len() >= 2 {

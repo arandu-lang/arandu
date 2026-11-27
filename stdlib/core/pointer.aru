@@ -46,6 +46,49 @@
 module std.core.pointer
 
 import std.core.mem as mem
+import std.core.option as option
+
+/// Non-null raw pointer wrapper (`ptr[T]` with null-niche optimization).
+///
+/// Guarantees bit-pattern 0 is uninhabited so `Option<NonNull<T>>` / `Option<Box<T>>`
+/// occupy a single pointer-width word with zero tag overhead.
+@NoSend
+@NoSync
+public struct NonNull<T> {
+    private pointer: ptr[T]
+}
+
+/// Wraps `p` into `Some(NonNull<T>)` if non-null, or `Option.None` if `nil`.
+public func NonNull.new<T>(p: ptr[T]): Option<NonNull<T>> {
+    let nullp: ptr[T] = nil
+    if p == nullp {
+        return Option.None
+    }
+    return Option.Some(NonNull<T> { pointer: p })
+}
+
+/// Constructs a `NonNull<T>` assuming the caller has already verified `p != nil`.
+@Unsafe
+public func NonNull.fromRaw<T>(p: ptr[T]): NonNull<T> {
+    return NonNull<T> { pointer: p }
+}
+
+/// Returns a well-aligned, non-null, dangling pointer for `T` (suitable for ZSTs or sentinels).
+public func NonNull.dangling<T>(): NonNull<T> {
+    let align = mem.alignOf<T>()
+    let addr = if align == (0 as usize) { 1 as usize } else { align }
+    return NonNull<T> { pointer: addr as ptr[T] }
+}
+
+/// Extracts the underlying raw pointer `ptr[T]`.
+public func NonNull.asPtr<T>(self: ref NonNull<T>): ptr[T] {
+    return self.pointer
+}
+
+/// Reinterprets this non-null pointer as `NonNull<U>`.
+public func NonNull.cast<T, U>(self: NonNull<T>): NonNull<U> {
+    return NonNull<U> { pointer: self.pointer as ptr[U] }
+}
 
 /// Returns a null pointer (`nil`) typed as `ptr[T]`.
 ///

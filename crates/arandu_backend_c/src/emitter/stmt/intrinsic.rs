@@ -122,6 +122,7 @@ impl<'a> CEmitter<'a> {
                 | arandu_middle::IntrinsicKind::AtomicFence(..)
                 | arandu_middle::IntrinsicKind::AtomicCompilerFence(..)
                 | arandu_middle::IntrinsicKind::Abort
+                | arandu_middle::IntrinsicKind::AbortWithMessage
                 | arandu_middle::IntrinsicKind::PtrRead
                 | arandu_middle::IntrinsicKind::PtrWrite
                 | arandu_middle::IntrinsicKind::PtrOffset
@@ -402,6 +403,17 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(&mut self.output, "    AR_ABORT();");
                 true
             }
+            Some(arandu_middle::IntrinsicKind::AbortWithMessage) => {
+                if let Some(reason) = args.first() {
+                    let s = self.format_operand(reason, func);
+                    let _ = writeln!(
+                        &mut self.output,
+                        "    {{ ArStr ar_msg = {s}; if (ar_msg.len > 0 && ar_msg.ptr) {{ fwrite(ar_msg.ptr, 1, (size_t)ar_msg.len, stderr); }} fputc('\\n', stderr); fflush(stderr); }}"
+                    );
+                }
+                let _ = writeln!(&mut self.output, "    AR_ABORT();");
+                true
+            }
             Some(arandu_middle::IntrinsicKind::PtrRead) => {
                 if args.is_empty() {
                     return true;
@@ -472,7 +484,9 @@ impl<'a> CEmitter<'a> {
                 );
                 true
             }
-            Some(arandu_middle::IntrinsicKind::DropInPlace) => false,
+            Some(
+                arandu_middle::IntrinsicKind::DropInPlace | arandu_middle::IntrinsicKind::Forget,
+            ) => false,
             _ => false,
         }
     }

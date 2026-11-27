@@ -114,6 +114,21 @@ pub fn symbol_surface(
             hasher.update(&[u8::from(
                 signatures.type_info.non_copy_types.contains(&symbol),
             )]);
+            hasher.update(&[u8::from(
+                signatures.type_info.non_send_types.contains(&symbol),
+            )]);
+            hasher.update(&[u8::from(
+                signatures.type_info.non_sync_types.contains(&symbol),
+            )]);
+            hasher.update(&[u8::from(
+                signatures.type_info.unsafe_send_types.contains(&symbol),
+            )]);
+            hasher.update(&[u8::from(
+                signatures.type_info.unsafe_sync_types.contains(&symbol),
+            )]);
+            hasher.update(&[u8::from(
+                signatures.type_info.non_null_types.contains(&symbol),
+            )]);
             if let Some(dtor) = signatures.type_info.destructors.get(&symbol) {
                 hasher.update(&[1]);
                 hasher.update(&dtor.file_id.to_le_bytes());
@@ -159,6 +174,18 @@ pub fn symbol_surface(
             if sym.kind == SymbolKind::Enum {
                 hasher.update(&[u8::from(
                     signatures.type_info.non_copy_types.contains(&symbol),
+                )]);
+                hasher.update(&[u8::from(
+                    signatures.type_info.non_send_types.contains(&symbol),
+                )]);
+                hasher.update(&[u8::from(
+                    signatures.type_info.non_sync_types.contains(&symbol),
+                )]);
+                hasher.update(&[u8::from(
+                    signatures.type_info.unsafe_send_types.contains(&symbol),
+                )]);
+                hasher.update(&[u8::from(
+                    signatures.type_info.unsafe_sync_types.contains(&symbol),
                 )]);
             }
         }

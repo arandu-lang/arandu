@@ -394,3 +394,34 @@ public func str.isAscii(self: str): bool {
 public func str.eq(self: str, other: str): bool {
     return eq(self, other)
 }
+
+/// Lexicographically compares `a` and `b` byte by byte (`-1` if `<`, `0` if `==`, `1` if `>`).
+public func compare(a: str, b: str): int {
+    let ba = intrinsics.strBytes(a)
+    let bb = intrinsics.strBytes(b)
+    let la = slice.len<u8>(ba)
+    let lb = slice.len<u8>(bb)
+    let minLen = if la < lb { la } else { lb }
+    let mut i: usize = 0
+    while i < minLen {
+        if ba[i] < bb[i] {
+            return -1
+        }
+        if ba[i] > bb[i] {
+            return 1
+        }
+        i = i + (1 as usize)
+    }
+    if la < lb {
+        return -1
+    }
+    if la > lb {
+        return 1
+    }
+    return 0
+}
+
+/// Lexicographically compares `self` against `other` (`s.compare(other)`).
+public func str.compare(self: str, other: str): int {
+    return compare(self, other)
+}

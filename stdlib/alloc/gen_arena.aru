@@ -107,7 +107,7 @@ func growSlots<T>(a: mut ref GenArena<T>, minCap: usize): void {
     if a.slots_cap >= minCap {
         return
     }
-    let maxBytes: usize = 2147483647 as usize
+    let maxBytes: usize = mem.maxAllocBytes()
     let elem = mem.sizeOf<T>()
     let genElem = mem.sizeOf<u32>()
     let usedElem = mem.sizeOf<u8>()
@@ -158,7 +158,7 @@ func growFree<T>(a: mut ref GenArena<T>, minCap: usize): void {
     if a.free_cap >= minCap {
         return
     }
-    let maxBytes: usize = 2147483647 as usize
+    let maxBytes: usize = mem.maxAllocBytes()
     let genElem = mem.sizeOf<u32>()
     let maxCap = maxBytes / genElem
     if minCap > maxCap {
@@ -213,7 +213,7 @@ func insert<T>(a: mut ref GenArena<T>, value: T): GenRef {
             }
         }
     }
-    let maxBytes: usize = 2147483647 as usize
+    let maxBytes: usize = mem.maxAllocBytes()
     let elem = mem.sizeOf<T>()
     if elem == (0 as usize) {
         allocationFailure()

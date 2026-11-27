@@ -326,7 +326,7 @@ pub fn borrow_interfaces(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<B
                     .is_some_and(|ty| match ty {
                         arandu_middle::types::ArType::Func(_, result) => declarations
                             .type_info
-                            .borrow_paths(result)
+                            .may_borrow_paths(result)
                             .map_or(true, |paths| !paths.is_empty()),
                         _ => false,
                     });

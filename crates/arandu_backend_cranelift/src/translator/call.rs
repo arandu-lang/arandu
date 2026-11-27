@@ -850,7 +850,35 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 self.builder.ins().trap(code);
                 true
             }
-            Some(arandu_middle::IntrinsicKind::DropInPlace) => false,
+            Some(arandu_middle::IntrinsicKind::AbortWithMessage) => {
+                if let Some(reason) = args.first()
+                    && let Some(eprint) = self.resolve_function("eprint")
+                {
+                    let (data, len) = self.translate_str_operand(reason);
+                    let eprint_ref = self.module.declare_func_in_func(eprint, self.builder.func);
+                    self.builder.ins().call(eprint_ref, &[data, len]);
+                    if let Some(nl_addr) = self.declare_readonly_bytes("ar_abort_nl", b"\n") {
+                        let one = self.builder.ins().iconst(self.ptr_type, 1);
+                        self.builder.ins().call(eprint_ref, &[nl_addr, one]);
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    if let Some(trap_id) = self.resolve_function("ar_rt_trap") {
+                        let trap_ref = self.module.declare_func_in_func(trap_id, self.builder.func);
+                        self.builder.ins().call(trap_ref, &[]);
+                    } else {
+                        self.record_ice("ar_rt_trap was not declared", self.func_span());
+                    }
+                }
+                self.builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                true
+            }
+            Some(
+                arandu_middle::IntrinsicKind::DropInPlace | arandu_middle::IntrinsicKind::Forget,
+            ) => false,
             _ => false,
         }
     }

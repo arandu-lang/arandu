@@ -41,6 +41,8 @@ extern "C" {
 const MINIMUM_CAPACITY = 8 as usize
 
 /// Double-ended queue backed by a circular buffer.
+@UnsafeSend
+@UnsafeSync
 public struct VecDeque<T> {
     data: ptr[T],
     head: usize,
@@ -55,7 +57,7 @@ func elemSize<T>(): usize {
 }
 
 func maxPowerOfTwoCapacity<T>(): usize {
-    let maxBytes: usize = 2147483647 as usize
+    let maxBytes: usize = mem.maxAllocBytes()
     let maxElements = maxBytes / elemSize<T>()
     if maxElements < MINIMUM_CAPACITY {
         return 0 as usize
@@ -257,6 +259,30 @@ public func VecDeque.getMut<T>(self: mut ref VecDeque<T>, index: usize): Option<
     let phys = (self.head + index) & (self.capacity - (1 as usize))
     let ring = unsafe { intrinsics.mutSliceFromRaw<VecDeque<T>, T>(self, self.data, self.capacity) }
     return Option.Some(mut ref ring[phys])
+}
+
+/// Shared indexing (`d[idx]`), aborting if `idx` is out of bounds.
+public func VecDeque.index<T>(self: ref VecDeque<T>, idx: usize): ref T {
+    if idx >= self.len {
+        unsafe {
+            intrinsics.abort()
+        }
+    }
+    let phys = (self.head + idx) & (self.capacity - (1 as usize))
+    let ring = unsafe { intrinsics.sliceFromRaw<VecDeque<T>, T>(self, self.data, self.capacity) }
+    return ref ring[phys]
+}
+
+/// Mutable indexing (`d[idx] = val`, `mut ref d[idx]`), aborting if `idx` is out of bounds.
+public func VecDeque.indexMut<T>(self: mut ref VecDeque<T>, idx: usize): mut ref T {
+    if idx >= self.len {
+        unsafe {
+            intrinsics.abort()
+        }
+    }
+    let phys = (self.head + idx) & (self.capacity - (1 as usize))
+    let ring = unsafe { intrinsics.mutSliceFromRaw<VecDeque<T>, T>(self, self.data, self.capacity) }
+    return mut ref ring[phys]
 }
 
 /// Borrows the element at the front of the deque without removing it.

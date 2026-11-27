@@ -217,7 +217,7 @@ public func Result.expectOrAbort<T, E>(self: own Result<T, E>, reason: str): T {
         }
         Err(_) => {
             unsafe {
-                intrinsics.abort()
+                intrinsics.abortWithMessage(reason)
             }
         }
     }

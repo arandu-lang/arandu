@@ -560,6 +560,21 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    for set in [
+        &info.non_send_types,
+        &info.non_sync_types,
+        &info.unsafe_send_types,
+        &info.unsafe_sync_types,
+        &info.non_null_types,
+    ] {
+        let mut syms: Vec<_> = set.iter().copied().collect();
+        syms.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+        h.update(&u64_le(syms.len() as u64));
+        for symbol in syms {
+            hash_symbol_id(&mut h, symbol);
+        }
+    }
+
     let mut repr_c: Vec<_> = info.struct_repr_c.iter().copied().collect();
     repr_c.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(repr_c.len() as u64));

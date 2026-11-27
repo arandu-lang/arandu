@@ -111,7 +111,10 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                             ..
                         } => {
                             if let Some(intrinsic) = admitted.intrinsic(*callee) {
-                                if intrinsic == IntrinsicKind::Abort {
+                                if matches!(
+                                    intrinsic,
+                                    IntrinsicKind::Abort | IntrinsicKind::AbortWithMessage
+                                ) {
                                     return Err(EvalErrorKind::UnsupportedOperation);
                                 }
                                 if intrinsic == IntrinsicKind::SpinLoopHint {

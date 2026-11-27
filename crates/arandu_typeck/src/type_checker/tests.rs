@@ -2231,3 +2231,25 @@ fn onda6_never_type_and_diverge_coercion() {
         checked.diagnostics
     );
 }
+
+#[test]
+fn module_std_core_name_alone_cannot_use_arandu_intrinsic() {
+    let spoofed = r#"
+    module std.core.spoof
+    extern "arandu-intrinsic" {
+        func secretIntrinsic(): void
+    }
+    public func main(): int { return 0 }
+    "#;
+    let program = arandu_parser::parse(spoofed).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == crate::DiagCode::U001FeatureNotSupported),
+        "spoofed `module std.core.*` without trusted_stdlib must fail with U001: {:?}",
+        checked.diagnostics
+    );
+}

@@ -613,6 +613,35 @@ pub fn function_hir(
     file: SourceFile,
     symbol: SymbolId,
 ) -> FingerprintEq<PreparedHir> {
+    if let Some(target) = symbol.export_thunk_target() {
+        let declared = declaration_signatures(db, file);
+        let mut checked = (**declared).clone();
+        let mut diagnostics = Vec::new();
+        let hir = match arandu_semantics::lower_export_thunk_hir(&mut checked, target) {
+            Ok(hir) => hir,
+            Err(errors) => {
+                diagnostics = errors;
+                None
+            }
+        };
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"ExportThunkHir/v1");
+        identity.update(declared.identity().as_bytes());
+        identity.update(&symbol.file_id.to_le_bytes());
+        identity.update(&symbol.local_id.0.to_le_bytes());
+        let source_fingerprint = identity.finalize();
+        return FingerprintEq::fingerprinted(
+            db,
+            "function_hir",
+            PreparedHir {
+                hir,
+                type_check: checked,
+                diagnostics,
+                source_fingerprint,
+            },
+            source_fingerprint,
+        );
+    }
     if symbol.is_synthetic() {
         return FingerprintEq::from_content(&capture::closure_function_hir(db, file, symbol));
     }

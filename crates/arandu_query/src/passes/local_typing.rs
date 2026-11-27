@@ -531,6 +531,11 @@ impl Frame<'_> {
             private_fields: _,
             interior_mutable_types: _,
             non_copy_types: _,
+            non_send_types: _,
+            non_sync_types: _,
+            unsafe_send_types: _,
+            unsafe_sync_types: _,
+            non_null_types: _,
             enum_variants: _,
             enum_variant_tags: _,
             destructors: _,
@@ -657,6 +662,11 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
         &signatures.interior_mutable_types,
     );
     same_set(&mut local.non_copy_types, &signatures.non_copy_types);
+    same_set(&mut local.non_send_types, &signatures.non_send_types);
+    same_set(&mut local.non_sync_types, &signatures.non_sync_types);
+    same_set(&mut local.unsafe_send_types, &signatures.unsafe_send_types);
+    same_set(&mut local.unsafe_sync_types, &signatures.unsafe_sync_types);
+    same_set(&mut local.non_null_types, &signatures.non_null_types);
     same_set(&mut local.unsafe_functions, &signatures.unsafe_functions);
     same_set(
         &mut local.exported_functions,

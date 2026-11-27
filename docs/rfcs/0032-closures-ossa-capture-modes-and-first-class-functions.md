@@ -36,11 +36,10 @@
 > **Decisões do mantenedor em 2026-11-07** (fecham as questões acima; o
 > status continua `Draft` até a L3):
 >
-> - **Tipo de função:** a sintaxe que o parser já tem, `(A, B) -> R`, com os
->   modos nos parâmetros (`(ref T, mut ref T) -> R`); não há palavra `fn`. Sem
->   prefixo é callback emprestado e não escapante: o callee só o chama ou o
->   repassa a outro parâmetro de função. `own (A) -> R` é a closure com dono e
->   escapante (L3). `func(A) R` fica como alias legado.
+> - **Tipo de função (atualizado em 0.3.1):**
+>   - `(A, B) -> R`: callback emprestado e não escapante em posição de parâmetro (L1; monomorfizado como `mut ref F`, sem prefixo, com modos nos parâmetros `(ref T, mut ref T) -> R`); não há palavra `fn`.
+>   - `func(A, B) -> R`: ponteiro de função puro e não-capturante (C ABI / tabela de callbacks, pode ser armazenado e retornado sem `T100` e rejeita lambdas com captura). Substitui o antigo uso ambíguo de `func(A) R` como mero alias.
+>   - `own [once] (A) -> R [+ Send]`: closure com dono e escapante (L3). Suporta múltiplos bounds sintáticos (`+ Send + Sync`), rejeitando `+ Sync` explicitamente porque chamadas através da closure exigem acesso exclusivo.
 > - **Literal:** `(x: T) => expr` e `(x) => { ... }` são canônicos, com
 >   dois-pontos como em toda declaração; `(x T)` continua aceito. `|x| expr`
 >   continua aceito e o formatter normaliza para a seta. `own () => ...` força

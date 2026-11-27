@@ -25,6 +25,8 @@ public struct Mutex<T> {
 }
 
 /// A unique native mutex admission. Cannot be copied or sent to another thread.
+@NoSend
+@NoSync
 public struct MutexGuard<T> {
     private lock: ref Mutex<T>,
     private data: ptr[T],

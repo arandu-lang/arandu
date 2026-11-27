@@ -17,6 +17,7 @@ import std.alloc.allocator_api as alloc
 import std.core.intrinsics as intrinsics
 
 import std.core.mem as mem
+import std.core.pointer as pointer
 
 import std.core.slice as slice
 import std.core.option as option
@@ -29,9 +30,11 @@ extern "C" {
 }
 
 /// An exclusive, non-copyable owner of one initialized `T`.
+@UnsafeSend
+@UnsafeSync
 public struct Box<T> {
-    /// Private allocation pointer; safe clients cannot forge or duplicate it.
-    private data: ptr[T]
+    /// Private non-null pointer; gives `Option<Box<T>>` / `Box<T>?` a 1-word null niche.
+    private data: pointer.NonNull<T>
 }
 
 func storageSize<T>(): usize {
@@ -46,7 +49,7 @@ func storageSize<T>(): usize {
 public func Box.tryNew<T>(value: T): Result<Box<T>, alloc.AllocError> {
     let size = storageSize<T>()
     let align = mem.alignOf<T>()
-    let maximum: usize = 2147483647 as usize
+    let maximum: usize = mem.maxAllocBytes()
     if size > maximum || align == (0 as usize) || align > maximum {
         return Result.Err(alloc.AllocError.InvalidLayout)
     }
@@ -56,7 +59,7 @@ public func Box.tryNew<T>(value: T): Result<Box<T>, alloc.AllocError> {
         if data == nullp { return Result.Err(alloc.AllocError.OutOfMemory) }
         let typed = data as ptr[T]
         mem.ptrWrite<T>(typed, value)
-        return Result.Ok(Box<T> { data: typed })
+        return Result.Ok(Box<T> { data: pointer.NonNull.fromRaw<T>(typed) })
     }
 }
 
@@ -66,31 +69,36 @@ public func Box.new<T>(value: T): Box<T> {
         Result.Ok(boxed) => { return boxed }
         Result.Err(_) => { unsafe { intrinsics.abort() } }
     }
-    // Unreachable after the abort intrinsic; retained for the void signature.
-    return Box<T> { data: nil }
+    // Unreachable after the abort intrinsic; retained for the return type.
+    return Box<T> { data: pointer.NonNull.dangling<T>() }
 }
 
 /// Borrows the contained value; the reference cannot outlive this box.
 public func Box.get<T>(self: ref Box<T>): ref T {
     unsafe {
-        return ref *self.data
+        let view = intrinsics.sliceFromRaw<Box<T>, T>(self, self.data.asPtr(), 1 as usize)
+        return ref view[0]
     }
 }
 
 /// Exclusively borrows the contained value for this box's mutable borrow.
 public func Box.getMut<T>(self: mut ref Box<T>): mut ref T {
-    unsafe { return mut ref *self.data }
+    unsafe {
+        let view = intrinsics.mutSliceFromRaw<Box<T>, T>(self, self.data.asPtr(), 1 as usize)
+        return mut ref view[0]
+    }
 }
 
 /// Moves out the contained value and releases the allocation.
 ///
 /// The returned value becomes the caller's responsibility to destroy.
 public func Box.intoInner<T>(self: own Box<T>): T {
-    let mut owned = self;
+    let owned = self
+    let raw = owned.data.asPtr()
     unsafe {
-        let value = mem.ptrRead<T>(owned.data)
-        ar_rt_free_aligned(owned.data as ptr[u8], storageSize<T>(), mem.alignOf<T>())
-        owned.data = nil
+        let value = mem.ptrRead<T>(raw)
+        ar_rt_free_aligned(raw as ptr[u8], storageSize<T>(), mem.alignOf<T>())
+        mem.forget<Box<T>>(owned)
         return value
     }
 }
@@ -100,9 +108,9 @@ public func Box.intoInner<T>(self: own Box<T>): T {
 /// The caller assumes ownership of the allocation and is responsible for eventually
 /// dropping the inner value and freeing the memory (e.g., via `Box.fromRaw`).
 public func Box.leak<T>(self: own Box<T>): ptr[T] {
-    let mut owned = self
-    let raw = owned.data
-    owned.data = nil
+    let owned = self
+    let raw = owned.data.asPtr()
+    mem.forget<Box<T>>(owned)
     return raw
 }
 
@@ -115,17 +123,17 @@ public func Box.leak<T>(self: own Box<T>): ptr[T] {
 /// same pointer or reading/freeing through stale aliases is invalid.
 @Unsafe
 public func Box.fromRaw<T>(p: ptr[T]): Box<T> {
-    return Box<T> { data: p }
+    unsafe {
+        return Box<T> { data: pointer.NonNull.fromRaw<T>(p) }
+    }
 }
 
 /// Destroys the contained value, then frees its allocation with the same layout.
 @Destructor
 func Box.destroy<T>(self: own Box<T>): void {
-    let nullp: ptr[T] = nil
-    if self.data != nullp {
-        unsafe {
-            mem.dropInPlace<T>(self.data)
-            ar_rt_free_aligned(self.data as ptr[u8], storageSize<T>(), mem.alignOf<T>())
-        }
+    let raw = self.data.asPtr()
+    unsafe {
+        mem.dropInPlace<T>(raw)
+        ar_rt_free_aligned(raw as ptr[u8], storageSize<T>(), mem.alignOf<T>())
     }
 }

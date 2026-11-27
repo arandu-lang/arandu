@@ -1301,6 +1301,58 @@ func main(): int {
 }
 
 #[test]
+fn dual_locus_branched_loop_and_export_aggregate_indirect_work_end_to_end() {
+    let source = r#"
+struct Holder {
+    value: &int
+}
+
+@Repr("C")
+struct Pair {
+    a: int
+    b: int
+}
+
+@Export("export_pair_fn")
+public func addPair(p: Pair): Pair {
+    return Pair { a: p.a + 1, b: p.b + 2 }
+}
+
+func loop_branched_rewind(): int {
+    let mut acc = 0
+    let mut i = 0
+    while i < 100000 {
+        let mut cur = 0
+        if i % 2 == 0 {
+            let v = i + 1
+            let h = Holder { value: &v }
+            set cur = *h.value
+        } else {
+            let v = i + 2
+            let h = Holder { value: &v }
+            set cur = *h.value
+        }
+        set acc = acc + (cur % 7)
+        set i = i + 1
+    }
+    return acc
+}
+
+func main(): int {
+    let f = addPair
+    let res = f(Pair { a: 10, b: 20 })
+    if res.a != 11 || res.b != 22 { return 1 }
+    if loop_branched_rewind() != 299999 { return 2 }
+    return 0
+}
+"#;
+    let stdout = run(source, "dual_locus_branch_export_e2e");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "dual_locus_branch_export_e2e_c");
+    run_emitted_c_with_asan(&c_source, "dual_locus_branch_export_e2e_asan");
+}
+
+#[test]
 fn untagged_union_pointer_indexing_and_null_optimization_work_end_to_end() {
     let source = r#"
 @Repr("C")

@@ -129,26 +129,13 @@ pub fn local_symbols(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Resol
         },
     };
 
-    if !db
+    if db
         .as_db_impl()
         .is_some_and(|db| db.is_trusted_stdlib_source(file))
     {
+        Arc::make_mut(&mut resolved.symbols).trusted_stdlib = true;
+    } else {
         Arc::make_mut(&mut resolved.symbols).clear_source_lang_items();
-        if let Ok(program) = &**program_res {
-            program.for_each_decl_recursive(|_, declaration| {
-                if let arandu_parser::TopLevelDecl::Extern(external) = declaration {
-                    if arandu_parser::AbiKind::from_abi_str(&external.abi)
-                        == arandu_parser::AbiKind::AranduIntrinsic
-                    {
-                        resolved.diagnostics.push(Diagnostic::error(
-                            arandu_middle::DiagCode::U001FeatureNotSupported,
-                            "the 'arandu-intrinsic' ABI requires a trusted standard-library source",
-                            external.span,
-                        ));
-                    }
-                }
-            });
-        }
     }
     HashEq::new(resolved)
 }

@@ -371,7 +371,7 @@ impl<'a> DeriveBuilder<'a> {
                 .0
                 .wrapping_mul(0x9E37_79B1)
                 ^ role.wrapping_mul(0x85EB_CA6B);
-            let local = SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x7FFF_FFFF);
+            let local = SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x3FFF_FFFF);
             let id = SymbolId::new(file_id, local);
             if self.tc.symbols.try_get(id).is_none() {
                 Arc::make_mut(&mut self.tc.symbols).register_synthetic(Symbol {
@@ -1583,18 +1583,9 @@ impl<'a> DeriveBuilder<'a> {
                 let dq = self.expr(HirExprKind::Int(SmolStr::new("34")), u8_ty);
                 let c1 = self.call_method(f_e, f_ty, "writeByte", vec![dq], vec![u8_ty], ret_ty);
                 self.emit_fmt_checked(stmts, c1, written_sym)?;
-                let ref_str_ty = self.intern(ArType::Ref(str_ty));
                 let s_ref = self.as_ref_arg(val, val_ty);
                 let s_ref_ty = self.pool.expr(s_ref).ty;
-                let as_str_ref =
-                    self.call_method(s_ref, s_ref_ty, "asStr", vec![], vec![], ref_str_ty);
-                let as_str = self.expr(
-                    HirExprKind::Unary {
-                        op: UnaryOp::Deref,
-                        expr: as_str_ref,
-                    },
-                    str_ty,
-                );
+                let as_str = self.call_method(s_ref, s_ref_ty, "asStr", vec![], vec![], str_ty);
                 let c2 =
                     self.call_method(f_e, f_ty, "writeStr", vec![as_str], vec![str_ty], ret_ty);
                 self.emit_fmt_checked(stmts, c2, written_sym)?;

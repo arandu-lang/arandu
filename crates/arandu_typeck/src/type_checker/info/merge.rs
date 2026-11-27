@@ -584,6 +584,16 @@ impl TypeInfo {
             .extend(other.interior_mutable_types.iter().copied().map(&remap));
         self.non_copy_types
             .extend(other.non_copy_types.iter().copied().map(&remap));
+        self.non_send_types
+            .extend(other.non_send_types.iter().copied().map(&remap));
+        self.non_sync_types
+            .extend(other.non_sync_types.iter().copied().map(&remap));
+        self.unsafe_send_types
+            .extend(other.unsafe_send_types.iter().copied().map(&remap));
+        self.unsafe_sync_types
+            .extend(other.unsafe_sync_types.iter().copied().map(&remap));
+        self.non_null_types
+            .extend(other.non_null_types.iter().copied().map(&remap));
     }
 
     fn merge_expression_tables(
@@ -667,5 +677,10 @@ fn context_shard_is_empty(other: &TypeInfo) -> bool {
         && other.struct_repr_c.is_empty()
         && other.struct_unions.is_empty()
         && other.non_copy_types.is_empty()
+        && other.non_send_types.is_empty()
+        && other.non_sync_types.is_empty()
+        && other.unsafe_send_types.is_empty()
+        && other.unsafe_sync_types.is_empty()
+        && other.non_null_types.is_empty()
         && other.expr_types.iter().all(|s| s.is_none())
 }

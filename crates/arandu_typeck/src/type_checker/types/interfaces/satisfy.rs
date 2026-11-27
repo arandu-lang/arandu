@@ -164,15 +164,34 @@ pub(crate) fn type_satisfies_interface(
         {
             let arg_vec = checker.type_info.type_interner.type_args(*args);
             let n = gp.len().min(arg_vec.len());
+            let resolved_args: Vec<ArType> = arg_vec
+                .iter()
+                .take(n)
+                .map(|&tid| checker.resolve(tid))
+                .collect();
+            let subst = build_subst(&gp[..n], &resolved_args);
             for (&param_sym, &arg_tid) in gp.iter().take(n).zip(arg_vec.iter().take(n)) {
                 if let Some(bounds) = checker.type_info.param_constraints.get(&param_sym).cloned() {
                     let concrete_arg = checker.resolve(arg_tid);
                     for bound in bounds.iter() {
+                        let subst_bound_args: Vec<TypeId> = bound
+                            .type_args
+                            .iter()
+                            .map(|&tid| {
+                                let resolved = checker.resolve(tid);
+                                let sub = substitute_type(
+                                    &resolved,
+                                    &subst,
+                                    &checker.type_info.type_interner,
+                                );
+                                checker.intern(sub)
+                            })
+                            .collect();
                         if !type_satisfies_interface(
                             checker,
                             &concrete_arg,
                             bound.iface_sym,
-                            &bound.type_args,
+                            &subst_bound_args,
                             _span,
                         ) {
                             return false;

@@ -549,12 +549,17 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                                 ));
                             }
                         }
+                        let is_forget = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                == Some(arandu_middle::IntrinsicKind::Forget);
                         let mut flags = if pure_bits
                             || float_bitcast
                             || simd.is_some()
                             || is_fma
                             || is_spin_hint
                             || is_branch_hint
+                            || is_forget
                             || pure_arith.is_some()
                         {
                             arandu_middle::EffectFlags::NONE

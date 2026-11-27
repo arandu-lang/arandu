@@ -359,6 +359,12 @@ pub trait StructLayoutProvider {
         None
     }
 
+    /// Whether `sym` is the canonical `std.core.pointer.NonNull<T>` wrapper
+    /// whose first pointer field is guaranteed non-zero (enabling a null niche).
+    fn is_non_null_type(&self, _sym: SymbolId) -> bool {
+        false
+    }
+
     /// Explicit cleanup method associated with a nominal type by the
     /// language-level `@Destructor` contract. Backends must never infer this
     /// association from a function name or from the presence of pointers.

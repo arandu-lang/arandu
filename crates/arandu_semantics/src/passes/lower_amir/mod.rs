@@ -210,7 +210,7 @@ fn lower_program(
             if purpose == LoweringPurpose::ReturnInterfaces
                 && tc
                     .type_info
-                    .borrow_paths(f.return_type)
+                    .may_borrow_paths(f.return_type)
                     .is_ok_and(|paths| paths.is_empty())
             {
                 continue;

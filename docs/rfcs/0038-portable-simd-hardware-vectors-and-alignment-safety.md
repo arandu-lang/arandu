@@ -17,13 +17,11 @@ A API fonte usa splat, aritmética, extração/inserção, comparação e seleç
 AMIR, em vez dos antigos campos escalares.
 
 `Mask8x16`, `Mask16x8`, `Mask32x4` e `Mask64x2` preservam máscaras de vias
-canônicas em armazenamento privado. `loadUnaligned` recebe uma fatia compartilhada.
-`storeUnaligned` recebe `MutableSlice<Owner, T>`, que mantém um empréstimo
+canônicas em armazenamento privado. `loadUnaligned` recebe uma fatia compartilhada `[]T`.
+`storeUnaligned` recebe diretamente uma fatia mutável afim (`mut []T`), que mantém um empréstimo
 exclusivo de seu proprietário e não pode ser copiada. `Vec.asMutSlice` constrói
-essa vista com segurança; `MutableSlice.fromRaw` é uma fronteira unsafe para
-outros buffers. Uma `mut ref []T` isolada empresta apenas o descritor e não
-prova exclusividade dos dados: o caminho `storeUnalignedSlice` exige unsafe e
-essa exclusividade adicional explícita.
+essa vista com segurança; `intrinsics.mutSliceFromRaw` é a fronteira unsafe para
+outros buffers (aposentando `MutableSlice<Owner, T>` e `storeUnalignedSlice` na 0.3.1).
 
 Ambos os stores verificam a faixa inteira antes de escrever. As operações usam
 alinhamento escalar e não prometem uma única instrução de memória. Bounds não

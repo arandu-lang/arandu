@@ -583,9 +583,7 @@ fn add_operator_hint(
 
     if super::types::unify(left, right, interner) {
         if is_string_type(left) {
-            return diag.with_hint(
-                "relational comparisons on strings are not supported directly; use `std.core.cmp` or `.compare()`",
-            );
+            return diag.with_hint("this operator is not defined on strings");
         }
         if matches!(left, ArType::Primitive(super::types::Primitive::Bool)) {
             return diag.with_hint("type `bool` is not orderable");

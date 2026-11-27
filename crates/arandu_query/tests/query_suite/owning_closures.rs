@@ -301,6 +301,28 @@ fn a_consumed_capture_is_reported_in_the_editor() {
     }
 }
 
+#[test]
+fn owning_closure_rejects_sync_bound_and_multi_bound_combinations() {
+    let sync_only = errors(
+        r#"
+            func take(f: own (int) -> int + Sync): int { return f(1) }
+            func main(): int { return 0 }
+        "#,
+    );
+    assert_eq!(sync_only, vec![DiagCode::T011GenericConstraintNotSatisfied]);
+
+    let multi_bound = errors(
+        r#"
+            func take(f: own (int) -> int + Send + Sync): int { return f(1) }
+            func main(): int { return 0 }
+        "#,
+    );
+    assert_eq!(
+        multi_bound,
+        vec![DiagCode::T011GenericConstraintNotSatisfied]
+    );
+}
+
 /// An owning closure that only assigns to its copy of a captured `Copy`
 /// local is warned (W009); one that reads its own state is not.
 #[test]

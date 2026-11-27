@@ -1,4 +1,5 @@
 //! Canonical concurrency markers must inspect storage, not empty method lists.
+mod common;
 use arandu_diagnostics::{DiagCode, Severity};
 use arandu_query::{passes::type_check, DatabaseImpl};
 
@@ -1015,5 +1016,117 @@ func main(): int {
         }),
         "closure exits with different types must report the closure result: {:?}",
         result.diagnostics
+    );
+}
+
+#[test]
+fn concurrency_attributes_control_send_and_propagate_generic_bounds() {
+    let mut db = DatabaseImpl::default();
+    for &(path, content) in crate::common::STDLIB_MODULES {
+        db.new_stdlib_file(path.to_string(), content.to_string());
+    }
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+
+    let ok_file = db.new_file(
+        "unsafe_send_ok.aru".into(),
+        r#"
+import std.thread as thread
+import std.alloc.boxed as boxed
+
+@UnsafeSend
+@UnsafeSync
+struct RawBox<T> {
+    raw: ptr[T]
+}
+
+func main(): int {
+    let rb = RawBox<int> { raw: nil }
+    let b = boxed.Box<int>.new(42)
+    let h1 = thread.spawn(move || {
+        let _ = rb
+        return 1
+    })
+    let h2 = thread.spawn(move || {
+        return *b.get()
+    })
+    return 0
+}
+"#
+        .into(),
+    );
+    let ok_res = type_check(&db, ok_file);
+    assert!(
+        !ok_res
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "RawBox<int> (@UnsafeSend) and Box<int> (@UnsafeSend) must satisfy Send: {:?}",
+        ok_res.diagnostics
+    );
+
+    let rejected_file = db.new_file(
+        "concurrency_attr_rejected.aru".into(),
+        r#"
+import std.thread as thread
+import std.alloc.boxed as boxed
+import std.alloc.rc as rc
+import std.core.pointer as pointer
+
+@NoSend
+struct LocalToken {
+    id: int
+}
+
+@UnsafeSend
+struct RawBox<T> {
+    raw: ptr[T]
+}
+
+func rejectNoSend(t: LocalToken): void {
+    let _ = thread.spawn(move || t.id)
+}
+
+func rejectUnsafeSendRc(): void {
+    let r = rc.Rc<int>.new(1)
+    let b = boxed.Box<rc.Rc<int>>.new(r)
+    let _ = thread.spawn(move || {
+        let _x = b
+        return 1
+    })
+}
+
+func rejectRawBoxRc(): void {
+    let rb = RawBox<rc.Rc<int>> { raw: nil }
+    let _ = thread.spawn(move || {
+        let _x = rb
+        return 1
+    })
+}
+
+func rejectNonNull(): void {
+    let nn = pointer.NonNull.dangling<int>()
+    let _ = thread.spawn(move || {
+        let _x = nn
+        return 1
+    })
+}
+
+func main(): int { return 0 }
+"#
+        .into(),
+    );
+    let rej_res = type_check(&db, rejected_file);
+    let t025_count = rej_res
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagCode::T025InterfaceNotSatisfied)
+        .count();
+    assert_eq!(
+        t025_count, 4,
+        "expected 4 T025 Send errors (@NoSend, Box<Rc>, @UnsafeSend RawBox<Rc>, NonNull): {:?}",
+        rej_res.diagnostics
     );
 }

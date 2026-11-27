@@ -57,7 +57,7 @@ fn alloc_synthetic_symbol(
             ^ salt.wrapping_mul(0xC2B2_AE35);
         let id = SymbolId::new(
             file_id,
-            SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x7FFF_FFFF),
+            SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x3FFF_FFFF),
         );
         if type_check.symbols.try_get(id).is_none() {
             let scope = type_check.symbols.global_scope();
@@ -88,24 +88,62 @@ pub(super) fn maybe_wrap_exported_func_value(
     if hir_pool.suppress_export_thunk_span == Some(span) {
         return symbol;
     }
-    let Some(entry) = type_check.symbols.try_get(symbol) else {
+    if let Some(&cached) = hir_pool.exported_thunks.get(&symbol) {
+        return cached;
+    }
+    let Some((thunk_sym, decl_id)) = build_export_thunk_decl(type_check, hir_pool, symbol) else {
         return symbol;
     };
+    hir_pool.exported_thunks.insert(symbol, thunk_sym);
+    hir_pool.synthetic_decls.push(decl_id);
+    thunk_sym
+}
+
+/// Lowers a standalone [`crate::hir::HirProgram`] containing only the synthetic internal ABI
+/// wrapper thunk for an `@Export` function taking or returning aggregates.
+pub fn lower_export_thunk_hir(
+    type_check: &mut TypeCheckResult,
+    target: crate::SymbolId,
+) -> Result<Option<crate::hir::HirProgram>, Vec<Diagnostic>> {
+    if type_check
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == crate::Severity::Error)
+    {
+        return Err(type_check.diagnostics.clone());
+    }
+    let mut pool = crate::hir::HirPool::new();
+    let Some((_, decl_id)) = build_export_thunk_decl(type_check, &mut pool, target) else {
+        return Ok(None);
+    };
+    let span = type_check.symbols.try_get(target).map_or_else(
+        || arandu_middle::Span::new(target.file_id, 0, 0),
+        |entry| entry.span,
+    );
+    Ok(Some(crate::hir::HirProgram {
+        span,
+        module: None,
+        decls: vec![decl_id],
+        pool,
+    }))
+}
+
+fn build_export_thunk_decl(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    symbol: crate::SymbolId,
+) -> Option<(crate::SymbolId, crate::hir::HirDeclId)> {
+    let entry = type_check.symbols.try_get(symbol)?.clone();
     let is_exported_func = entry.kind == crate::SymbolKind::Func
         && (type_check.type_info.exported_functions.contains(&symbol)
             || type_check.symbols.is_exported(symbol));
     if !is_exported_func {
-        return symbol;
+        return None;
     }
-    if let Some(&cached) = hir_pool.exported_thunks.get(&symbol) {
-        return cached;
-    }
-    let Some(decl_ty_id) = type_check.type_info.decl_type_id(symbol) else {
-        return symbol;
-    };
+    let decl_ty_id = type_check.type_info.decl_type_id(symbol)?;
     let (param_tys, ret_ty) = match type_check.type_info.type_interner.resolve(decl_ty_id) {
         ArType::Func(params, ret) => (type_check.type_info.type_interner.type_args(params), ret),
-        _ => return symbol,
+        _ => return None,
     };
     let is_direct_abi_scalar = |ty_id: arandu_middle::types::TypeId| -> bool {
         match type_check.type_info.type_interner.resolve(ty_id) {
@@ -115,22 +153,35 @@ pub(super) fn maybe_wrap_exported_func_value(
         }
     };
     if param_tys.iter().all(|&p| is_direct_abi_scalar(p)) && is_direct_abi_scalar(ret_ty) {
-        return symbol;
+        return None;
     }
     let thunk_span = entry.span;
+    let thunk_sym = crate::SymbolId::export_thunk_for(symbol);
     let thunk_name = format!("__ar_export_thunk_{}_{}", symbol.file_id, symbol.local_id.0);
-    let thunk_sym =
-        alloc_synthetic_symbol(type_check, thunk_span, &thunk_name, crate::SymbolKind::Func);
+    let scope = type_check.symbols.global_scope();
+    type_check
+        .symbols_mut()
+        .ensure_visible(arandu_middle::Symbol {
+            id: thunk_sym,
+            name: thunk_name.into(),
+            kind: crate::SymbolKind::Func,
+            span: thunk_span,
+            scope,
+            visibility: arandu_middle::Visibility::Private,
+            lang_item: None,
+        });
     type_check
         .type_info_mut()
         .decl_types
         .insert(thunk_sym, decl_ty_id);
-    hir_pool.exported_thunks.insert(symbol, thunk_sym);
 
     let mut hir_params = Vec::with_capacity(param_tys.len());
     let mut call_args = Vec::with_capacity(param_tys.len());
     for (idx, param_ty) in param_tys.into_iter().enumerate() {
-        let param_name = format!("__arg_{idx}");
+        let param_name = format!(
+            "__ar_export_thunk_{}_{}_arg_{idx}",
+            symbol.file_id, symbol.local_id.0
+        );
         let param_sym = alloc_synthetic_symbol(
             type_check,
             thunk_span,
@@ -197,8 +248,7 @@ pub(super) fn maybe_wrap_exported_func_value(
         is_async: false,
         no_fallback: false,
     }));
-    hir_pool.synthetic_decls.push(decl_id);
-    thunk_sym
+    Some((thunk_sym, decl_id))
 }
 
 /// A generic function used as a value names one instance: typeck recorded

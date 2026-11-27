@@ -330,6 +330,25 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 self.writer.line("call void @llvm.trap()");
                 Ok(())
             }
+            IntrinsicKind::AbortWithMessage => {
+                if let Some(reason) = args.first() {
+                    let msg = self.operand(reason, &ArType::Primitive(Primitive::Str))?;
+                    let len_ty = self.module.require_posix_write();
+                    let ptr = self.new_value();
+                    let len = self.new_value();
+                    let written = self.new_value();
+                    self.writer
+                        .line(format!("{ptr} = extractvalue {} {}, 0", msg.ty, msg.value));
+                    self.writer
+                        .line(format!("{len} = extractvalue {} {}, 1", msg.ty, msg.value));
+                    self.writer.line(format!(
+                        "{written} = call {len_ty} @write(i32 2, ptr {ptr}, {len_ty} {len})"
+                    ));
+                }
+                self.module.require_llvm_trap();
+                self.writer.line("call void @llvm.trap()");
+                Ok(())
+            }
             IntrinsicKind::CountOnes
             | IntrinsicKind::LeadingZeros
             | IntrinsicKind::TrailingZeros

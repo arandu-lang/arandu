@@ -1,6 +1,6 @@
 mod ctor;
 mod expr;
-mod field;
+pub(crate) mod field;
 mod match_exhaust;
 pub(crate) mod method;
 mod pattern;

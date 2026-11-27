@@ -361,6 +361,7 @@ fn prelude_exposed_names(mod_name: &str) -> Option<&'static [&'static str]> {
         "std.core.cmp" => Some(&["Ordering"]),
         "std.core.iter" => Some(&["Iterator"]),
         "std.core.marker" => Some(&["Copy", "Clone", "Send", "Sync"]),
+        "std.core.ops" => Some(&["Index", "IndexMut"]),
         _ => None,
     }
 }

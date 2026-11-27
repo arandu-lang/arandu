@@ -45,11 +45,17 @@ fn directory_name_bytes_preserve_non_utf8_host_names() {
     let directory =
         std::env::temp_dir().join(format!("arandu-non-utf8-dir-{}-{id}", std::process::id()));
     fs::create_dir(&directory).expect("create non-UTF-8 name test directory");
-    fs::write(
+    if let Err(err) = fs::write(
         directory.join(std::ffi::OsString::from_vec(vec![0xff])),
         b"",
-    )
-    .expect("create non-UTF-8 filename");
+    ) {
+        let _ = fs::remove_dir_all(&directory);
+        // APFS/HFS+ on macOS rejects invalid UTF-8 filenames at the kernel level (EILSEQ = 92).
+        if cfg!(target_os = "macos") && err.raw_os_error() == Some(92) {
+            return;
+        }
+        panic!("create non-UTF-8 filename: {err:?}");
+    }
     let directory = directory.to_str().expect("UTF-8 temp directory");
     let source = format!(
         r#"module tests.borrowed_views.non_utf8_directory_name

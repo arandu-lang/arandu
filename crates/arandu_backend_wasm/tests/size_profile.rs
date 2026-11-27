@@ -152,3 +152,33 @@ fn size_core_retains_allocator_for_implicit_large_aggregate_storage() {
         .unwrap();
     assert_eq!(functions, 3, "main plus implicit allocation and free");
 }
+
+#[test]
+fn size_core_retains_cabi_realloc_when_host_import_needs_it() {
+    let bytes = compile_size(
+        r#"
+extern "C" { func ar_string_push_str(raw: usize, src: usize, len: usize): int }
+func main(): int {
+    unsafe { return ar_string_push_str(0 as usize, 0 as usize, 0 as usize) }
+}
+"#,
+        false,
+    );
+    wasmparser::Validator::new().validate_all(&bytes).unwrap();
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let imports: Vec<_> = module
+        .imports()
+        .map(|import| (import.module().to_owned(), import.name().to_owned()))
+        .collect();
+    assert!(
+        imports
+            .iter()
+            .any(|(module, name)| module == "env" && name == "ar_string_push_str"),
+        "expected env.ar_string_push_str import, got {imports:?}"
+    );
+    assert!(
+        common::find_func_export(&bytes, "cabi_realloc").is_some(),
+        "size-optimized core modules importing host allocator helpers must export cabi_realloc"
+    );
+}

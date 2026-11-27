@@ -48,8 +48,23 @@ impl<'a> WasmModuleBuilder<'a> {
 
         // Helpers follow all program definitions. Translate first so size mode
         // can decide from actual calls, including implicit heap-backed frames.
+        // Host imports backed by linear memory route allocations through
+        // `cabi_realloc` in both the Node and Wasmtime core-module hosts.
         let cabi_first_func_idx = num_imported_funcs + self.functions.len() as u32;
+        let host_needs_realloc = imports.iter().any(|import| {
+            matches!(
+                import.field.as_str(),
+                "ar_vec_malloc"
+                    | "ar_vec_realloc"
+                    | "ar_vec_buf_free"
+                    | "ar_rt_alloc_aligned"
+                    | "ar_rt_free_aligned"
+                    | "ar_string_push_str"
+                    | "ar_env_arg"
+            )
+        });
         let canonical_abi = !self.optimize_for_size || matches!(style, ExportStyle::Component(_));
+        let needs_realloc = canonical_abi || host_needs_realloc;
 
         // ── 1. Type section ───────────────────────────────────────────────
         let (mut type_section, import_type_indices, func_type_indices, mut next_type_idx) =
@@ -374,7 +389,7 @@ impl<'a> WasmModuleBuilder<'a> {
         };
 
         let mut code_section = CodeSection::new();
-        let mut needs_allocator = canonical_abi;
+        let mut needs_allocator = needs_realloc;
         let mut needs_float_text = false;
         for func in &self.functions {
             let (wasm_func, uses) = self.translate_func(func, &ctx, style)?;
@@ -389,19 +404,15 @@ impl<'a> WasmModuleBuilder<'a> {
         if needs_float_text {
             cabi.add_float_text(ctx.float_text_func_idx);
         }
-        if canonical_abi {
+        if needs_realloc {
             cabi.add_realloc(cabi_first_func_idx, cabi_first_func_idx + 1);
-            if let ExportStyle::Component(names) = &style {
-                for func in &self.functions {
-                    if let Some((export_name, sig)) = names.get(&func.symbol)
-                        && sig.retptr
-                    {
-                        cabi.add_post_return(
-                            export_name,
-                            vec![ValType::I32],
-                            cabi_first_func_idx + 1,
-                        );
-                    }
+        }
+        if canonical_abi && let ExportStyle::Component(names) = &style {
+            for func in &self.functions {
+                if let Some((export_name, sig)) = names.get(&func.symbol)
+                    && sig.retptr
+                {
+                    cabi.add_post_return(export_name, vec![ValType::I32], cabi_first_func_idx + 1);
                 }
             }
         }

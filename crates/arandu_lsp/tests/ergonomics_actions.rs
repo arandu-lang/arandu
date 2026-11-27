@@ -172,6 +172,17 @@ fn request_code_actions(
         .collect()
 }
 
+fn test_file_uri(name: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("file:///C:/tmp/{name}")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("file:///tmp/{name}")
+    }
+}
+
 #[test]
 fn server_advertises_organize_imports_and_executes_all_structured_quickfixes() {
     let (client, handle) = spawn_memory_lsp();
@@ -186,7 +197,8 @@ fn server_advertises_organize_imports_and_executes_all_structured_quickfixes() {
     }
 
     // 1) source.organizeImports
-    let org_uri = "file:///tmp/org_demo.aru";
+    let org_uri = test_file_uri("org_demo.aru");
+    let org_uri = org_uri.as_str();
     let org_text = "\
 module app.org
 
@@ -220,7 +232,8 @@ func main(): void {
     assert!(!org_result.contains("mem"));
 
     // 2) T024NonExhaustiveMatch quickfix
-    let match_uri = "file:///tmp/match_fix.aru";
+    let match_uri = test_file_uri("match_fix.aru");
+    let match_uri = match_uri.as_str();
     let match_text = "\
 module app.match_fix
 
@@ -248,7 +261,8 @@ func code(c: Color): int {
     assert!(patched_match.contains("Color.Blue => todo(),"));
 
     // 3) T025InterfaceNotSatisfied quickfix
-    let iface_uri = "file:///tmp/iface_fix.aru";
+    let iface_uri = test_file_uri("iface_fix.aru");
+    let iface_uri = iface_uri.as_str();
     let iface_text = "\
 module app.iface_fix
 
@@ -284,7 +298,8 @@ func main(): str {
     assert!(patched_iface.contains("todo()"));
 
     // 4) mut on local struct field assignment & .toString() on str -> String
-    let mut_str_uri = "file:///tmp/mut_str_fix.aru";
+    let mut_str_uri = test_file_uri("mut_str_fix.aru");
+    let mut_str_uri = mut_str_uri.as_str();
     let mut_str_text = "\
 module app.mut_str_fix
 

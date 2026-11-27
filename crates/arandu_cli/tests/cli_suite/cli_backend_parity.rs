@@ -898,13 +898,23 @@ fn pointer_offsets_agree_on_every_backend() {
 /// backend: the data image points at their NUL-terminated bytes.
 #[test]
 fn static_c_strings_agree_on_every_backend() {
-    // Wasm is left out: reading a `ptr[u8]` stored in a `static mut` and
-    // indexing it fails there even when assigned at run time, a defect of
-    // the Wasm backend recorded in the roadmap, not of the data image.
     let source = include_str!("../../../../tests/corpus/static_c_strings.aru");
     for (backend, outcome) in outcomes("static_c_strings", source) {
         assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
     }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_static_c_strings_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "static C strings in Wasmtime");
+    let _ = fs::remove_file(path);
 }
 
 /// `types.info<T>()`: descriptions of structs, enums, tuples and builtin

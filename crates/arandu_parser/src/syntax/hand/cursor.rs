@@ -133,6 +133,11 @@ impl<'a> Cursor<'a> {
     }
 
     #[must_use]
+    pub fn consumed_since(self, pos: usize) -> &'a [&'a Token] {
+        &self.toks[pos.min(self.pos)..self.pos]
+    }
+
+    #[must_use]
     pub fn is_empty(self) -> bool {
         self.pos >= self.toks.len()
     }

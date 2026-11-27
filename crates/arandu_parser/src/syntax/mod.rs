@@ -102,6 +102,15 @@ mod tests {
     }
 
     #[test]
+    fn malformed_module_prefix_keeps_the_cst_lossless() {
+        let source = "module{{";
+        let tree = parse_syntax(source);
+
+        assert_eq!(tree.root().text().to_string(), source);
+        assert!(lower_syntax_to_program(&tree, 0).is_err());
+    }
+
+    #[test]
     fn lower_from_cst_matches_program() {
         let src = two_funcs(2);
         let tree = parse_syntax(&src);
@@ -238,6 +247,65 @@ mod tests {
                 "incremental token stream diverged for {source:?}"
             );
             tree = updated_tree;
+        }
+    }
+
+    #[test]
+    fn insertion_at_item_start_relexes_attached_doc_comment() {
+        let source = "///a\nfunc f(): void {}\n";
+        let old = parse_syntax(source);
+        let edit_at = source.find('\n').expect("doc line break") as u32;
+        let (updated_source, updated) = reparse_subtree(&old, edit_at, edit_at, ";");
+        let cold = parse_syntax(&updated_source);
+        assert_eq!(updated.tokens(), cold.tokens());
+        assert_eq!(updated.root().green(), cold.root().green());
+        let incremental = lower_syntax_to_program(&updated, 0).expect("incremental docs parse");
+        let reparsed = lower_syntax_to_program(&cold, 0).expect("cold docs parse");
+        assert_eq!(incremental.docs, reparsed.docs);
+    }
+
+    #[test]
+    fn cst_lowering_rejects_adjacent_statements_without_a_terminator() {
+        for source in [
+            "func main(): void { let x = 1 let y = 2 }",
+            "func main(): void { let x = 1/* c\n*/ let y = 2 }",
+            "func main(): void { let x=1/* outer /* inner */\n*/ let y=2 }",
+            "func main(): void { break let x = 1 }",
+        ] {
+            let tree = parse_syntax(source);
+            assert!(
+                lower_syntax_to_program(&tree, 0).is_err(),
+                "CST lowering accepted missing statement separator: {source}"
+            );
+            assert!(lower_syntax_to_program_rd_only(&tree, 0).is_err());
+        }
+        for source in [
+            "func main(): void { break; continue; }",
+            "func main(): void { return; let x = 2 }",
+            "func main(): void { defer work(); let x = 2 }",
+        ] {
+            let tree = parse_syntax(source);
+            assert!(
+                lower_syntax_to_program(&tree, 0).is_ok(),
+                "rejected valid source: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_expression_arms_require_a_separator() {
+        let invalid = "func main(): int { return match x { 0 => 1 _ => 2 } }";
+        let invalid_tree = parse_syntax(invalid);
+        assert!(lower_syntax_to_program(&invalid_tree, 0).is_err());
+        assert!(lower_syntax_to_program_rd_only(&invalid_tree, 0).is_err());
+
+        for valid in [
+            "func main(): int { return match x { 0 => 1, _ => 2 } }",
+            "func main(): int { return match x { 0 => 1\n_ => 2 } }",
+        ] {
+            let tree = parse_syntax(valid);
+            assert!(lower_syntax_to_program(&tree, 0).is_ok(), "{valid}");
+            assert!(lower_syntax_to_program_rd_only(&tree, 0).is_ok(), "{valid}");
         }
     }
 

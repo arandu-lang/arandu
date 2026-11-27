@@ -299,13 +299,29 @@ pub fn parse_syntax_arc(text: Arc<str>) -> SyntaxTree {
     let diags = Arc::new(lexed.diagnostics);
 
     let mut parser = crate::parser::Parser::new(text.as_ref(), Arc::clone(&tokens)).with_events();
-    let _ = parser.parse_program();
+    let parse_succeeded = parser.parse_program().is_ok() && parser.diagnostics.is_empty();
     let events = parser.take_events();
 
-    let green =
-        super::events::build_green_from_events(text.as_ref(), &events).unwrap_or_else(|| {
-            let spans = find_top_level_item_spans(&text, &tokens, text.len() as u32);
-            build_green(text.as_ref(), &tokens, &spans)
+    let fallback = || {
+        let spans = find_top_level_item_spans(&text, &tokens, text.len() as u32);
+        let green = build_green(text.as_ref(), &tokens, &spans);
+        if SyntaxNode::new_root(green.clone()).text().to_string() == text.as_ref() {
+            green
+        } else {
+            // Malformed item structure can make the heuristic sink omit a
+            // token. A flat token tree still preserves every source byte.
+            build_green(text.as_ref(), &tokens, &[])
+        }
+    };
+    let flat_fallback = || build_green(text.as_ref(), &tokens, &[]);
+    let green = super::events::build_green_from_events(text.as_ref(), &events)
+        .filter(|green| SyntaxNode::new_root(green.clone()).text().to_string() == text.as_ref())
+        .unwrap_or_else(|| {
+            if parse_succeeded {
+                fallback()
+            } else {
+                flat_fallback()
+            }
         });
 
     #[cfg(debug_assertions)]

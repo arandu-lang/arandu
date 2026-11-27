@@ -279,15 +279,19 @@ impl<'a> Lexer<'a> {
     }
 
     fn maybe_insert_semicolon_at(&mut self, span: Span, interpolation_boundary: bool) {
-        let can_insert = self
-            .prev_significant
-            .is_some_and(TokenKind::can_end_statement);
+        let next = self.peek_next_significant_kind();
+        let next_is_boundary = self.next_significant_index() == self.source.len()
+            || next.is_some_and(is_generic_signature_boundary);
+        let can_insert = self.prev_significant.is_some_and(|previous| {
+            previous.can_end_statement()
+                || (matches!(previous, TokenKind::Gt | TokenKind::ShiftRight) && next_is_boundary)
+        });
         if !can_insert {
             return;
         }
 
         if !self.next_line_starts_with_prefix_star()
-            && self.peek_next_significant_kind().is_some_and(|kind| {
+            && next.is_some_and(|kind| {
                 kind.prevents_semicolon_before()
                     // At depth zero this closes an expression interpolation,
                     // rather than a statement block. Nested blocks retain ASI.
@@ -301,9 +305,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn insert_semicolon_if_needed(&mut self) {
-        let can_insert = self
-            .prev_significant
-            .is_some_and(TokenKind::can_end_statement);
+        let can_insert = self.prev_significant.is_some_and(|previous| {
+            previous.can_end_statement()
+                || matches!(previous, TokenKind::Gt | TokenKind::ShiftRight)
+        });
         if can_insert {
             let span = self.current_span();
             self.push_token(TokenKind::Semicolon, span, true);
@@ -556,4 +561,37 @@ impl<'a> Lexer<'a> {
     fn is_at_end(&self) -> bool {
         self.pos >= self.source.len()
     }
+}
+
+fn is_generic_signature_boundary(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::RBrace
+            | TokenKind::KwFunc
+            | TokenKind::KwPublic
+            | TokenKind::KwAsync
+            | TokenKind::KwStruct
+            | TokenKind::KwEnum
+            | TokenKind::KwInterface
+            | TokenKind::KwConst
+            | TokenKind::KwType
+            | TokenKind::KwImport
+            | TokenKind::KwFrom
+            | TokenKind::KwModule
+            | TokenKind::KwExtern
+            | TokenKind::KwImpl
+            | TokenKind::KwLet
+            | TokenKind::KwReturn
+            | TokenKind::KwBreak
+            | TokenKind::KwContinue
+            | TokenKind::KwIf
+            | TokenKind::KwFor
+            | TokenKind::KwWhile
+            | TokenKind::KwMatch
+            | TokenKind::KwDefer
+            | TokenKind::KwErrdefer
+            | TokenKind::KwUnsafe
+            | TokenKind::KwSet
+            | TokenKind::KwFree
+    )
 }

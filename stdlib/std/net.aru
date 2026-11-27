@@ -579,7 +579,8 @@ func UdpSocket.destroy(self: own UdpSocket): void {
     }
 }
 
-/// Resolves a hostname into an IP address string via host system DNS.
+/// Validates a host through system DNS and preserves its input text in the
+/// returned address. Socket operations resolve hostnames when they use them.
 public func resolveHost(name: str): Result<SocketAddr, io.IoError> {
     let bytes = intrinsics.strBytes(name)
     unsafe {
@@ -593,15 +594,6 @@ public func resolveHost(name: str): Result<SocketAddr, io.IoError> {
         if ret < 0 {
             return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, ret))
         }
-        if ret == 9 {
-            return Result.Ok(SocketAddr.new("127.0.0.1", 0))
-        }
-        if ret == 3 {
-            return Result.Ok(SocketAddr.new("::1", 0))
-        }
-        if ret == 7 {
-            return Result.Ok(SocketAddr.new("0.0.0.0", 0))
-        }
-        return Result.Ok(SocketAddr.new("127.0.0.1", 0))
+        return Result.Ok(SocketAddr.new(name, 0))
     }
 }

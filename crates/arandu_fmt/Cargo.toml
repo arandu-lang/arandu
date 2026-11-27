@@ -7,6 +7,7 @@ authors.workspace = true
 description = "Source formatter for Arandu (pure; no Salsa/LSP)"
 
 [dependencies]
+arandu_lexer = { path = "../arandu_lexer" }
 arandu_parser = { path = "../arandu_parser" }
 
 [lints]

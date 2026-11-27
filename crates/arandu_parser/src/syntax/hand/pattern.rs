@@ -2,7 +2,7 @@
 
 use super::cursor::{Cursor, HandCtx};
 use super::expr::try_hand_lower_expr;
-use super::stmt::parse_block_tokens;
+use super::stmt::{contains_line_break_outside_comments, parse_block_tokens};
 use crate::ast::ast_pool::PatternId;
 use crate::{FieldPattern, IndexRange, MatchArm, MatchArmBody, Pattern, TypeName};
 use arandu_lexer::TokenKind;
@@ -327,7 +327,20 @@ pub fn parse_match_arm(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Ma
         }
     } else {
         let expr = try_hand_lower_expr(ctx, cur, 0)?;
-        let _ = cur.eat(TokenKind::Semicolon);
+        let end = ctx.pool.expr_span(expr).end;
+        let separated = cur.eat(TokenKind::Comma) || cur.eat(TokenKind::Semicolon);
+        let line_break_before_next = cur.peek().is_some_and(|next| {
+            ctx.source
+                .get(end as usize..next.start as usize)
+                .is_some_and(contains_line_break_outside_comments)
+        });
+        if !separated
+            && cur.peek_kind() != Some(TokenKind::RBrace)
+            && !cur.at_end()
+            && !line_break_before_next
+        {
+            return None;
+        }
         MatchArmBody::Expr {
             span: ctx.pool.expr_span(expr),
             expr,

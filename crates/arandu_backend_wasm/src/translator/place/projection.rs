@@ -125,17 +125,32 @@ impl<'a> FuncTranslator<'a> {
                 }
             }
             AmirProjection::Index(index_op) => {
-                let owner_ty = self.strip_ref(cur_ty).unwrap_or(cur_ty);
+                let owner_ty = match self.interner.resolve(cur_ty) {
+                    ArType::Ref(inner) | ArType::RefMut(inner) => inner,
+                    _ => cur_ty,
+                };
                 let owner = self.interner.resolve(owner_ty);
                 let elem_ty = match owner {
-                    ArType::Slice(inner) | ArType::MutSlice(inner) | ArType::Array(_, inner) => {
-                        inner
-                    }
+                    ArType::Ptr(inner)
+                    | ArType::Slice(inner)
+                    | ArType::MutSlice(inner)
+                    | ArType::Array(_, inner) => inner,
                     _ => return cur_ty,
                 };
                 let elem_size = self.layout_of(&self.interner.resolve(elem_ty)).size;
                 let int_ty = self.interner.intern(ArType::Primitive(Primitive::Int));
                 match owner {
+                    ArType::Ptr(_) => {
+                        // Raw pointer indexing has no length to check.
+                        if *from_memory {
+                            self.code
+                                .push(Instruction::I32Load(crate::memory::noffset_memarg()));
+                        }
+                        self.emit_operand(index_op, int_ty);
+                        self.code.push(Instruction::I32Const(elem_size as i32));
+                        self.code.push(Instruction::I32Mul);
+                        self.code.push(Instruction::I32Add);
+                    }
                     ArType::Array(len, _) => {
                         // Bounds check: index < len.
                         self.emit_operand(index_op, int_ty);
@@ -195,12 +210,19 @@ impl<'a> FuncTranslator<'a> {
                 elem_ty
             }
             AmirProjection::IndexConstant(index) => {
-                let owner_ty = self.strip_ref(cur_ty).unwrap_or(cur_ty);
+                let owner_ty = match self.interner.resolve(cur_ty) {
+                    ArType::Ref(inner) | ArType::RefMut(inner) => inner,
+                    _ => cur_ty,
+                };
                 let owner = self.interner.resolve(owner_ty);
                 let elem_ty = match owner {
-                    ArType::Array(_, inner) => inner,
+                    ArType::Ptr(inner) | ArType::Array(_, inner) => inner,
                     _ => return cur_ty,
                 };
+                if matches!(owner, ArType::Ptr(_)) && *from_memory {
+                    self.code
+                        .push(Instruction::I32Load(crate::memory::noffset_memarg()));
+                }
                 let elem_size = self.layout_of(&self.interner.resolve(elem_ty)).size;
                 let Some(offset) = elem_size
                     .checked_mul(*index as u64)

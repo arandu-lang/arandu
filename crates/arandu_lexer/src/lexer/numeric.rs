@@ -126,6 +126,13 @@ impl<'a> Lexer<'a> {
     fn lex_radix_number(&mut self, start: Mark, radix: Radix) -> Result<(), LexError> {
         self.bump_ascii(2);
         let digit_start = self.pos;
+        if self.peek() == Some('_') {
+            return Err(self.error_from(
+                start,
+                LexErrorCode::InvalidNumericLiteral,
+                "expected digit after numeric prefix",
+            ));
+        }
         while self
             .peek()
             .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')

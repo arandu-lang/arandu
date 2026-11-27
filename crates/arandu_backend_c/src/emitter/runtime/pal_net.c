@@ -156,7 +156,7 @@ static intptr_t ar_pal_udp_send(
 }
 
 static intptr_t ar_pal_udp_recv(intptr_t fd, void *buf, size_t len, int *port_out) {
-    if (ar_pal_net_init() != 0 || !buf || len == 0) return -1;
+    if (ar_pal_net_init() != 0 || !buf) return -1;
     struct sockaddr_storage peer;
     memset(&peer, 0, sizeof(peer));
 #if defined(_WIN32)

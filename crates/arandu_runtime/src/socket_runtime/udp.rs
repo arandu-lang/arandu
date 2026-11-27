@@ -101,7 +101,8 @@ pub unsafe extern "C" fn ar_net_udp_bind(host_ptr: *const u8, host_len: usize, p
 /// Sends data via UDP socket to `host:port`.
 ///
 /// # Safety
-/// Pointers must be valid memory ranges.
+/// `buf` and `host_ptr` must be valid for their lengths; a null `buf` is
+/// allowed only when `len == 0`. `host_ptr` must be non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_net_udp_send_to(
     id: i32,
@@ -112,13 +113,17 @@ pub unsafe extern "C" fn ar_net_udp_send_to(
     port: i32,
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
-        if buf.is_null() || host_ptr.is_null() || !(0..=65535).contains(&port) {
+        if (buf.is_null() && len != 0) || host_ptr.is_null() || !(0..=65535).contains(&port) {
             return None;
         }
         let host =
             std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
         let target = format_udp_endpoint(host, port);
-        let payload = unsafe { std::slice::from_raw_parts(buf, len) };
+        let payload = if len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(buf, len) }
+        };
         let socket = get_udp_socket(id)?;
         let socket = socket.lock().unwrap_or_else(|e| e.into_inner());
         Some(
@@ -135,7 +140,8 @@ pub unsafe extern "C" fn ar_net_udp_send_to(
 /// Receives data from UDP socket into `buf`.
 ///
 /// # Safety
-/// `buf` must be writable for `len` bytes.
+/// `buf` must be writable for `len` bytes; it may be null only when `len == 0`.
+/// `port_out` may be null or must point to a writable `i32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_net_udp_recv_from(
     id: i32,
@@ -144,13 +150,19 @@ pub unsafe extern "C" fn ar_net_udp_recv_from(
     port_out: *mut i32,
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
-        if buf.is_null() || len == 0 {
+        if buf.is_null() && len != 0 {
             return None;
         }
-        let dest = unsafe { std::slice::from_raw_parts_mut(buf, len) };
         let socket = get_udp_socket(id)?;
         let socket = socket.lock().unwrap_or_else(|e| e.into_inner());
-        match socket.recv_from(dest) {
+        let mut empty = [];
+        let received = if len == 0 {
+            socket.recv_from(&mut empty)
+        } else {
+            let dest = unsafe { std::slice::from_raw_parts_mut(buf, len) };
+            socket.recv_from(dest)
+        };
+        match received {
             Ok((n, addr)) => {
                 if !port_out.is_null() {
                     unsafe { *port_out = addr.port() as i32 };

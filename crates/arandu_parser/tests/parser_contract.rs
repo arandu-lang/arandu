@@ -84,6 +84,13 @@ fn incomplete_blocks_preserve_balanced_lossless_cst_and_one_error_per_closer() {
     }
 }
 
+#[test]
+fn interface_methods_with_generic_results_use_implicit_terminators() {
+    let source = "interface Reader {\n    func read(): Result<int, int>\n    func write(): Result<int, int>\n}\n";
+    let program = parse(source).expect("generic interface method signatures should parse");
+    assert_eq!(program.decls.len(), 1);
+}
+
 fn contains(outer_start: usize, outer_end: usize, inner_start: usize, inner_end: usize) -> bool {
     outer_start <= inner_start && inner_end <= outer_end
 }

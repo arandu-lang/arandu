@@ -16,20 +16,15 @@ fn mono_origin() -> Instant {
     *ORIGIN.get_or_init(Instant::now)
 }
 
-/// Terminate the process with `code` (truncated to 8 bits on Unix by the OS).
+/// Terminate the process with the host's native status-width behavior.
 ///
 /// # Safety
 /// Called only from JIT-linked Arandu code; never returns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_process_exit(code: i64) -> ! {
-    // Match common shell convention: clamp to u8 range for predictability.
-    let status = if code < 0 {
-        255
-    } else if code > 255 {
-        (code & 0xff) as i32
-    } else {
-        code as i32
-    };
+    // The source-language `int` is i32; this ABI widens it to i64 for the JIT.
+    // Let the operating system apply its own exit-status representation.
+    let status = code as i32;
     std::process::exit(status)
 }
 

@@ -22,7 +22,9 @@ impl<'a> Parser<'a> {
         } else {
             let body_start = self.mark();
             let expr = self.parse_expr(0)?;
-            if self.at_kind_name("SEMICOLON") {
+            // Match arms accept the statement terminator from the grammar or
+            // an explicit comma for compact, single-line matches.
+            if !self.eat_name("COMMA") {
                 self.expect_semicolon()?;
             }
             MatchArmBody::Expr {

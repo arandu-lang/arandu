@@ -24,7 +24,7 @@ pub fn code_actions_with_snapshot(
     uri: &Uri,
     context: &lsp_types::CodeActionContext,
 ) -> CodeActionResponse {
-    let mut out = code_actions(uri, context);
+    let mut out = code_actions(uri, context, snap.revision.as_u64());
     let index = LineIndex::new(text);
 
     let wants_organize = context.only.as_ref().is_none_or(|only| {
@@ -116,7 +116,11 @@ pub fn code_actions_with_snapshot(
 /// `Diagnostic.data`; messages are presentation only and are never parsed.
 #[must_use]
 #[allow(clippy::mutable_key_type)] // WorkspaceEdit keys are `Uri` in lsp-types 0.97
-pub fn code_actions(_uri: &Uri, context: &lsp_types::CodeActionContext) -> CodeActionResponse {
+fn code_actions(
+    _uri: &Uri,
+    context: &lsp_types::CodeActionContext,
+    current_revision: u64,
+) -> CodeActionResponse {
     let mut out = Vec::new();
     for d in &context.diagnostics {
         let Some(data) = d
@@ -126,6 +130,9 @@ pub fn code_actions(_uri: &Uri, context: &lsp_types::CodeActionContext) -> CodeA
         else {
             continue;
         };
+        if data.revision != current_revision {
+            continue;
+        }
         for fix in data.fixes {
             let mut by_str: HashMap<String, Vec<LspTextEdit>> = HashMap::new();
             by_str.insert(
@@ -159,6 +166,35 @@ mod tests {
     use super::*;
     use arandu_query::AnalysisHost;
     use lsp_types::{Diagnostic, Position};
+
+    #[test]
+    fn stale_diagnostic_replacements_are_not_offered() {
+        let uri = crate::uri_util::parse_uri("file:///current.aru").unwrap();
+        let data = DiagnosticData {
+            revision: 4,
+            fixes: vec![super::super::DiagnosticFixData {
+                title: "Replace token".into(),
+                uri: uri.clone(),
+                range: Range {
+                    start: Position::new(0, 0),
+                    end: Position::new(0, 1),
+                },
+                new_text: "new".into(),
+            }],
+            ..DiagnosticData::default()
+        };
+        let diagnostic = Diagnostic {
+            data: serde_json::to_value(data).ok(),
+            ..Diagnostic::default()
+        };
+        let context = lsp_types::CodeActionContext {
+            diagnostics: vec![diagnostic],
+            ..lsp_types::CodeActionContext::default()
+        };
+
+        assert!(code_actions(&uri, &context, 5).is_empty());
+        assert_eq!(code_actions(&uri, &context, 4).len(), 1);
+    }
 
     #[test]
     fn unresolved_type_diagnostic_offers_missing_import_quickfix() {

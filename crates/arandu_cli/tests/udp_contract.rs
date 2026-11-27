@@ -16,6 +16,7 @@ public func main(): int {
     match net.resolveHost("localhost") {
         Result.Ok(addr) => {
             if addr.port != 0 { return 1 }
+            if addr.ip != "localhost" { return 10 }
         }
         Result.Err(_) => { return 2 }
     }
@@ -53,6 +54,19 @@ public func main(): int {
                             if pkt.peer_port != 48292 { return 6 }
                         }
                         Result.Err(_) => { return 7 }
+                    }
+
+                    let mut empty = vec.Vec<u8>.new()
+                    match client.sendTo(empty.asSlice(), serverAddr) {
+                        Result.Ok(n) => { if n != 0 { return 11 } }
+                        Result.Err(_) => { return 12 }
+                    }
+                    match server.recvPacket(empty.asMutSlice()) {
+                        Result.Ok(pkt) => {
+                            if pkt.bytes_received != (0 as usize) { return 13 }
+                            if pkt.peer_port != 48292 { return 14 }
+                        }
+                        Result.Err(_) => { return 15 }
                     }
 
                     client.close()

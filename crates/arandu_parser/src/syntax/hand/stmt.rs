@@ -101,11 +101,60 @@ pub fn parse_block_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option
             if cur.at_end() {
                 return None;
             }
-            statements.push(parse_stmt_tokens(ctx, cur)?);
+            let start_pos = cur.pos();
+            let stmt = parse_stmt_tokens(ctx, cur)?;
+            let has_terminator = cur
+                .consumed_since(start_pos)
+                .iter()
+                .any(|token| token.kind == TokenKind::Semicolon);
+            let end = ctx.pool.stmt_span(stmt).end;
+            let next_start = cur.peek()?.start;
+            let gap = ctx.source.get(end as usize..next_start as usize)?;
+            if cur.peek_kind() != Some(TokenKind::RBrace)
+                && !has_terminator
+                && !contains_line_break_outside_comments(gap)
+            {
+                return None;
+            }
+            statements.push(stmt);
         }
     })();
     ctx.depth -= 1;
     res
+}
+
+pub(super) fn contains_line_break_outside_comments(gap: &str) -> bool {
+    let bytes = gap.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"//") {
+            while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            let mut depth = 1usize;
+            while i + 1 < bytes.len() && depth > 0 {
+                if bytes[i..].starts_with(b"/*") {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if matches!(bytes[i], b'\n' | b'\r') {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Parse one statement from the cursor (does not require trailing `;`).

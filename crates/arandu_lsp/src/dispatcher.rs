@@ -11,7 +11,7 @@
 //! cancel via `$/cancelRequest`, and saturation is answered with
 //! `ServerCancelled` instead of unbounded backlog.
 
-use crate::diagnostics::{publish_diagnostics, spawn_open_diagnostics};
+use crate::diagnostics::{publish_diagnostics, refill_missing_diagnostics, spawn_open_diagnostics};
 use crate::handlers;
 use crate::pool::{CancellationToken, JobKey, Priority, WorkerPool};
 use crate::state::{DocInfo, ServerState};
@@ -182,7 +182,11 @@ pub(crate) fn event_loop(
             }
             Event::Job(job) => {
                 if let Ok(job) = job {
+                    let refill_diagnostics = matches!(&job, JobResult::Diagnostics { .. });
                     handle_job_result(connection, state, pool, &job_tx, job)?;
+                    if refill_diagnostics {
+                        refill_missing_diagnostics(state, pool, &job_tx);
+                    }
                 }
             }
             Event::Workspace(event) => match event {
@@ -677,14 +681,25 @@ fn handle_job_result(
             if revision != state.revision() {
                 return Ok(());
             }
-            if state.last_diag_fp.get(&doc_id) == Some(&(fingerprint, version)) {
-                return Ok(());
-            }
             if version != state.version(doc_id) {
                 return Ok(());
             }
+            if state
+                .last_diag_fp
+                .get(&doc_id)
+                .is_some_and(|(last_fingerprint, last_version, _)| {
+                    *last_fingerprint == fingerprint && *last_version == version
+                })
+            {
+                state
+                    .last_diag_fp
+                    .insert(doc_id, (fingerprint, version, revision));
+                return Ok(());
+            }
             publish_diagnostics(connection, uri, diags, version)?;
-            state.last_diag_fp.insert(doc_id, (fingerprint, version));
+            state
+                .last_diag_fp
+                .insert(doc_id, (fingerprint, version, revision));
         }
         JobResult::JsonResponse {
             id,

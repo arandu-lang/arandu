@@ -711,7 +711,7 @@ static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, in
 }}
 
 static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
-    if (id < 0 || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
+    if (id < 0 || (!buf && len != 0) || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
     intptr_t fd = ar_udp_duplicate_fd(id);
     if (fd == (intptr_t)-1) return -1;
 
@@ -720,17 +720,21 @@ static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} le
     memcpy(host_buf, host_ptr, (size_t)host_len);
     host_buf[host_len] = '\0';
 
-    intptr_t sent = ar_pal_udp_send(fd, buf, (size_t)len, host_buf, port);
+    uint8_t empty_buf = 0;
+    const uint8_t *payload = buf ? buf : &empty_buf;
+    intptr_t sent = ar_pal_udp_send(fd, payload, (size_t)len, host_buf, port);
     ar_pal_udp_close(fd);
     return sent < 0 ? -1 : (int32_t)sent;
 }}
 
 static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, int32_t *port_out) {{
-    if (id < 0 || !buf || len == 0) return -1;
+    if (id < 0 || (!buf && len != 0)) return -1;
     intptr_t fd = ar_udp_duplicate_fd(id);
     if (fd == (intptr_t)-1) return -1;
     int port = 0;
-    intptr_t recvd = ar_pal_udp_recv(fd, buf, (size_t)len, &port);
+    uint8_t empty_buf = 0;
+    uint8_t *payload = buf ? buf : &empty_buf;
+    intptr_t recvd = ar_pal_udp_recv(fd, payload, (size_t)len, &port);
     ar_pal_udp_close(fd);
     if (recvd < 0) return -1;
     if (port_out) *port_out = port;

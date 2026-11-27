@@ -95,15 +95,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 AmirProjection::Index(op) => {
                     let idx_val = self.translate_operand(op, Some(self.ptr_type));
                     if let ArType::Array(len, _) = &current_ty {
-                        if *len > 1 {
-                            let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
-                            let is_oob = self.builder.ins().icmp(
-                                cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                                idx_val,
-                                len_val,
-                            );
-                            self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
-                        }
+                        let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
+                        let is_oob = self.builder.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+                            idx_val,
+                            len_val,
+                        );
+                        self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
                     } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                         let len_val = self.builder.ins().load(
                             self.ptr_type,
@@ -225,15 +223,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let is_vec = is_vec_type(&current_ty, self.symbol_table);
                 let idx_val = self.translate_operand(op, Some(self.ptr_type));
                 if let ArType::Array(len, _) = &current_ty {
-                    if *len > 1 {
-                        let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
-                        let is_oob = self.builder.ins().icmp(
-                            cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                            idx_val,
-                            len_val,
-                        );
-                        self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
-                    }
+                    let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
+                    let is_oob = self.builder.ins().icmp(
+                        cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+                        idx_val,
+                        len_val,
+                    );
+                    self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
                 } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                     let len_val = self.builder.ins().load(
                         self.ptr_type,

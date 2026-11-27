@@ -324,6 +324,26 @@ fn programs_run_to_their_result_at_every_level() {
 /// negative signed indices, indices through `mut ref` and on call results.
 const TRAPS: &[(&str, &str)] = &[
     (
+        "array_len_one_write_oob",
+        r#"struct Pair { data: [1]int, guard: int }
+func main(): int {
+    let mut p = Pair { data: [0], guard: 7 }
+    let i = 1
+    p.data[i] = 99
+    return p.guard
+}
+"#,
+    ),
+    (
+        "array_len_zero_read_oob",
+        r#"func main(): int {
+    let data: [0]int = []
+    let i = 0
+    return data[i]
+}
+"#,
+    ),
+    (
         "v_readoob",
         r#"import std.alloc.vec as vec
 func mk(): vec.Vec<int> {

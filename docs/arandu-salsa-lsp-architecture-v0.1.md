@@ -460,10 +460,15 @@ O teste mantém exatamente uma HIR e unidade raw/final reexecutadas na edição.
 5. CST-first Rowan: `syntax_tree` tenta reparse do ITEM tocado e reutiliza os green nodes irmãos; fallback seguro faz parse completo.
 6. `initialize` conclui antes de I/O do workspace; a descoberta determinística e
    limitada ocorre em worker, e cada fonte retorna à main para registro na DB.
-7. O scheduler mantém no máximo 64 jobs pendentes, serve a fila interativa
-   antes da fila ampla, coalesce diagnósticos por `DocumentId` e cancela
-   requests obsoletos antes de uma revisão nova. `$/cancelRequest` responde
-   com `RequestCancelled`, inclusive quando o job ainda não começou.
+7. O scheduler mantém no máximo 64 jobs enfileirados, serve a fila interativa
+   antes da fila ampla e coalesce diagnósticos por `DocumentId`. Se uma
+   substituição keyed chega com a fila cheia enquanto seu job está rodando,
+   mantém somente a substituição mais recente num slot associado ao worker;
+   ela roda ao término do job cancelado. Assim o backlog adicional fica
+   limitado ao número de workers. `$/cancelRequest` responde com
+   `RequestCancelled`, inclusive quando o job ainda não começou. Se a fila
+   rejeitar diagnósticos de documentos abertos distintos, a conclusão de um
+   diagnóstico reabastece as vagas sem substituir jobs já admitidos.
    Cada commit de fonte avança a revisão compartilhada da análise; por isso,
    diagnósticos pendentes de todos os documentos abertos são coalescidos e
    reagendados após commits, saves, opens e closes. Resultados da revisão
@@ -481,7 +486,9 @@ O teste mantém exatamente uma HIR e unidade raw/final reexecutadas na edição.
    durante debounce e a publicação apenas depois do commit.
 10. `IdeDiagnostic` preserva labels, notes, hints e replacements nas queries;
     o wire publica versão, `codeDescription`, `relatedInformation`, tags e
-    `Diagnostic.data`. Quick fixes consomem apenas replacements estruturados.
+    `Diagnostic.data`. Quick fixes consomem apenas replacements estruturados e
+    carregam a revisão da análise; ações recebidas com diagnóstico de revisão
+    antiga não reaplicam ranges sobre o texto atual.
 11. Hover, completion e signature help compartilham apresentação de assinatura,
     tipos e doc comments; nenhum DTO expõe `Debug` de IR ou `SymbolId`.
 12. Fontes conhecidas do workspace e overlays abertos têm autoridades distintas:

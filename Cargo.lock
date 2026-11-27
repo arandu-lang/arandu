@@ -215,6 +215,7 @@ dependencies = [
 name = "arandu_fmt"
 version = "0.2.0"
 dependencies = [
+ "arandu_lexer",
  "arandu_parser",
 ]
 

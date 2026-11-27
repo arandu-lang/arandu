@@ -31,6 +31,7 @@ pub fn format_source(source: &str) -> String {
         return source.to_owned();
     }
     let tree = parse_syntax(source);
+    let has_sensitive_string = has_sensitive_string_token(&tree, 0, u32::MAX);
     if tree.lex_diagnostics().is_empty() {
         if let Ok(_prog) = lower_syntax_to_program(&tree, 0) {
             let pretty = format_from_tree(&tree);
@@ -38,6 +39,9 @@ pub fn format_source(source: &str) -> String {
                 return pretty;
             }
         }
+    }
+    if has_sensitive_string {
+        return source.to_owned();
     }
     normalize_whitespace(source)
 }
@@ -92,6 +96,9 @@ pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit
         let s = e - source[s..e].trim_start_matches(is_arandu_ws).len();
         let item_start = s as u32;
         let item_src = &source[s..e];
+        if has_sensitive_string_token(&tree, item_start, item_end) {
+            continue;
+        }
         let mut formatted = format_item_snippet(item_src);
         if !item_src.ends_with('\n') {
             formatted = formatted
@@ -189,6 +196,22 @@ fn parses_clean(source: &str) -> bool {
     lower_syntax_to_program(&tree, 0).is_ok() && tree.lex_diagnostics().is_empty()
 }
 
+/// The line formatter cannot safely rewrite literal contents: raw strings
+/// preserve every byte, and multiline strings can span lines. Keep any item
+/// containing one of these tokens verbatim until formatting is token-aware.
+fn has_sensitive_string_token(tree: &SyntaxTree, start: u32, end: u32) -> bool {
+    tree.tokens().iter().any(|token| {
+        token.start >= start
+            && token.start < end
+            && matches!(
+                token.kind,
+                arandu_lexer::TokenKind::RawString
+                    | arandu_lexer::TokenKind::MultilineStringStart
+                    | arandu_lexer::TokenKind::MultilineStringEnd
+            )
+    })
+}
+
 /// Pretty-print from green top-level items.
 fn format_from_tree(tree: &SyntaxTree) -> String {
     let source = tree.text();
@@ -213,7 +236,15 @@ fn format_from_tree(tree: &SyntaxTree) -> String {
             out.push_str(&normalize_whitespace(trivia));
         }
         let item_src = &source[s..e];
-        out.push_str(&reindent_item(item_src));
+        if has_sensitive_string_token(
+            tree,
+            u32::try_from(s).unwrap_or(u32::MAX),
+            u32::try_from(e).unwrap_or(u32::MAX),
+        ) {
+            out.push_str(item_src);
+        } else {
+            out.push_str(&reindent_item(item_src));
+        }
         // An explicit `;` terminating the item on the same line is not an
         // item node; keep it on the item's line instead of emitting it as a
         // standalone trivia line (which inserts an extra empty statement).
@@ -980,6 +1011,18 @@ mod tests {
     fn colon_spacing_keeps_tight_colon_after_closers() {
         let out = format_source("func f() : int{\nreturn 1\n}\n");
         assert!(out.contains("func f(): int{"), "{out}");
+    }
+
+    #[test]
+    fn formatting_preserves_raw_and_multiline_string_items_verbatim() {
+        for source in [
+            "func raw(): str {\nlet value = r\"a:  b\"\nreturn value\n}\n",
+            "func multi(): str {\nlet value = \"\"\"\n  first\n    second:  value\n\"\"\"\nreturn value\n}\n",
+            "func broken(){ let value = r\"a:  b\" let tail = }\n",
+        ] {
+            assert_eq!(format_source(source), source);
+            assert!(format_edits_in_range(source, 0, source.len() as u32).is_empty());
+        }
     }
 
     fn apply_edits(source: &str, edits: &[TextEdit]) -> String {

@@ -427,6 +427,30 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 }
                 Ok(())
             }
+            IntrinsicKind::Sqrt => {
+                let Some(argument) = args.first() else {
+                    return Err(ice("sqrt requires one argument"));
+                };
+                let ty = self.module.operand_type(argument, self.func);
+                let (ty_text, intrinsic_name) = match ty {
+                    ArType::Primitive(Primitive::F64 | Primitive::Float) => {
+                        ("double", "llvm.sqrt.f64")
+                    }
+                    _ => ("float", "llvm.sqrt.f32"),
+                };
+                self.module.require_declaration(
+                    intrinsic_name,
+                    format!("declare {ty_text} @{intrinsic_name}({ty_text})"),
+                );
+                let x = self.operand(argument, &ty)?;
+                let call = format!("call {ty_text} @{intrinsic_name}({ty_text} {})", x.value);
+                if let Some(result) = result {
+                    self.writer.line(format!("{result} = {call}"));
+                } else {
+                    self.writer.line(call);
+                }
+                Ok(())
+            }
             IntrinsicKind::SpinLoopHint => {
                 self.writer
                     .line("tail call void asm sideeffect \"/* pause */\", \"~{memory}\"()");

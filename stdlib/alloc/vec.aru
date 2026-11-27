@@ -103,12 +103,19 @@ func Vec.newImpl<T>(): Vec<T> {
 
 /// Creates a new `Vec<Element>` filled with `count` copies of `value`.
 public func Vec.filled<Element: marker.Copy>(value: Element, count: usize): Vec<Element> {
-    let mut v = Vec.withCapacity<Element>(count)
-    let mut i: usize = 0
-    while i < count {
-        v.push(value)
-        i += 1
+    if count == 0 {
+        return Vec.new<Element>()
     }
+    let mut v = Vec.withCapacity<Element>(count)
+    let data = v.data
+    let mut i: usize = 0
+    unsafe {
+        while i < count {
+            mem.ptrWrite<Element>(mem.ptrOffset<Element>(data, i as isize), value)
+            i += 1
+        }
+    }
+    v.len = count
     return v
 }
 
@@ -119,11 +126,16 @@ public func Vec.extend<Element: marker.Copy>(self: mut ref Vec<Element>, items: 
         return
     }
     self.reserve(n)
+    let base = self.len
+    let data = self.data
     let mut i: usize = 0
-    while i < n {
-        self.push(items[i])
-        i += 1
+    unsafe {
+        while i < n {
+            mem.ptrWrite<Element>(mem.ptrOffset<Element>(data, (base + i) as isize), items[i])
+            i += 1
+        }
     }
+    self.len = base + n
 }
 
 /// Creates a new `Vec<Element>` populated with copies of the elements in `items`.

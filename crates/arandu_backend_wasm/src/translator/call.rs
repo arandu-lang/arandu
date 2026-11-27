@@ -62,7 +62,9 @@ impl<'a> FuncTranslator<'a> {
                     IntrinsicKind::from_declared_name(&sym_def.name, sym_def.lang_item)
                     && self.emit_intrinsic_call(
                         kind,
-                        sym_def.name == "fma" || sym_def.name.ends_with("64"),
+                        sym_def.name == "fma"
+                            || sym_def.name == "sqrt"
+                            || sym_def.name.ends_with("64"),
                         lhs,
                         args,
                     )
@@ -277,6 +279,28 @@ impl<'a> FuncTranslator<'a> {
                         Instruction::F64Add
                     } else {
                         Instruction::F32Add
+                    });
+                    if let Some(destination) = lhs {
+                        let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                        self.code.push(Instruction::LocalSet(local));
+                    } else {
+                        self.code.push(Instruction::Drop);
+                    }
+                }
+                true
+            }
+            IntrinsicKind::Sqrt => {
+                if let Some(argument) = args.first() {
+                    let float_ty = self.interner.intern(ArType::Primitive(if wide {
+                        Primitive::F64
+                    } else {
+                        Primitive::F32
+                    }));
+                    self.emit_operand(argument, float_ty);
+                    self.code.push(if wide {
+                        Instruction::F64Sqrt
+                    } else {
+                        Instruction::F32Sqrt
                     });
                     if let Some(destination) = lhs {
                         let local = self.temp_local.get(&destination).copied().unwrap_or(0);

@@ -449,6 +449,12 @@ pub fn function_scratch_safe(
                                 definition.lang_item,
                             )
                             .is_some()
+                                || (definition.lang_item
+                                    == Some(arandu_middle::symbol_table::LangItem::SimdIntrinsic)
+                                    && arandu_middle::intrinsics::SimdIntrinsic::from_name(
+                                        &definition.name,
+                                    )
+                                    .is_some())
                                 || !extern_exposes_backing(
                                     function,
                                     *lhs,

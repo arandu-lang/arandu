@@ -520,6 +520,23 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 true
             }
+            Some(arandu_middle::IntrinsicKind::Sqrt) => {
+                if let [arg] = args {
+                    let ty = if bare == "sqrt" || bare.ends_with("64") {
+                        cranelift_codegen::ir::types::F64
+                    } else {
+                        cranelift_codegen::ir::types::F32
+                    };
+                    let val = self.translate_operand(arg, Some(ty));
+                    let result = self.builder.ins().sqrt(val);
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
             Some(arandu_middle::IntrinsicKind::FloatToBits(width)) => {
                 if let [arg] = args {
                     let (in_ty, out_ty) = match width {

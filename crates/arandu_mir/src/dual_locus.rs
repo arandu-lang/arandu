@@ -315,13 +315,15 @@ fn apply_dual_locus_promotion_impl(
         }
     }
 
-    // 2. Update the local's type to `ArType::Ptr(payload_ty)` and `is_memory = false`.
+    // 2. Update the local's type to `ArType::Ptr(payload_ty)` while keeping
+    //    `is_memory = true` because the promoted pointer slot is initialized
+    //    and accessed via `Store`/`Load`/`Deref` places.
     for &local in &ordered_locals {
         let (_, _, payload_ty) = promoted_layouts[&local];
         let ptr_ty = interner.intern(ArType::Ptr(payload_ty));
         if let Some(local_info) = func.locals.get_mut(local.as_usize()) {
             local_info.ty = ptr_ty;
-            local_info.is_memory = false;
+            local_info.is_memory = true;
         }
     }
 

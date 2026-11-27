@@ -204,6 +204,8 @@ pub enum IntrinsicKind {
     Unlikely,
     /// Fused multiply-add `(a * b) + c` with a single rounding step (`fma32` / `fma64`).
     Fma,
+    /// IEEE-754 hardware square root (`sqrt` / `sqrt32` / `sqrt64`).
+    Sqrt,
     /// Overflow-checked integer arithmetic (`addWithOverflow*`, `subWithOverflow*`, `mulWithOverflow*`).
     OverflowArithmetic(OverflowOp, ArithmeticInt),
     /// Saturating integer arithmetic (`saturatingAdd*`, `saturatingSub*`).
@@ -284,6 +286,7 @@ impl IntrinsicKind {
                 Self::Abort
                     | Self::AbortWithMessage
                     | Self::Fma
+                    | Self::Sqrt
                     | Self::SpinLoopHint
                     | Self::Likely
                     | Self::Unlikely
@@ -316,6 +319,7 @@ impl IntrinsicKind {
                 | Self::FloatToBits(..)
                 | Self::FloatFromBits(..)
                 | Self::Fma
+                | Self::Sqrt
                 | Self::Likely
                 | Self::Unlikely
                 | Self::OverflowArithmetic(..)
@@ -368,6 +372,7 @@ impl IntrinsicKind {
                 | Self::Likely
                 | Self::Unlikely
                 | Self::Fma
+                | Self::Sqrt
                 | Self::OverflowArithmetic(..)
                 | Self::SaturatingArithmetic(..)
         )
@@ -506,6 +511,7 @@ impl IntrinsicKind {
             "likely" => Some(Self::Likely),
             "unlikely" => Some(Self::Unlikely),
             "fma" | "fma32" | "fma64" => Some(Self::Fma),
+            "sqrt" | "sqrt32" | "sqrt64" => Some(Self::Sqrt),
             "f64ToBits" | "f64_to_bits" | "floatToBits64" | "float_to_bits64" => {
                 Some(Self::FloatToBits(FloatWidth::F64))
             }

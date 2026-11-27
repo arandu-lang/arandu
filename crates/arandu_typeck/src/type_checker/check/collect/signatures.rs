@@ -457,6 +457,34 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                                 ));
                             }
                         }
+                        let is_sqrt = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                == Some(arandu_middle::IntrinsicKind::Sqrt);
+                        if is_sqrt {
+                            use arandu_middle::types::Primitive;
+                            let (float_ty, float_name) = if member_name == "sqrt" {
+                                (ArType::Primitive(Primitive::Float), "float")
+                            } else if member_name.ends_with("64") {
+                                (ArType::Primitive(Primitive::F64), "f64")
+                            } else {
+                                (ArType::Primitive(Primitive::F32), "f32")
+                            };
+                            let actual_params: Vec<ArType> = param_types
+                                .iter()
+                                .map(|&ty| checker.type_info.type_interner.resolve(ty))
+                                .collect();
+                            if !member.generic_params.is_empty()
+                                || actual_params != [float_ty.clone()]
+                                || ret_ty != float_ty
+                            {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for sqrt intrinsic '{member_name}': expected one {float_name} parameter and {float_name} result without generics"),
+                                    member.span,
+                                ));
+                            }
+                        }
                         let is_spin_hint = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
                             == arandu_parser::AbiKind::AranduIntrinsic
                             && arandu_middle::IntrinsicKind::from_name(member_name)

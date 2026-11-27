@@ -107,7 +107,11 @@ public func Arena.alloc(self: mut ref Arena, size: usize, align: usize): Option<
     }
     let mut padding: usize = 0 as usize
     if align > (1 as usize) {
-        let rem = self.offset % align
+        let rem = if (align & (align - (1 as usize))) == (0 as usize) {
+            self.offset & (align - (1 as usize))
+        } else {
+            self.offset % align
+        }
         if rem != (0 as usize) {
             padding = align - rem
         }
@@ -267,7 +271,11 @@ public func ScratchArena.alloc(self: mut ref ScratchArena, size: usize, align: u
     }
     let mut padding: usize = 0 as usize
     if align > (1 as usize) {
-        let rem = self.offset % align
+        let rem = if (align & (align - (1 as usize))) == (0 as usize) {
+            self.offset & (align - (1 as usize))
+        } else {
+            self.offset % align
+        }
         if rem != (0 as usize) {
             padding = align - rem
         }

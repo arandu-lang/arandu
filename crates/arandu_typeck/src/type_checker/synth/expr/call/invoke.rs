@@ -120,6 +120,7 @@ pub(super) fn synth_invoked_call(
                 matches!(
                     kind,
                     arandu_middle::IntrinsicKind::Fma
+                        | arandu_middle::IntrinsicKind::Sqrt
                         | arandu_middle::IntrinsicKind::SpinLoopHint
                         | arandu_middle::IntrinsicKind::Likely
                         | arandu_middle::IntrinsicKind::Unlikely

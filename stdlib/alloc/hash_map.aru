@@ -228,6 +228,8 @@ func findIndex<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K, h: u64): Op
     if cap == (0 as usize) {
         return Option.None
     }
+    let ctrlSlice = self.ctrl.asSlice()
+    let bucketSlice = self.buckets.asSlice()
     let groupMask: u32 = if cap == (8 as usize) { 0xFF as u32 } else { 0xFFFF as u32 }
     let tag = h2(h)
     let h2Vec = simd.U8x16.splat(tag)
@@ -236,19 +238,18 @@ func findIndex<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K, h: u64): Op
     let mut stride: usize = 0 as usize
     let mut steps: usize = 0 as usize
     while steps < cap {
-        let group = loadCtrlGroup(ref self.ctrl, pos)
+        let group = unsafe {
+            simd.simdU8x16LoadUnaligned(intrinsics.sliceSubslice<u8>(ctrlSlice, pos, GROUP_WIDTH))
+        }
         let mut matchMask = group.eq(h2Vec).bitmask() & groupMask
         while matchMask != (0 as u32) {
             let bit = intrinsics.bitTrailingZeros32(matchMask) as usize
             let idx = (pos + bit) & self.mask
-            match self.buckets.get(idx) {
-                Some(slot) => match slot.asRef() {
-                    Some(entry) => {
-                        if entry.hash == h && entry.key.eq(key) {
-                            return Option.Some(idx)
-                        }
+            match bucketSlice[idx].asRef() {
+                Some(entry) => {
+                    if entry.hash == h && entry.key.eq(key) {
+                        return Option.Some(idx)
                     }
-                    None => {}
                 }
                 None => {}
             }
@@ -357,7 +358,8 @@ func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h
     let mut pos = (h as usize) & self.mask
     let mut stride: usize = 0 as usize
     let mut steps: usize = 0 as usize
-    let mut firstAvail: Option<usize> = Option.None
+    let mut hasFirstAvail = false
+    let mut firstAvailIdx: usize = 0 as usize
 
     while steps < currentCap {
         let group = loadCtrlGroup(ref self.ctrl, pos)
@@ -366,12 +368,9 @@ func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h
             let bit = intrinsics.bitTrailingZeros32(matchMask) as usize
             let idx = (pos + bit) & self.mask
             let mut same_key = false
-            match self.buckets.get(idx) {
-                Some(slot) => match slot.asRef() {
-                    Some(entry) => {
-                        same_key = entry.hash == h && entry.key.eq(ref key)
-                    }
-                    None => {}
+            match self.buckets.asSlice()[idx].asRef() {
+                Some(entry) => {
+                    same_key = entry.hash == h && entry.key.eq(ref key)
                 }
                 None => {}
             }
@@ -392,16 +391,14 @@ func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h
             }
             matchMask = matchMask & (matchMask - (1 as u32))
         }
-        match firstAvail {
-            None => {
-                // Both EMPTY (0x80) and DELETED (0xFE) have high bit 7 set.
-                let availMask = group.highBitmask() & groupMask
-                if availMask != (0 as u32) {
-                    let bit = intrinsics.bitTrailingZeros32(availMask) as usize
-                    firstAvail = Option.Some((pos + bit) & self.mask)
-                }
+        if !hasFirstAvail {
+            // Both EMPTY (0x80) and DELETED (0xFE) have high bit 7 set.
+            let availMask = group.highBitmask() & groupMask
+            if availMask != (0 as u32) {
+                let bit = intrinsics.bitTrailingZeros32(availMask) as usize
+                firstAvailIdx = (pos + bit) & self.mask
+                hasFirstAvail = true
             }
-            Some(_) => {}
         }
         if (group.eq(emptyVec).bitmask() & groupMask) != (0 as u32) {
             break
@@ -411,30 +408,22 @@ func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h
         steps = steps + (1 as usize)
     }
 
-    match firstAvail {
-        Some(target) => {
-            match self.ctrl.getCopy(target) {
-                Some(prevCtrl) => {
-                    if prevCtrl == CTRL_DELETED {
-                        self.tombstones = self.tombstones - (1 as usize)
-                    }
-                }
-                None => { capacityFailure() }
-            }
-            setCtrl(mut ref self.ctrl, currentCap, target, tag)
-            self.buckets.set(target, Option.Some(Entry<K, V> {
-                hash: h,
-                key: key,
-                value: val,
-            }));
-            self.len = self.len + (1 as usize)
-            return Option.None
+    if hasFirstAvail {
+        let target = firstAvailIdx
+        if self.ctrl.asSlice()[target] == CTRL_DELETED {
+            self.tombstones = self.tombstones - (1 as usize)
         }
-        None => {
-            capacityFailure()
-            return Option.None
-        }
+        setCtrl(mut ref self.ctrl, currentCap, target, tag)
+        self.buckets.set(target, Option.Some(Entry<K, V> {
+            hash: h,
+            key: key,
+            value: val,
+        }));
+        self.len = self.len + (1 as usize)
+        return Option.None
     }
+    capacityFailure()
+    return Option.None
 }
 
 func insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
@@ -472,11 +461,9 @@ public func HashMap.contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref 
 func get<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref HashMap<K, V>, key: ref K): Option<V> {
     match findIndex(self, key, hashKey<K>(key)) {
         Some(idx) => {
-            match self.buckets.get(idx) {
-                Some(slot) => match slot.asRef() {
-                    Some(entry) => { return Option.Some(entry.value) }
-                    None => { return Option.None }
-                }
+            let bucketSlice = self.buckets.asSlice()
+            match bucketSlice[idx].asRef() {
+                Some(entry) => { return Option.Some(entry.value) }
                 None => { return Option.None }
             }
         }

@@ -132,7 +132,20 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             }
             AmirRvalue::BlackBox { value, .. } => {
                 let value = self.operand(value, lhs_ty)?;
-                self.assign_coerced(result, value, lhs_ty)
+                if matches!(lhs_ty, ArType::Void | ArType::Never) {
+                    return Ok(());
+                }
+                let llvm_ty = self.module.llvm_ty(lhs_ty)?;
+                let align = self.module.align_of(lhs_ty);
+                let slot = self.scratch_alloca(lhs_ty)?;
+                self.store_value(&slot, &value, lhs_ty)?;
+                self.writer.line(format!(
+                    "call void asm sideeffect \"\", \"r,~{{memory}}\"(ptr {slot})"
+                ));
+                self.writer.line(format!(
+                    "{result} = load {llvm_ty}, ptr {slot}, align {align}"
+                ));
+                Ok(())
             }
         }
     }

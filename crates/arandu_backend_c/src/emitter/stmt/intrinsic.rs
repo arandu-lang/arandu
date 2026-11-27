@@ -138,6 +138,7 @@ impl<'a> CEmitter<'a> {
                 | arandu_middle::IntrinsicKind::FloatToBits(..)
                 | arandu_middle::IntrinsicKind::FloatFromBits(..)
                 | arandu_middle::IntrinsicKind::Fma
+                | arandu_middle::IntrinsicKind::Sqrt
                 | arandu_middle::IntrinsicKind::SpinLoopHint
                 | arandu_middle::IntrinsicKind::Likely
                 | arandu_middle::IntrinsicKind::Unlikely
@@ -294,6 +295,27 @@ impl<'a> CEmitter<'a> {
                         "__builtin_fmaf"
                     };
                     let _ = writeln!(self.output, "    t{slot} = {fn_name}({a}, {b}, {c});");
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::Sqrt) => {
+                if let Some(argument) = args.first()
+                    && let Some(destination) = lhs
+                {
+                    let is_64 = if let AmirOperand::FunctionRef(symbol) = callee {
+                        let name = &self.symbols.get(*symbol).name;
+                        name == "sqrt" || name.ends_with("64")
+                    } else {
+                        false
+                    };
+                    let x = self.format_operand(argument, func);
+                    let slot = self.temp_slots[destination.as_usize()];
+                    let fn_name = if is_64 {
+                        "__builtin_sqrt"
+                    } else {
+                        "__builtin_sqrtf"
+                    };
+                    let _ = writeln!(self.output, "    t{slot} = {fn_name}({x});");
                 }
                 true
             }

@@ -178,6 +178,28 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                                     }
                                     return Ok(Action::Continue);
                                 }
+                                if intrinsic == IntrinsicKind::Sqrt {
+                                    if args.len() != 1 {
+                                        return Err(EvalErrorKind::InvalidIr);
+                                    }
+                                    meter.step()?;
+                                    let a_val = frame.operand(args[0], None, &mut meter)?;
+                                    let ConstValue::Float(a) = a_val else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let res_bits = if a.ty().bit_width() == 64 {
+                                        f64::from_bits(a.bits()).sqrt().to_bits()
+                                    } else {
+                                        u64::from(f32::from_bits(a.bits() as u32).sqrt().to_bits())
+                                    };
+                                    let result_float =
+                                        arandu_middle::ctfe::ConstFloat::new(a.ty(), res_bits)
+                                            .map_err(|_| EvalErrorKind::InvalidIr)?;
+                                    if let Some(lhs) = lhs {
+                                        frame.assign(*lhs, ConstValue::Float(result_float))?;
+                                    }
+                                    return Ok(Action::Continue);
+                                }
                                 if let IntrinsicKind::FloatToBits(width) = intrinsic {
                                     if args.len() != 1 {
                                         return Err(EvalErrorKind::InvalidIr);

@@ -160,9 +160,11 @@ pub unsafe extern "C" fn ar_net_udp_recv_from(
         }
         let socket = get_udp_socket(id)?;
         let socket = socket.lock().unwrap_or_else(|e| e.into_inner());
-        let mut empty = [];
+        let mut scratch = [0u8; 1];
         let received = if len == 0 {
-            socket.recv_from(&mut empty)
+            // macOS/XNU rejects zero-length or dangling-pointer buffers in recvfrom(2).
+            // Receive into a 1-byte stack scratch buffer and report 0 bytes written to `buf`.
+            socket.recv_from(&mut scratch).map(|(_, addr)| (0, addr))
         } else {
             let dest = unsafe { std::slice::from_raw_parts_mut(buf, len) };
             socket.recv_from(dest)

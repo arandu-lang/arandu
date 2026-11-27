@@ -57,6 +57,7 @@ impl<const N: usize> StackWideBuffer<N> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn as_slice(&self) -> &[u16] {
         if self.heap.is_empty() {
             &self.inline[..self.len]
@@ -91,11 +92,13 @@ impl<const N: usize> StackWideBuffer<N> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn is_heap_allocated(&self) -> bool {
         !self.heap.is_empty()
     }

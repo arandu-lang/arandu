@@ -53,7 +53,7 @@ pub fn report(events: &[TestEventV1], options: &RunnerOptions) -> Result<(), Str
             Ok(())
         }
         TestOutputFormat::Human => {
-            human::report_tests_human(events, summary);
+            human::report_summary_human(events, summary);
             Ok(())
         }
     }

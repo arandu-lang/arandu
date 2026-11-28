@@ -77,6 +77,12 @@ impl ConstAggregate {
                     return Err(ConstValueError::InvalidAggregateShape);
                 }
             }
+            // A frozen slice owns its elements as a read-only array.
+            TypeShape::Slice(element) => {
+                if !values.iter().all(|value| shape_accepts(element, value)) {
+                    return Err(ConstValueError::InvalidAggregateShape);
+                }
+            }
             TypeShape::Tuple(elements) if elements.len() == values.len() => {
                 if !elements
                     .iter()
@@ -228,16 +234,15 @@ pub fn validate_ctfe_type_shape(shape: &TypeShape) -> Result<(), ConstValueError
             TypeShape::Const(_) | TypeShape::FrozenConst(_) => argument,
             TypeShape::Option(inner) => visit(inner, false),
             TypeShape::Result(ok, error) => visit(ok, false) && visit(error, false),
-            TypeShape::Slice(inner) => matches!(
-                inner.as_ref(),
-                TypeShape::Primitive(super::Primitive::Byte | super::Primitive::U8)
-            ),
+            TypeShape::Slice(inner) => visit(inner, false),
             TypeShape::Vector(_) => true,
+            // A value is only `nil` or the address of frozen bytes
+            // (`c"..."`), admitted only in static data images; a pointer
+            // type argument stays outside frozen identity.
+            TypeShape::Ptr(_) => !argument,
             TypeShape::Func(..)
-            | TypeShape::Nullable(_)
             | TypeShape::ConstArray(..)
             | TypeShape::ConstParam(_)
-            | TypeShape::Ptr(_)
             | TypeShape::Ref(_)
             | TypeShape::RefMut(_)
             | TypeShape::MutSlice(_)
@@ -246,6 +251,7 @@ pub fn validate_ctfe_type_shape(shape: &TypeShape) -> Result<(), ConstValueError
             | TypeShape::Poll(_)
             | TypeShape::Range(_)
             | TypeShape::Err
+            | TypeShape::Never
             | TypeShape::IntLiteral
             | TypeShape::FloatLiteral
             | TypeShape::Error => false,
@@ -270,13 +276,21 @@ fn shape_accepts(shape: &TypeShape, value: &ConstValue) -> bool {
         }
         (TypeShape::Primitive(super::Primitive::Str), ConstValue::String(_)) => true,
         (TypeShape::Slice(_), ConstValue::Bytes(_)) => true,
+        (TypeShape::Ptr(_), ConstValue::Void) => true,
+        (TypeShape::Ptr(inner), ConstValue::Bytes(_)) => matches!(
+            **inner,
+            TypeShape::Primitive(
+                super::Primitive::U8 | super::Primitive::I8 | super::Primitive::Byte
+            )
+        ),
         (
             TypeShape::Array(..)
             | TypeShape::Vector(_)
             | TypeShape::Tuple(_)
             | TypeShape::Named(..)
             | TypeShape::Option(_)
-            | TypeShape::Result(..),
+            | TypeShape::Result(..)
+            | TypeShape::Slice(_),
             ConstValue::Aggregate(value),
         ) => shape == value.shape(),
         _ => false,
@@ -346,10 +360,6 @@ fn encode_shape(shape: &TypeShape, bytes: &mut Vec<u8>) {
             }
             encode_shape(result, bytes);
         }
-        TypeShape::Nullable(inner) => {
-            bytes.push(7);
-            encode_shape(inner, bytes);
-        }
         TypeShape::Slice(inner) => {
             bytes.push(8);
             encode_shape(inner, bytes);
@@ -407,6 +417,7 @@ fn encode_shape(shape: &TypeShape, bytes: &mut Vec<u8>) {
         TypeShape::IntLiteral => bytes.push(21),
         TypeShape::FloatLiteral => bytes.push(22),
         TypeShape::Error => bytes.push(23),
+        TypeShape::Never => bytes.push(27),
     }
 }
 

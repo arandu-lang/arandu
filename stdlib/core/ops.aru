@@ -1,0 +1,21 @@
+//! Operator overloading interfaces.
+//!
+//! ## Overview
+//!
+//! `Index` and `IndexMut` define the shared (`c[i]`) and mutable (`c[i] = v`,
+//! `mut ref c[i]`) indexing protocols for containers and user-defined types.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
+module std.core.ops
+
+/// Shared indexing operator (`container[idx]`).
+public interface Index<Idx, Out> {
+    func index(self: ref Self, idx: Idx): ref Out
+}
+
+/// Mutable indexing operator (`container[idx] = val`, `mut ref container[idx]`).
+public interface IndexMut<Idx, Out> {
+    func indexMut(self: mut ref Self, idx: Idx): mut ref Out
+}

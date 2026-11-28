@@ -36,6 +36,140 @@ fn check(source: &str) -> Output {
     invoke("check", source)
 }
 
+#[cfg(unix)]
+#[test]
+fn directory_name_bytes_preserve_non_utf8_host_names() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let directory =
+        std::env::temp_dir().join(format!("arandu-non-utf8-dir-{}-{id}", std::process::id()));
+    fs::create_dir(&directory).expect("create non-UTF-8 name test directory");
+    if let Err(err) = fs::write(
+        directory.join(std::ffi::OsString::from_vec(vec![0xff])),
+        b"",
+    ) {
+        let _ = fs::remove_dir_all(&directory);
+        // APFS/HFS+ on macOS rejects invalid UTF-8 filenames at the kernel level (EILSEQ = 92).
+        if cfg!(target_os = "macos") && err.raw_os_error() == Some(92) {
+            return;
+        }
+        panic!("create non-UTF-8 filename: {err:?}");
+    }
+    let directory = directory.to_str().expect("UTF-8 temp directory");
+    let source = format!(
+        r#"module tests.borrowed_views.non_utf8_directory_name
+import std.core.mem as mem
+import std.core.slice as slice
+import std.fs as fs
+
+@Effects(FileRead, Foreign)
+func main(): int {{
+    match fs.readDir("{directory}") {{
+        Ok(listing) => {{
+            if listing.len() != 1 as usize {{ return 1 }}
+            let name = listing.name(0 as usize)
+            if slice.len<u8>(name) != 1 as usize {{ return 2 }}
+            let first = unsafe {{ mem.ptrRead<u8>(slice.asPtr<u8>(name)) }}
+            if first as int != 255 {{ return 3 }}
+            let text = listing.nameStr(0 as usize)
+            if *text != "�" {{ return 4 }}
+            return 0
+        }}
+        Err(_) => {{ return 5 }}
+    }}
+}}
+"#
+    );
+    let output = invoke("run", &source);
+    let _ = fs::remove_dir_all(directory);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "directory listing did not preserve raw name bytes: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    if !Command::new("gcc")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        return;
+    }
+    fs::create_dir(directory).expect("recreate non-UTF-8 name test directory");
+    fs::write(
+        std::path::Path::new(directory).join(std::ffi::OsString::from_vec(vec![0xff])),
+        b"",
+    )
+    .expect("recreate non-UTF-8 filename");
+    let emitted = invoke_with_args("emit-c", &source, &["--layout=host"]);
+    assert!(
+        emitted.status.success(),
+        "C emission failed: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let stem = std::env::temp_dir().join(format!("arandu-non-utf8-c-{}-{id}", std::process::id()));
+    let c_file = stem.with_extension("c");
+    fs::write(&c_file, &emitted.stdout).expect("write generated C");
+    let compiled = Command::new("gcc")
+        .arg(&c_file)
+        .arg("-o")
+        .arg(&stem)
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
+        .output()
+        .expect("compile generated C");
+    assert!(
+        compiled.status.success(),
+        "C compilation failed: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let executed = Command::new(&stem)
+        .current_dir(workspace_root())
+        .output()
+        .expect("run generated C");
+    let _ = fs::remove_file(c_file);
+    let _ = fs::remove_file(stem);
+    assert_eq!(
+        executed.status.code(),
+        Some(0),
+        "C directory listing did not preserve raw name bytes: {}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+}
+
+#[test]
+fn top_level_write_rejects_absolute_paths_outside_its_directory_capability() {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "arandu-absolute-write-rejected-{}-{id}",
+        std::process::id()
+    ));
+    let path_text = path.to_str().expect("UTF-8 temp path").replace('\\', "/");
+    let source = format!(
+        r#"module tests.borrowed_views.absolute_write_rejected
+import std.fs as fs
+
+@Effects(FileWrite, Foreign)
+func main(): int {{
+    match fs.write("{path_text}", "must not be written") {{
+        Ok(_) => {{ return 1 }}
+        Err(_) => {{ return 0 }}
+    }}
+}}
+"#
+    );
+    let output = invoke("run", &source);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "absolute path unexpectedly escaped the current-directory capability: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!path.exists(), "absolute output path was created");
+}
+
 const DIRECTORY_NAME_VIEWS_SOURCE: &str = r#"module tests.borrowed_views.directory_multiple_names
 import std.fs as fs
 
@@ -43,7 +177,7 @@ import std.fs as fs
 func main(): int {
     match fs.readDir(".") {
         Ok(listing) => {
-            if listing.count() < 2 { return 1 }
+            if listing.len() < 2 { return 1 }
             let first = listing.nameStr(0)
             let second = listing.nameStr(1)
             if *first == *second { return 2 }
@@ -130,6 +264,49 @@ func main(): int {
         output.status.code(),
         Some(0),
         "zero-length TCP I/O should not consult the invalid host handle: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A `mut []T` field read through a reference is reborrowed, as Rust
+/// reborrows `&mut *self.buf`, instead of being moved out of it (O016).
+#[test]
+fn mut_slice_field_is_reborrowed_through_a_reference() {
+    let output = invoke(
+        "run",
+        r#"module tests.views.reborrow
+import std.alloc.vec as vec
+
+struct Buf { data: mut []int, len: int }
+
+func total(view: []int): int {
+    let mut sum = 0
+    let mut i: usize = 0
+    while i < view.len() {
+        sum = sum + view[i]
+        i = i + 1
+    }
+    return sum
+}
+
+func Buf.sum(self: ref Buf): int { return total(self.data) + total(self.data) }
+
+func Buf.bump(self: mut ref Buf): void { self.data[0] = self.data[0] + 1 }
+
+func main(): int {
+    let mut storage = vec.Vec<int>.new()
+    storage.push(1)
+    storage.push(2)
+    let mut b = Buf { data: storage.asMutSlice(), len: 2 }
+    b.bump()
+    return b.sum() - 8
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -551,7 +728,7 @@ fn c_backend_directory_name_views_coexist() {
     );
     let generated_c = String::from_utf8_lossy(&emitted.stdout);
     assert!(
-        generated_c.contains("names_total_len > SIZE_MAX - nlen")
+        generated_c.contains("names_total_len > SIZE_MAX - additional_names")
             && generated_c.contains("blob_len > INT32_MAX")
             && generated_c.contains("entries_cap * 2 > SIZE_MAX / sizeof(ArHostDirEntry)")
             && generated_c.contains("readdir_error = errno")
@@ -605,7 +782,7 @@ func main(): int {
     match fs.readDir(".") {
         Ok(mut listing) => {
             let name = listing.nameStr(0)
-            listing.close()
+            let _, _ = listing.close()
             io.println(*name)
         }
         Err(_) => {}
@@ -631,10 +808,11 @@ fn jit_appends_utf8_and_reads_string_view() {
         "run",
         r#"module tests.borrowed_views.string_run
 import std.alloc.string as strings
+import std.core.result as core_result
 
 func main(): int {
     let mut value = strings.String.new()
-    if !value.pushStr("olá") {
+    if !value.pushStr("olá").isOk() {
         return 1
     }
     let view = value.asStr()
@@ -717,12 +895,111 @@ func main(): int { return slice.len<u8>(lineSlice(strings.asBytes("abc"), 1, 1))
 
 #[test]
 fn byte_views_of_owned_strings_still_cannot_escape() {
-    for source in [
-        "import std.core.str as strings\nfunc f(n: int): []u8 {\n    let s = \"v=${n}\"\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
-        "import std.core.str as strings\nfunc f(flag: bool, n: int): []u8 {\n    let mut s = \"static\"\n    if flag { s = \"v=${n}\" }\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+    // Built text is an owned `String`: its view cannot outlive the function
+    // (O010), and it cannot be stored where a `str` view lives (T002).
+    for (source, code) in [
+        (
+            "import std.core.str as strings\nfunc f(n: int): []u8 {\n    let s = \"v=${n}\"\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+            "O010",
+        ),
+        (
+            "import std.core.str as strings\nfunc f(flag: bool, n: int): []u8 {\n    let mut s = \"static\"\n    if flag { s = \"v=${n}\" }\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+            "T002",
+        ),
     ] {
         let output = check(source);
         assert!(!output.status.success(), "owned view escaped:\n{source}");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("O010"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(code));
     }
+}
+
+#[test]
+fn vec_as_mut_slice_indexed_write_persists_under_release_optimization() {
+    let source = r#"module tests.borrowed_views.mut_slice_release
+import std.alloc.vec as vec
+
+func writeAt(v: mut ref vec.Vec<int>, idx: usize, val: int): void {
+    let mut sl = v.asMutSlice()
+    sl[idx] = val
+    sl[0 as usize] = val + 5
+}
+
+func main(): int {
+    let mut v = vec.Vec<int>.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    writeAt(mut ref v, 2 as usize, 37)
+    let a = v.getCopy(0 as usize) ?? -1
+    let b = v.getCopy(2 as usize) ?? -1
+    if a == 42 && b == 37 { return 0 }
+    return 1
+}
+"#;
+    let output = invoke_with_args("run", source, &["--opt"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "asMutSlice write in --opt JIT must persist: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let proj =
+        std::env::temp_dir().join(format!("arandu_cli_mut_slice_rel_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&proj);
+    fs::create_dir_all(proj.join("src")).expect("create temp pkg");
+    fs::write(
+        proj.join("arandu.toml"),
+        "name = \"mut_slice_rel\"\nversion = \"0.1.0\"\nentry = \"src/main.aru\"\n",
+    )
+    .expect("write manifest");
+    fs::write(
+        proj.join("src/main.aru"),
+        source.replacen("tests.borrowed_views.mut_slice_release", "mut_slice_rel", 1),
+    )
+    .expect("write main.aru");
+    let build = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
+        .current_dir(&proj)
+        .env("ARANDU_STDLIB", workspace_root().join("stdlib"))
+        .args(["build", "--release", "--no-daemon"])
+        .output()
+        .expect("run release build");
+    assert!(
+        build.status.success(),
+        "release build failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let mut stack = vec![proj.join("target/release")];
+    let mut state_file = None;
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().and_then(|n| n.to_str()) == Some("build-state.json") {
+                state_file = Some(p);
+                break;
+            }
+        }
+        if state_file.is_some() {
+            break;
+        }
+    }
+    let state_path = state_file.expect("locate release build-state.json");
+    let state: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&state_path).expect("read release build-state.json"),
+    )
+    .expect("parse release build-state.json");
+    let bin = state_path
+        .parent()
+        .expect("state dir")
+        .join(state["artifact"].as_str().expect("artifact path"));
+    let run_bin = Command::new(&bin).output().expect("execute release binary");
+    let _ = fs::remove_dir_all(&proj);
+    assert_eq!(
+        run_bin.status.code(),
+        Some(0),
+        "asMutSlice write in AOT --release must persist"
+    );
 }

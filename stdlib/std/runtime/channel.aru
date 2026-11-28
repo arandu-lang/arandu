@@ -41,13 +41,13 @@ public struct Channel<T> {
     /// Ring buffer storage for channel values.
     buf: ptr[Option<T>]
     /// Maximum number of buffered values.
-    cap: uint
+    cap: usize
     /// Index of the next element to receive.
-    head: uint
+    head: usize
     /// Index of the next slot to send into.
-    tail: uint
+    tail: usize
     /// Current number of buffered values.
-    len: uint
+    len: usize
     /// Whether the channel has been closed.
     is_closed: bool
 }
@@ -57,21 +57,21 @@ public struct Channel<T> {
 /// A requested capacity of zero is treated as one. The current constructor
 /// does not return an allocation error; invalid sizes and allocation failure
 /// abort before the buffer is accessed. The ring buffer is released automatically on drop.
-public func Channel.new<T>(capacity: uint): Channel<T> {
-    let cap = if capacity == 0 { 1 as uint } else { capacity }
+public func Channel.new<T>(capacity: usize): Channel<T> {
+    let cap = if capacity == 0 { 1 as usize } else { capacity }
     let elem_size = mem.sizeOf<Option<T>>()
     let max_bytes: usize = 2147483647 as usize
-    if elem_size == (0 as usize) || (cap as usize) > max_bytes || (cap as usize) > max_bytes / elem_size {
+    if elem_size == (0 as usize) || cap > max_bytes || cap > max_bytes / elem_size {
         unsafe { intrinsics.abort() }
     }
-    let byte_size = (cap as usize) * elem_size
+    let byte_size = cap * elem_size
     let raw = unsafe { ar_vec_malloc(byte_size) }
     let nullp: ptr[u8] = nil
     if raw == nullp {
         unsafe { intrinsics.abort() }
     }
     let p = raw as ptr[Option<T>]
-    let mut i = 0 as uint
+    let mut i = 0 as usize
     while i < cap {
         unsafe {
             let slot = mem.ptrOffset<Option<T>>(p, i as isize)
@@ -89,18 +89,13 @@ public func Channel.new<T>(capacity: uint): Channel<T> {
     }
 }
 
-/// Allocates a ring buffer for `capacity` values; equivalent to `Channel.new`.
-public func Channel.withCapacity<T>(capacity: uint): Channel<T> {
-    return Channel.new<T>(capacity)
-}
-
 /// Returns the number of items currently buffered in the channel.
-public func Channel.len<T>(self: ref Channel<T>): uint {
+public func Channel.len<T>(self: ref Channel<T>): usize {
     return self.len
 }
 
 /// Returns the maximum capacity of the channel.
-public func Channel.capacity<T>(self: ref Channel<T>): uint {
+public func Channel.capacity<T>(self: ref Channel<T>): usize {
     return self.cap
 }
 
@@ -168,13 +163,13 @@ func destroyChannel<T>(c: mut ref Channel<T>): void {
     unsafe {
         let nullp: ptr[Option<T>] = nil
         if c.buf != nullp {
-            let mut i = 0 as uint
+            let mut i = 0 as usize
             while i < c.cap {
                 let slot = mem.ptrOffset<Option<T>>(c.buf, i as isize)
                 mem.dropInPlace<Option<T>>(slot)
                 i = i + 1
             }
-            let byte_size = (c.cap as usize) * mem.sizeOf<Option<T>>()
+            let byte_size = c.cap * mem.sizeOf<Option<T>>()
             ar_vec_buf_free(c.buf as ptr[u8], byte_size)
             c.buf = nullp
             c.len = 0

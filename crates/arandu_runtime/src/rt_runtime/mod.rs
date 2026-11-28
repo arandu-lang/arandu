@@ -101,7 +101,7 @@ mod tests {
         unsafe {
             for value in 0..64 {
                 let handle = spawn_on(&tasks, ar_co_make_ready_i64(value));
-                assert_eq!(handle, 0, "cancel must make the slot reusable");
+                assert_eq!(handle as u32, 0, "cancel must make the slot reusable");
                 assert_eq!(join_on(&tasks, handle, |s| ar_co_block_on_i64(s)), value);
                 assert_eq!(
                     join_on(&tasks, handle, |_| unreachable!(
@@ -110,7 +110,7 @@ mod tests {
                     value
                 );
                 cancel_on(&tasks, handle);
-                assert!(tasks.lock().unwrap()[0].is_none());
+                assert!(tasks.lock().unwrap()[0].state.is_none());
             }
         }
     }
@@ -122,10 +122,27 @@ mod tests {
         unsafe {
             for value in 0..64 {
                 let handle = spawn_on(&tasks, ar_co_pending_once_i64(value));
-                assert_eq!(handle, 0);
+                assert_eq!(handle as u32, 0);
                 cancel_on(&tasks, handle);
-                assert!(tasks.lock().unwrap()[0].is_none());
+                assert!(tasks.lock().unwrap()[0].state.is_none());
             }
+        }
+    }
+
+    #[test]
+    fn stale_task_handle_cannot_cancel_reused_slot() {
+        let tasks = TaskTable::new(Vec::new());
+        unsafe {
+            let stale = spawn_on(&tasks, ar_co_make_ready_i64(11));
+            cancel_on(&tasks, stale);
+            let current = spawn_on(&tasks, ar_co_make_ready_i64(42));
+            assert_ne!(stale, current);
+            cancel_on(&tasks, stale);
+            assert_eq!(
+                join_on(&tasks, current, |state| ar_co_block_on_i64(state)),
+                42
+            );
+            cancel_on(&tasks, current);
         }
     }
 
@@ -138,7 +155,7 @@ mod tests {
             // cancellation. Neither thread accesses the blob after join frees it.
             unsafe {
                 let handle = spawn_on(&tasks, ar_co_pending_once_i64(value));
-                assert_eq!(handle, 0);
+                assert_eq!(handle as u32, 0);
                 let (claimed_tx, claimed_rx) = mpsc::channel();
                 let (resume_tx, resume_rx) = mpsc::channel();
                 let joining_tasks = Arc::clone(&tasks);
@@ -152,14 +169,14 @@ mod tests {
                 claimed_rx.recv().unwrap();
                 cancel_on(&tasks, handle);
                 assert!(matches!(
-                    tasks.lock().unwrap()[0],
+                    tasks.lock().unwrap()[0].state,
                     Some(TaskState::Running {
                         cancel_requested: true
                     })
                 ));
                 resume_tx.send(()).unwrap();
                 assert_eq!(joiner.join().unwrap(), value);
-                assert!(tasks.lock().unwrap()[0].is_none());
+                assert!(tasks.lock().unwrap()[0].state.is_none());
             }
         }
     }

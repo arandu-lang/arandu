@@ -51,6 +51,7 @@ impl AmirFunc {
                 AmirStmt::Store { .. }
                 | AmirStmt::Call { .. }
                 | AmirStmt::Free(_)
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)
                 | AmirStmt::Destroy(_)
@@ -70,11 +71,14 @@ fn rvalue_spans(rvalue: &mut AmirRvalue, f: &mut impl FnMut(Span) -> Span) {
         AmirRvalue::Use(_)
         | AmirRvalue::VectorOp { .. }
         | AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::Select { .. }
         | AmirRvalue::VectorCompare { .. }
         | AmirRvalue::VectorSplat { .. }
         | AmirRvalue::VectorShuffle { .. }
         | AmirRvalue::VectorExtractLane { .. }
         | AmirRvalue::VectorInsertLane { .. }
+        | AmirRvalue::VectorBitmask { .. }
+        | AmirRvalue::VectorLoadUnaligned { .. }
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. }
         | AmirRvalue::FieldAccess { .. }
@@ -99,6 +103,9 @@ fn rvalue_spans(rvalue: &mut AmirRvalue, f: &mut impl FnMut(Span) -> Span) {
         | AmirRvalue::CoroutineReady { .. }
         | AmirRvalue::StringInterp { .. }
         | AmirRvalue::ToStr { .. }
-        | AmirRvalue::BlackBox { .. } => {}
+        | AmirRvalue::BlackBox { .. }
+        | AmirRvalue::ArenaAlloc { .. }
+        | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::StaticAddr(_) => {}
     }
 }

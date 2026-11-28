@@ -22,7 +22,8 @@ fn compile_amir(
     arandu_semantics::TypeInfo,
 ) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -55,7 +56,7 @@ fn scalar_object_has_no_runtime_imports() {
 #[test]
 fn printing_object_imports_only_its_actual_host() {
     let names = imports(&compile_object(
-        "import io\nfunc main(): int { io.println(\"hello\") return 0 }",
+        "import io\nfunc main(): int { io.println(\"hello\"); return 0 }",
     ));
     assert_eq!(names, ["io.println"]);
 }
@@ -202,7 +203,8 @@ fn reachable_helper_public_root_and_callback_keep_gen_cleanup() {
 
 fn compile_debug_object(src: &str) -> arandu_backend_cranelift::ObjectArtifact {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -365,7 +367,8 @@ fn executable_object_retains_projected_field_destructors() {
 fn release_object_emission_is_byte_deterministic() {
     let src = "func add(a: int, b: int): int { return a + b; }";
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,

@@ -6,7 +6,7 @@ use crate::hir::HirPattern;
 use crate::passes::type_checker::types::{ArType, Primitive};
 
 impl LowerCtx<'_> {
-    pub(super) fn pattern_has_bindings(&self, pattern: &HirPattern) -> bool {
+    pub(crate) fn pattern_has_bindings(&self, pattern: &HirPattern) -> bool {
         match pattern {
             HirPattern::Bind { .. } => true,
             HirPattern::Enum { payload, .. } | HirPattern::TypeTuple { payload, .. } => self
@@ -154,7 +154,11 @@ impl LowerCtx<'_> {
                     .decl_type_id(*symbol)
                     .unwrap_or_else(|| self.intern_ty_ref(&value_ty));
                 if commit {
-                    let local = self.new_local_id(bound_ty, *symbol, *span);
+                    // One variable for a name bound by several alternatives.
+                    let local = match self.symbol_map.get(symbol) {
+                        Some(&local) => local,
+                        None => self.new_local_id(bound_ty, *symbol, *span),
+                    };
                     let bound_type = self.tc.type_info.resolve_type_id(bound_ty);
                     let source_ty_id = self.tc.type_info.type_interner.intern(value_ty.clone());
                     let source_is_already_reference = bound_ty == source_ty_id;
@@ -175,13 +179,23 @@ impl LowerCtx<'_> {
                     } else {
                         self.load_place(&place, bound_ty)?
                     };
-                    self.emit_store_place(
-                        AmirPlace {
-                            local,
-                            projections: smallvec::SmallVec::new(),
-                        },
-                        value,
-                    )?;
+                    if matches!(bound_type, ArType::Ref(_) | ArType::RefMut(_)) {
+                        if matches!(bound_type, ArType::RefMut(_)) {
+                            // `RefMut` is non-Copy, so `write_variable_source` may emit a `Load`
+                            // from `local` when `value` carries place provenance; keep its home
+                            // alive across `prune_dummy_loads_stores`.
+                            self.locals[local.as_usize()].is_memory = true;
+                        }
+                        self.write_variable_source(local, value)?;
+                    } else {
+                        self.emit_store_place(
+                            AmirPlace {
+                                local,
+                                projections: smallvec::SmallVec::new(),
+                            },
+                            value,
+                        )?;
+                    }
                 } else {
                     let borrowed_ty = match self.tc.type_info.resolve_type_id(bound_ty) {
                         ArType::Ref(_) | ArType::RefMut(_) => bound_ty,
@@ -192,7 +206,11 @@ impl LowerCtx<'_> {
                     self.mark_local_materialized(place.local);
                     let borrowed = self.new_temp_id(borrowed_ty);
                     self.emit_assign_temp(borrowed, AmirRvalue::Borrow(place));
-                    let local = self.new_compiler_local_id(borrowed_ty, *span);
+                    let local = self
+                        .guard_borrows
+                        .get(symbol)
+                        .map(|(existing, _)| *existing)
+                        .unwrap_or_else(|| self.new_compiler_local_id(borrowed_ty, *span));
                     self.emit_store_place(
                         AmirPlace {
                             local,
@@ -439,17 +457,48 @@ impl LowerCtx<'_> {
             HirPattern::Wildcard { .. } | HirPattern::Literal { .. } | HirPattern::Range { .. } => {
             }
             HirPattern::Or { alts, .. } => {
-                let alternatives = self.hir.pool.pattern_list(*alts);
-                if alternatives
+                let alternatives = self.hir.pool.pattern_list(*alts).to_vec();
+                if !alternatives
                     .iter()
                     .any(|id| self.pattern_has_bindings(self.hir.pool.pattern(*id)))
                 {
-                    return Err(Diagnostic::error(
-                        DiagCode::U001FeatureNotSupported,
-                        "guarded or-pattern bindings cannot yet be borrowed transactionally",
-                        pattern.span(),
-                    ));
+                    return Ok(());
                 }
+                if alternatives.len() == 1 {
+                    let alt = self.hir.pool.pattern(alternatives[0]);
+                    return self.lower_pattern_places_at(place, alt, value_ty, symbols, commit);
+                }
+                let place_ty_id = self.intern_ty(value_ty.clone());
+                let probe = self.new_temp_id(place_ty_id);
+                self.emit_assign_temp(probe, AmirRvalue::Load(place.clone()));
+                let probe_op = AmirOperand::Copy(probe);
+                let bb_done = self.new_block();
+                let last_index = alternatives.len() - 1;
+                for (index, &alt_id) in alternatives.iter().enumerate() {
+                    let alt = self.hir.pool.pattern(alt_id);
+                    if index == last_index {
+                        self.lower_pattern_places_at(place, alt, value_ty, symbols, commit)?;
+                        self.emit_goto(bb_done);
+                        break;
+                    }
+                    let bb_hit = self.new_block();
+                    let bb_miss = self.new_block();
+                    self.lower_pattern_test_branch(probe_op, alt, bb_hit, bb_miss, symbols)?;
+                    self.seal_block(bb_hit);
+                    self.builder.current_block = Some(bb_hit);
+                    self.lower_pattern_places_at(
+                        place.clone(),
+                        alt,
+                        value_ty.clone(),
+                        symbols,
+                        commit,
+                    )?;
+                    self.emit_goto(bb_done);
+                    self.seal_block(bb_miss);
+                    self.builder.current_block = Some(bb_miss);
+                }
+                self.seal_block(bb_done);
+                self.builder.current_block = Some(bb_done);
             }
         }
         Ok(())
@@ -470,7 +519,7 @@ impl LowerCtx<'_> {
         }
     }
 
-    pub(super) fn lower_option_variant_test(
+    pub(in crate::passes::lower_amir) fn lower_option_variant_test(
         &mut self,
         scrutinee: AmirOperand,
         tag: i128,

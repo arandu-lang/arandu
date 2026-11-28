@@ -47,11 +47,28 @@ impl LowerCtx<'_> {
         self.seal_block(bb_err);
         self.seal_block(bb_ok);
 
-        // Err branch: err = payload; ok = zero/nil so both locals are defined on all paths.
+        // Err branch: err = Some(payload); ok = zero/nil so both locals are defined on all paths.
         self.builder.current_block = Some(bb_err);
-        let err_tmp = self.new_temp_id(err_b.ty);
+        let err_payload_ty = match self.resolve_ty(err_b.ty) {
+            ArType::Option(inner) => inner,
+            _ => err_b.ty,
+        };
+        let err_tmp = self.new_temp_id(err_payload_ty);
         self.lower_result_err_field(result_op, err_tmp);
-        let err_consumed = self.consume_operand(AmirOperand::Copy(err_tmp))?;
+        let err_val = if matches!(self.resolve_ty(err_b.ty), ArType::Option(_)) {
+            let wrapped = self.new_temp_id(err_b.ty);
+            self.emit_assign_temp(
+                wrapped,
+                AmirRvalue::EnumConstruct {
+                    variant_tag: arandu_middle::amir::OPTION_SOME_TAG,
+                    payload: Some(AmirOperand::Copy(err_tmp)),
+                },
+            );
+            AmirOperand::Copy(wrapped)
+        } else {
+            AmirOperand::Copy(err_tmp)
+        };
+        let err_consumed = self.consume_operand(err_val)?;
         self.write_variable_source(err_local, err_consumed)?;
         let ok_zero = self.new_temp_id(ok_b.ty);
         self.emit_assign_temp(
@@ -62,17 +79,27 @@ impl LowerCtx<'_> {
         self.write_variable_source(ok_local, ok_zero_c)?;
         self.emit_goto(bb_join);
 
-        // Ok branch: ok = payload, err = nil.
+        // Ok branch: ok = payload, err = None / nil.
         self.builder.current_block = Some(bb_ok);
         let ok_tmp = self.new_temp_id(ok_b.ty);
         self.lower_result_ok_field(result_op, ok_tmp);
         let ok_consumed = self.consume_operand(AmirOperand::Copy(ok_tmp))?;
         self.write_variable_source(ok_local, ok_consumed)?;
         let nil_tmp = self.new_temp_id(err_b.ty);
-        self.emit_assign_temp(
-            nil_tmp,
-            AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
-        );
+        if matches!(self.resolve_ty(err_b.ty), ArType::Option(_)) {
+            self.emit_assign_temp(
+                nil_tmp,
+                AmirRvalue::EnumConstruct {
+                    variant_tag: arandu_middle::amir::OPTION_NONE_TAG,
+                    payload: None,
+                },
+            );
+        } else {
+            self.emit_assign_temp(
+                nil_tmp,
+                AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
+            );
+        }
         let nil_consumed = self.consume_operand(AmirOperand::Copy(nil_tmp))?;
         self.write_variable_source(err_local, nil_consumed)?;
         self.emit_goto(bb_join);
@@ -108,7 +135,9 @@ impl LowerCtx<'_> {
                 if bindings_slice.len() == 1 {
                     let b = &bindings_slice[0];
                     let local_id = self.new_local_id(b.ty, b.symbol, b.span);
+                    let val_expr = self.hir.pool.expr(*value);
                     let val_op = self.lower_expr(*value, None, symbols)?;
+                    let val_op = self.coerce_to_option(val_op, val_expr.ty, b.ty);
                     if let AmirOperand::Copy(t) | AmirOperand::Move(t) = &val_op {
                         self.owned_string_temps.remove(t);
                     }
@@ -157,8 +186,13 @@ impl LowerCtx<'_> {
                 }
             }
             HirSimpleStmt::Set { places, op, value } => {
-                let val_op = self.lower_expr(*value, None, symbols)?;
-                self.lower_set_places(self.hir.pool.places_list(*places), op, &val_op, symbols)?;
+                let val_ty = self.hir.pool.expr(*value).ty;
+                let mut val_op = self.lower_expr(*value, None, symbols)?;
+                let places_slice = self.hir.pool.places_list(*places);
+                if places_slice.len() == 1 && *op == SetOp::Assign {
+                    val_op = self.coerce_to_option(val_op, val_ty, places_slice[0].ty);
+                }
+                self.lower_set_places(places_slice, op, &val_op, symbols)?;
             }
             HirSimpleStmt::Expr(expr) => {
                 self.lower_expr_stmt(*expr, symbols)?;
@@ -219,9 +253,17 @@ impl LowerCtx<'_> {
         // Multi-place destructure: `a, b = pair` → field i of val_op into each place.
         for (i, place) in places.iter().enumerate() {
             self.with_span(place.span, |this| -> Result<(), Diagnostic> {
-                let Some(&local_id) = this.symbol_map.get(&place.root_symbol) else {
-                    return Ok(());
-                };
+                let (local_id, prefix) =
+                    if let Some(&local_id) = this.symbol_map.get(&place.root_symbol) {
+                        (local_id, Vec::new())
+                    } else if symbols.try_get(place.root_symbol).map(|symbol| symbol.kind)
+                        == Some(arandu_middle::SymbolKind::StaticMut)
+                    {
+                        let (place, _) = this.static_place(place.root_symbol, place.span)?;
+                        (place.local, place.projections.into_vec())
+                    } else {
+                        return Ok(());
+                    };
                 let projections: Result<Vec<_>, Diagnostic> = place
                     .suffixes
                     .iter()
@@ -230,6 +272,11 @@ impl LowerCtx<'_> {
                             field_symbol: Some(symbol),
                             ..
                         } => Ok(AmirProjection::Field(*symbol)),
+                        HirPlaceSuffix::Field { name, .. }
+                            if arandu_parser::is_tuple_index(name) =>
+                        {
+                            Ok(AmirProjection::TupleField(name.parse().unwrap_or(0)))
+                        }
                         HirPlaceSuffix::Field { span, name, .. } => Err(crate::Diagnostic::error(
                             crate::DiagCode::L001LoweringUnresolvedSymbol,
                             format!("cannot lower field projection `{name}`: symbol not resolved"),
@@ -238,9 +285,10 @@ impl LowerCtx<'_> {
                         HirPlaceSuffix::Index { expr, .. } => Ok(AmirProjection::Index(
                             this.lower_expr(*expr, None, symbols)?,
                         )),
+                        HirPlaceSuffix::Deref { .. } => Ok(AmirProjection::Deref),
                     })
                     .collect();
-                let projections = projections?;
+                let projections = [prefix, projections?].concat();
                 if !projections.is_empty() {
                     this.mark_local_materialized(local_id);
                 }
@@ -277,11 +325,24 @@ impl LowerCtx<'_> {
         val_op: &AmirOperand,
         symbols: &SymbolTable,
     ) -> Result<(), Diagnostic> {
-        let Some(&local_id) = self.symbol_map.get(&place.root_symbol) else {
-            return Ok(());
-        };
-        let root_ty = self.resolve_ty(self.locals[local_id.as_usize()].ty);
-        let mut projections = Vec::new();
+        // A `static mut` root is its storage: written through the address its
+        // compiler local holds, then projected like a local of its type.
+        let (local_id, root_ty, mut projections) =
+            if let Some(&local_id) = self.symbol_map.get(&place.root_symbol) {
+                let root_ty = self.resolve_ty(self.locals[local_id.as_usize()].ty);
+                (local_id, root_ty, Vec::new())
+            } else if symbols.try_get(place.root_symbol).map(|symbol| symbol.kind)
+                == Some(arandu_middle::SymbolKind::StaticMut)
+            {
+                let (place, ty) = self.static_place(place.root_symbol, place.span)?;
+                (
+                    place.local,
+                    self.resolve_ty(ty),
+                    place.projections.into_vec(),
+                )
+            } else {
+                return Ok(());
+            };
         let starts_with_named_field =
             matches!(place.suffixes.first(), Some(HirPlaceSuffix::Field { .. }));
         let starts_with_index =
@@ -303,12 +364,41 @@ impl LowerCtx<'_> {
             projections.push(AmirProjection::Deref);
             container_ty = self.resolve_ty(inner);
         }
-        for suffix in &place.suffixes {
+        for (idx, suffix) in place.suffixes.iter().enumerate() {
+            if idx > 0 && !matches!(suffix, HirPlaceSuffix::Deref { .. }) {
+                let needs_deref = match (&container_ty, suffix) {
+                    (ArType::Ref(_) | ArType::RefMut(_), _) => true,
+                    (ArType::Ptr(_), HirPlaceSuffix::Field { .. }) => true,
+                    (ArType::Ptr(inner), HirPlaceSuffix::Index { .. }) => {
+                        let inner_ty = self.resolve_ty(*inner);
+                        matches!(
+                            inner_ty,
+                            ArType::Array(_, _)
+                                | ArType::ConstArray(_, _)
+                                | ArType::Slice(_)
+                                | ArType::MutSlice(_)
+                        )
+                    }
+                    _ => false,
+                };
+                if needs_deref {
+                    projections.push(AmirProjection::Deref);
+                    container_ty = match &container_ty {
+                        ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                            self.resolve_ty(*inner)
+                        }
+                        _ => container_ty,
+                    };
+                }
+            }
             let projection = match suffix {
                 HirPlaceSuffix::Field {
                     field_symbol: Some(symbol),
                     ..
                 } => AmirProjection::Field(*symbol),
+                HirPlaceSuffix::Field { name, .. } if arandu_parser::is_tuple_index(name) => {
+                    AmirProjection::TupleField(name.parse().unwrap_or(0))
+                }
                 HirPlaceSuffix::Field { span, name, .. } => {
                     return Err(crate::Diagnostic::error(
                         crate::DiagCode::L001LoweringUnresolvedSymbol,
@@ -326,12 +416,13 @@ impl LowerCtx<'_> {
                     self.check_vec_index(&container, &container_ty, index, index_ty, symbols)?;
                     AmirProjection::Index(index)
                 }
+                HirPlaceSuffix::Deref { .. } => AmirProjection::Deref,
             };
             projections.push(projection);
             container_ty = match suffix {
-                HirPlaceSuffix::Field { ty, .. } | HirPlaceSuffix::Index { ty, .. } => {
-                    self.resolve_ty(*ty)
-                }
+                HirPlaceSuffix::Field { ty, .. }
+                | HirPlaceSuffix::Index { ty, .. }
+                | HirPlaceSuffix::Deref { ty, .. } => self.resolve_ty(*ty),
             };
         }
         let amir_place = AmirPlace {
@@ -365,16 +456,24 @@ impl LowerCtx<'_> {
                     _ => BinaryOp::Add,
                 };
                 let old_val = self.read_variable_source(local_id)?;
-                let temp = self.new_temp_id(place.ty);
-                self.emit_assign_temp(
-                    temp,
-                    AmirRvalue::Binary {
-                        op: bin_op,
-                        left: old_val,
-                        right: *val_op,
-                    },
-                );
-                AmirOperand::Copy(temp)
+                if matches!(bin_op, BinaryOp::Add | BinaryOp::Sub)
+                    && let ArType::Ptr(pointee_id) = root_ty
+                {
+                    self.lower_ptr_arith_offset(
+                        bin_op, old_val, *val_op, pointee_id, place.ty, None,
+                    )?
+                } else {
+                    let temp = self.new_temp_id(place.ty);
+                    self.emit_assign_temp(
+                        temp,
+                        AmirRvalue::Binary {
+                            op: bin_op,
+                            left: old_val,
+                            right: *val_op,
+                        },
+                    );
+                    AmirOperand::Copy(temp)
+                }
             };
             let consumed = self.consume_operand(final_val)?;
             self.write_variable_source(local_id, consumed)?;
@@ -496,6 +595,12 @@ impl LowerCtx<'_> {
             self.end_local_scope();
             return Ok(());
         }
+        let dest_is_void = target.is_some_and(|dest| {
+            matches!(
+                self.resolve_ty(self.temps[dest.as_usize()].ty),
+                ArType::Void | ArType::Never
+            )
+        }) && async_payload_ty.is_none();
         let last_idx = statements_slice.len() - 1;
         for (i, &stmt_id) in statements_slice.iter().enumerate() {
             if self.builder.current_block.is_none() {
@@ -509,12 +614,14 @@ impl LowerCtx<'_> {
                     (&stmt.kind, target, async_payload_ty)
                 {
                     let dest_ty = self.temps[dest.as_usize()].ty;
-                    if !matches!(self.resolve_ty(dest_ty), ArType::Void) {
+                    if !matches!(self.resolve_ty(dest_ty), ArType::Void | ArType::Never) {
                         self.lower_match(*value, arms, Some(dest), dest_ty, symbols)?;
                         continue;
                     }
                 }
-                if let HirStmtKind::Expr(expr) = stmt.kind {
+                if let HirStmtKind::Expr(expr) = stmt.kind
+                    && !dest_is_void
+                {
                     let start_owned = self.owned_string_temps.clone();
                     let res_op = if let (Some(dest), Some(payload_ty)) = (target, async_payload_ty)
                     {
@@ -527,6 +634,22 @@ impl LowerCtx<'_> {
                                 stack: false,
                             },
                         );
+                        AmirOperand::Copy(dest)
+                    } else if let Some(dest) = target
+                        && self.with_ty(
+                            self.temps[dest.as_usize()].ty,
+                            crate::passes::type_checker::types::is_option_type,
+                        )
+                        && !self.with_ty(
+                            self.hir.pool.expr(expr).ty,
+                            crate::passes::type_checker::types::is_option_type,
+                        )
+                    {
+                        let expr_ty = self.hir.pool.expr(expr).ty;
+                        let inner = self.lower_expr(expr, None, symbols)?;
+                        let coerced =
+                            self.coerce_to_option(inner, expr_ty, self.temps[dest.as_usize()].ty);
+                        self.emit_assign_temp(dest, AmirRvalue::Use(coerced));
                         AmirOperand::Copy(dest)
                     } else {
                         self.lower_expr(expr, target, symbols)?

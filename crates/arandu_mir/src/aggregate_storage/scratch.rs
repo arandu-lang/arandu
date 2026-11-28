@@ -1,4 +1,4 @@
-use super::cycles::{block_in_cycle, block_param_safe};
+use super::cycles::{block_is_cyclic_merge, block_param_safe};
 use super::string_origin::independent_string_result;
 use arandu_middle::amir::{
     AmirFunc, AmirOperand, AmirProjection, AmirRvalue, AmirStmt, AmirTerminator, TempId,
@@ -68,7 +68,7 @@ fn backing_type_safe(
             ArType::Primitive(Primitive::Str) => views,
             ArType::Slice(_) | ArType::MutSlice(_) | ArType::Ref(_) | ArType::RefMut(_) => views,
             ArType::Primitive(_) => true,
-            ArType::Void | ArType::Ptr(_) | ArType::Vector(_) => true,
+            ArType::Void | ArType::Never | ArType::Ptr(_) | ArType::Vector(_) => true,
             ArType::Array(_, inner) | ArType::Option(inner) | ArType::Poll(inner) => {
                 visit(inner, depth + 1)
             }
@@ -97,8 +97,7 @@ fn backing_type_safe(
                         })
                 }
             }
-            ArType::Nullable(_)
-            | ArType::Coroutine(_)
+            ArType::Coroutine(_)
             | ArType::Range(_)
             | ArType::Func(..)
             | ArType::GenRef
@@ -109,7 +108,8 @@ fn backing_type_safe(
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::Err
-            | ArType::Error => false,
+            | ArType::Error
+            | ArType::Infer(_) => false,
         }
     }
     visit(ty, interner, provider, 0, views)
@@ -290,11 +290,13 @@ pub fn function_scratch_safe(
     // overwrite or reclaim that backing while the phi still references it;
     // value-passed handles and acyclic joins cannot re-enter a predecessor site.
     let mut covered_block_params = 0usize;
+    let mut doms: Option<arandu_middle::amir::Dominators> = None;
     for block in &function.blocks {
         let params = function.block_params(block.params);
         covered_block_params = covered_block_params.saturating_add(params.len());
         if !params.is_empty() {
-            let in_cycle = block_in_cycle(function, block.id);
+            let doms = doms.get_or_insert_with(|| arandu_middle::amir::Dominators::new(function));
+            let in_cycle = block_is_cyclic_merge(function, doms, block.id);
             if params
                 .iter()
                 .any(|parameter| !block_param_safe(parameter.ty, interner, in_cycle, 0))
@@ -336,6 +338,7 @@ pub fn function_scratch_safe(
         ArType::Primitive(_)
         | ArType::Vector(_)
         | ArType::Void
+        | ArType::Never
         | ArType::IntLiteral
         | ArType::FloatLiteral => {}
         ArType::Coroutine(_) if scalar_ready_result => {}
@@ -355,7 +358,6 @@ pub fn function_scratch_safe(
         }
         ArType::Slice(_)
         | ArType::MutSlice(_)
-        | ArType::Nullable(_)
         | ArType::Ptr(_)
         | ArType::Ref(_)
         | ArType::RefMut(_)
@@ -368,7 +370,8 @@ pub fn function_scratch_safe(
         | ArType::Const(_)
         | ArType::ConstParam(_)
         | ArType::Err
-        | ArType::Error => return false,
+        | ArType::Error
+        | ArType::Infer(_) => return false,
     }
     for block in &function.blocks {
         if matches!(block.terminator, AmirTerminator::Suspend { .. }) {
@@ -389,12 +392,15 @@ pub fn function_scratch_safe(
                     | AmirRvalue::GenUpsert { .. }
                     | AmirRvalue::GenRemove { .. } => false,
                     AmirRvalue::VectorSelect { .. }
+                    | AmirRvalue::Select { .. }
                     | AmirRvalue::VectorCompare { .. }
                     | AmirRvalue::VectorOp { .. }
                     | AmirRvalue::VectorSplat { .. }
                     | AmirRvalue::VectorShuffle { .. }
                     | AmirRvalue::VectorExtractLane { .. }
                     | AmirRvalue::VectorInsertLane { .. }
+                    | AmirRvalue::VectorBitmask { .. }
+                    | AmirRvalue::VectorLoadUnaligned { .. }
                     | AmirRvalue::Use(_)
                     | AmirRvalue::Binary { .. }
                     | AmirRvalue::Unary { .. }
@@ -418,7 +424,10 @@ pub fn function_scratch_safe(
                     | AmirRvalue::BorrowMut(_)
                     | AmirRvalue::ToStr { .. }
                     | AmirRvalue::BlackBox { .. }
-                    | AmirRvalue::StringInterp { .. } => true,
+                    | AmirRvalue::StringInterp { .. }
+                    | AmirRvalue::ArenaAlloc { .. }
+                    | AmirRvalue::ArenaCheckpoint
+                    | AmirRvalue::StaticAddr(_) => true,
                 },
                 AmirStmt::Call {
                     lhs,
@@ -440,6 +449,12 @@ pub fn function_scratch_safe(
                                 definition.lang_item,
                             )
                             .is_some()
+                                || (definition.lang_item
+                                    == Some(arandu_middle::symbol_table::LangItem::SimdIntrinsic)
+                                    && arandu_middle::intrinsics::SimdIntrinsic::from_name(
+                                        &definition.name,
+                                    )
+                                    .is_some())
                                 || !extern_exposes_backing(
                                     function,
                                     *lhs,
@@ -472,6 +487,7 @@ pub fn function_scratch_safe(
                     _ => false,
                 },
                 AmirStmt::Store { .. }
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::Destroy(_)
                 | AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)

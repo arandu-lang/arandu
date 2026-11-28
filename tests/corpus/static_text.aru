@@ -1,0 +1,37 @@
+module staticText
+
+// `static mut` storage may hold text and views: its image points at bytes
+// of their own, with every pointer word filled in by the backend.
+
+struct Entry {
+    name: str,
+    code: int,
+}
+
+static mut GREETING: str = "hello"
+static mut PAIR: (str, int) = ("pair", 7)
+static mut ENTRY: Entry = Entry { name: "entry", code: 3 }
+static mut BYTES: []u8 = b"bytes!"
+static mut NAMES: [3]str = ["a", "bb", "ccc"]
+const LIMIT: int = 40
+
+func main(): int {
+    unsafe {
+        if GREETING.len() != 5 { return 1 }
+        if PAIR.0.len() != 4 || PAIR.1 != 7 { return 2 }
+        if ENTRY.name.len() != 5 || ENTRY.code != 3 { return 3 }
+        if BYTES.len() != 6 || BYTES[0] != 98 { return 4 }
+        let mut total: usize = 0
+        for name in NAMES {
+            total += name.len()
+        }
+        if total != 6 { return 5 }
+        GREETING = "a longer greeting"
+        if GREETING.len() != 17 { return 6 }
+        if GREETING != "a longer greeting" { return 7 }
+        if PAIR.0 != "pair" { return 8 }
+        // A `const` named like a type is a value too.
+        if LIMIT.saturatingAdd(2) != 42 { return 9 }
+    }
+    return 0
+}

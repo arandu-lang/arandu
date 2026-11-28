@@ -69,6 +69,9 @@ pub struct ResolvedNames {
     pub value_refs: FxHashMap<NodeKey, SymbolId>,
     pub type_refs: FxHashMap<NodeKey, SymbolId>,
     pub mutable_symbols: FxHashSet<SymbolId>,
+    /// The scope each `todo` hole was written in, keyed by the hole's name
+    /// span: its candidate fills are the locals visible there (RFC 0036).
+    pub hole_scopes: FxHashMap<NodeKey, crate::ScopeId>,
 }
 
 impl ResolvedNames {

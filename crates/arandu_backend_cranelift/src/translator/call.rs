@@ -5,6 +5,11 @@ use cranelift_codegen::ir::{InstBuilder, Type, Value};
 use super::FunctionTranslator;
 use super::operand::FatOperandKind;
 
+enum CallTarget {
+    Direct(cranelift_codegen::ir::FuncRef),
+    Indirect(Value),
+}
+
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_call(
         &mut self,
@@ -25,139 +30,277 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
 
         let mut indirect_result = None;
-        let call_inst = match callee {
+        // Apple arm64 passes variadic arguments on the stack: register
+        // padding inserted after this many fixed arguments.
+        let mut apple_variadic_padding: Option<(usize, Vec<Type>)> = None;
+        // A direct call takes its signature from the callee's declaration; a
+        // call through a function value takes it from the value's `Func`
+        // type, built with the same internal ABI (sret, aggregate slots).
+        let target = match callee {
             AmirOperand::FunctionRef(sym_id) => {
+                if (self.type_info.is_cold_function(*sym_id) || self.symbol_table.is_cold(*sym_id))
+                    && let Some(clif_block) = self.builder.current_block()
+                    && self.builder.func.layout.entry_block() != Some(clif_block)
+                {
+                    self.builder.func.layout.set_cold(clif_block);
+                }
                 let sym = self.symbol_table.get(*sym_id);
                 let host_name = self.symbol_table.host_func_name(sym);
-                let func_id = match self.resolve_function(host_name) {
-                    Some(func_id) => func_id,
-                    None => {
-                        self.record_ice(
-                            format!("function '{}' was not declared in the JIT module", sym.name),
-                            sym.span,
-                        );
-                        return;
-                    }
+                let Some(func_id) = self.resolve_function(host_name) else {
+                    self.record_ice(
+                        format!("function '{}' was not declared in the JIT module", sym.name),
+                        sym.span,
+                    );
+                    return;
                 };
                 let local_ref = self.module.declare_func_in_func(func_id, self.builder.func);
-
                 let sig_id = self.builder.func.dfg.ext_funcs[local_ref].signature;
-                let expected_tys: Vec<Type> = self.builder.func.dfg.signatures[sig_id]
-                    .params
-                    .iter()
-                    .map(|param| param.value_type)
-                    .collect();
-
-                let callee_param_types: Option<Vec<ArType>> = match callee {
-                    AmirOperand::FunctionRef(sym_id) => {
-                        self.type_info.decl_type_id(*sym_id).and_then(|decl_ty_id| {
-                            let decl_ty = self.type_info.type_interner().resolve(decl_ty_id);
-                            if let ArType::Func(param_range, _) = decl_ty {
-                                let pids = self.type_info.type_interner().type_args(param_range);
-                                Some(
-                                    pids.iter()
-                                        .map(|&pid| self.type_info.type_interner().resolve(pid))
-                                        .collect(),
-                                )
-                            } else {
-                                None
-                            }
-                        })
-                    }
-                    _ => None,
-                };
-
-                let mut clif_args = Vec::new();
-                let mut clif_param_idx = 0;
-                if self.builder.func.dfg.signatures[sig_id]
-                    .params
-                    .first()
-                    .is_some_and(|param| {
-                        param.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn
-                    })
+                let function_ty = self
+                    .type_info
+                    .decl_type_id(*sym_id)
+                    .map(|id| self.resolve_ty(id));
+                if self.type_info.is_variadic_function(*sym_id)
+                    && let Some(ArType::Func(param_range, result)) = &function_ty
                 {
-                    let result_ty = self
-                        .type_info
-                        .decl_type_id(*sym_id)
-                        .and_then(|id| match self.resolve_ty(id) {
-                            ArType::Func(_, result) => Some(self.resolve_ty(result)),
-                            _ => None,
+                    let interner = self.type_info.type_interner();
+                    let fixed_len = (param_range.len as usize).saturating_sub(1);
+                    let mut full_params: Vec<ArType> = interner.type_args(*param_range)
+                        [..fixed_len]
+                        .iter()
+                        .map(|&id| interner.resolve(id))
+                        .collect();
+                    let triple = self.module.isa().triple();
+                    let apple_arm64 = self.module.isa().default_call_conv()
+                        == cranelift_codegen::isa::CallConv::AppleAarch64;
+                    for arg in args.iter().skip(fixed_len) {
+                        let promoted = promote_c_vararg_type(self.get_operand_ar_type(arg));
+                        // Each Apple arm64 variadic argument fills an 8-byte slot.
+                        full_params.push(if apple_arm64 {
+                            widen_apple_vararg_type(promoted)
+                        } else {
+                            promoted
                         });
-                    let Some(result_ty) = result_ty else {
-                        self.record_ice("missing type for indirect aggregate result", sym.span);
-                        return;
-                    };
-                    let destination = self.allocate_independent_aggregate(&result_ty);
-                    indirect_result = Some(destination);
-                    clif_args.push(destination);
-                    clif_param_idx = 1;
-                }
-                for (arg_idx, arg) in args.iter().enumerate() {
-                    let arg_ty = callee_param_types
-                        .as_ref()
-                        .and_then(|tys| tys.get(arg_idx))
-                        .cloned()
-                        .unwrap_or_else(|| self.get_operand_ar_type(arg));
-                    if matches!(arg_ty, ArType::Void) {
-                        continue;
                     }
-                    match self.fat_operand_kind(&arg_ty) {
-                        FatOperandKind::Str => {
-                            let (ptr_val, len_val) = self.translate_str_operand(arg);
-                            clif_args.push(ptr_val);
-                            clif_args.push(len_val);
-                            clif_param_idx += 2;
+                    let ret_ty = interner.resolve(*result);
+                    let classifier = arandu_middle::layout::TargetAbiClassifier::new(
+                        crate::abi::target_abi_for_triple(triple),
+                        u64::from(self.ptr_type.bytes()),
+                    );
+                    let mut call_sig = crate::abi::build_signature_with_classifier(
+                        &full_params,
+                        &ret_ty,
+                        self.module.isa().default_call_conv(),
+                        self.ptr_type,
+                        &classifier,
+                        interner,
+                        self.type_info,
+                    );
+                    if apple_arm64 && args.len() > fixed_len {
+                        // As rustc's Cranelift backend does: exhaust the
+                        // argument registers with padding so every variadic
+                        // argument goes on the stack, where the callee's
+                        // `va_arg` reads it.
+                        let fixed_sig = crate::abi::build_signature_with_classifier(
+                            &full_params[..fixed_len],
+                            &ret_ty,
+                            self.module.isa().default_call_conv(),
+                            self.ptr_type,
+                            &classifier,
+                            interner,
+                            self.type_info,
+                        );
+                        let fixed_values = fixed_sig.params.len();
+                        let used_float = fixed_sig
+                            .params
+                            .iter()
+                            .filter(|param| param.value_type.is_float())
+                            .count();
+                        let used_int = fixed_values - used_float;
+                        let variadic_float = call_sig.params[fixed_values..]
+                            .iter()
+                            .any(|param| param.value_type.is_float());
+                        let mut padding = vec![
+                            cranelift_codegen::ir::types::I64;
+                            8usize.saturating_sub(used_int)
+                        ];
+                        if variadic_float {
+                            padding.extend(std::iter::repeat_n(
+                                cranelift_codegen::ir::types::F64,
+                                8usize.saturating_sub(used_float),
+                            ));
                         }
-                        FatOperandKind::Slice => {
-                            let (data, len) = self.translate_slice_operand(arg);
-                            clif_args.push(data);
-                            clif_args.push(len);
-                            clif_param_idx += 2;
+                        for (offset, &ty) in padding.iter().enumerate() {
+                            call_sig.params.insert(
+                                fixed_values + offset,
+                                cranelift_codegen::ir::AbiParam::new(ty),
+                            );
                         }
-                        FatOperandKind::None => {
-                            if matches!(
-                                arg_ty,
-                                ArType::Named(_, _) | ArType::Tuple(_) | ArType::Array(_, _)
-                            ) {
-                                let arg_abi = self.classify_arg_abi(&arg_ty);
-                                match arg_abi {
-                                    arandu_middle::layout::ArgAbi::ZeroSized => {}
-                                    arandu_middle::layout::ArgAbi::Direct(direct) => {
-                                        let base_ptr =
-                                            self.translate_operand(arg, Some(self.ptr_type));
-                                        let layout = self.checked_layout(&arg_ty);
-                                        for abi_slot in &direct.slots {
-                                            let chunk_val =
-                                                self.load_abi_slot(base_ptr, abi_slot, layout.size);
-                                            clif_args.push(chunk_val);
-                                            clif_param_idx += 1;
-                                        }
-                                    }
-                                    arandu_middle::layout::ArgAbi::Indirect => {
-                                        let val = self.translate_operand(arg, Some(self.ptr_type));
-                                        clif_args.push(val);
-                                        clif_param_idx += 1;
-                                    }
+                        apple_variadic_padding = Some((fixed_len, padding));
+                    }
+                    let call_sig_id = self.builder.import_signature(call_sig);
+                    let code = self.builder.ins().func_addr(self.ptr_type, local_ref);
+                    let promoted_param_ids: Vec<_> = full_params
+                        .into_iter()
+                        .map(|ty| interner.intern(ty))
+                        .collect();
+                    let promoted_func_ty = ArType::func(&promoted_param_ids, *result, interner);
+                    (
+                        CallTarget::Indirect(code),
+                        call_sig_id,
+                        Some(promoted_func_ty),
+                    )
+                } else {
+                    (CallTarget::Direct(local_ref), sig_id, function_ty)
+                }
+            }
+            _ => {
+                let function_ty = self.get_operand_ar_type(callee);
+                let ArType::Func(params, ret) = &function_ty else {
+                    self.record_ice(
+                        "call through a value that is not a function",
+                        self.func_span(),
+                    );
+                    return;
+                };
+                let interner = self.type_info.type_interner();
+                let params = interner
+                    .type_args(*params)
+                    .iter()
+                    .map(|&id| interner.resolve(id))
+                    .collect::<Vec<_>>();
+                let ret = interner.resolve(*ret);
+                let triple = self.module.isa().triple();
+                let classifier = arandu_middle::layout::TargetAbiClassifier::new(
+                    crate::abi::target_abi_for_triple(triple),
+                    u64::from(self.ptr_type.bytes()),
+                );
+                let signature = crate::abi::build_internal_signature(
+                    &params,
+                    &ret,
+                    self.module.isa().default_call_conv(),
+                    self.ptr_type,
+                    &classifier,
+                    interner,
+                    self.type_info,
+                );
+                let sig_id = self.builder.import_signature(signature);
+                let code = self.translate_operand(callee, Some(self.ptr_type));
+                (CallTarget::Indirect(code), sig_id, Some(function_ty))
+            }
+        };
+        let (target, sig_id, function_ty) = target;
+        let (callee_param_types, result_ty) = match function_ty {
+            Some(ArType::Func(param_range, result)) => {
+                let interner = self.type_info.type_interner();
+                let params = interner
+                    .type_args(param_range)
+                    .iter()
+                    .map(|&pid| interner.resolve(pid))
+                    .collect::<Vec<_>>();
+                (Some(params), Some(interner.resolve(result)))
+            }
+            _ => (None, None),
+        };
+        let expected_tys: Vec<Type> = self.builder.func.dfg.signatures[sig_id]
+            .params
+            .iter()
+            .map(|param| param.value_type)
+            .collect();
+
+        let mut clif_args = Vec::new();
+        let mut clif_param_idx = 0;
+        if self.builder.func.dfg.signatures[sig_id]
+            .params
+            .first()
+            .is_some_and(|param| {
+                param.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn
+            })
+        {
+            let Some(result_ty) = result_ty else {
+                self.record_ice(
+                    "missing type for indirect aggregate result",
+                    self.func_span(),
+                );
+                return;
+            };
+            let destination = self.allocate_independent_aggregate(&result_ty);
+            indirect_result = Some(destination);
+            clif_args.push(destination);
+            clif_param_idx = 1;
+        }
+        for (arg_idx, arg) in args.iter().enumerate() {
+            if let Some((fixed, padding)) = &apple_variadic_padding
+                && arg_idx == *fixed
+            {
+                for &ty in padding {
+                    let zero = if ty.is_float() {
+                        self.builder.ins().f64const(0.0)
+                    } else {
+                        self.builder.ins().iconst(ty, 0)
+                    };
+                    clif_args.push(zero);
+                    clif_param_idx += 1;
+                }
+            }
+            let arg_ty = callee_param_types
+                .as_ref()
+                .and_then(|tys| tys.get(arg_idx))
+                .cloned()
+                .unwrap_or_else(|| self.get_operand_ar_type(arg));
+            if matches!(arg_ty, ArType::Void) {
+                continue;
+            }
+            match self.fat_operand_kind(&arg_ty) {
+                FatOperandKind::Str => {
+                    let (ptr_val, len_val) = self.translate_str_operand(arg);
+                    clif_args.push(ptr_val);
+                    clif_args.push(len_val);
+                    clif_param_idx += 2;
+                }
+                FatOperandKind::Slice => {
+                    let (data, len) = self.translate_slice_operand(arg);
+                    clif_args.push(data);
+                    clif_args.push(len);
+                    clif_param_idx += 2;
+                }
+                FatOperandKind::None => {
+                    if matches!(
+                        arg_ty,
+                        ArType::Named(_, _) | ArType::Tuple(_) | ArType::Array(_, _)
+                    ) {
+                        let arg_abi = self.classify_arg_abi(&arg_ty);
+                        match arg_abi {
+                            arandu_middle::layout::ArgAbi::ZeroSized => {}
+                            arandu_middle::layout::ArgAbi::Direct(direct) => {
+                                let base_ptr = self.translate_operand(arg, Some(self.ptr_type));
+                                let layout = self.checked_layout(&arg_ty);
+                                for abi_slot in &direct.slots {
+                                    let chunk_val =
+                                        self.load_abi_slot(base_ptr, abi_slot, layout.size);
+                                    clif_args.push(chunk_val);
+                                    clif_param_idx += 1;
                                 }
-                            } else {
-                                let expected = expected_tys.get(clif_param_idx).copied();
-                                let val =
-                                    self.translate_typed_operand(arg, expected, Some(&arg_ty));
+                            }
+                            arandu_middle::layout::ArgAbi::Indirect => {
+                                let val = self.translate_operand(arg, Some(self.ptr_type));
                                 clif_args.push(val);
                                 clif_param_idx += 1;
                             }
                         }
+                    } else {
+                        let expected = expected_tys.get(clif_param_idx).copied();
+                        let val = self.translate_typed_operand(arg, expected, Some(&arg_ty));
+                        clif_args.push(val);
+                        clif_param_idx += 1;
                     }
                 }
-
-                self.builder.ins().call(local_ref, &clif_args)
             }
-            _ => {
-                self.record_ice(
-                    "indirect function calls are not implemented (and should have been rejected by the type checker)",
-                    self.func_span(),
-                );
-                return;
+        }
+
+        let call_inst = match target {
+            CallTarget::Direct(local_ref) => self.builder.ins().call(local_ref, &clif_args),
+            CallTarget::Indirect(code) => {
+                self.builder.ins().call_indirect(sig_id, code, &clif_args)
             }
         };
         if let Some(lhs_temp) = lhs {
@@ -322,6 +465,242 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 true
             }
+            Some(
+                arandu_middle::IntrinsicKind::RotateLeft
+                | arandu_middle::IntrinsicKind::RotateRight
+                | arandu_middle::IntrinsicKind::SwapBytes,
+            ) => {
+                let input_ty = if bare.ends_with("64") {
+                    cranelift_codegen::ir::types::I64
+                } else {
+                    cranelift_codegen::ir::types::I32
+                };
+                let is_swap = kind == Some(arandu_middle::IntrinsicKind::SwapBytes);
+                let expected_args = if is_swap { 1 } else { 2 };
+                if args.len() == expected_args {
+                    let value = self.translate_operand(&args[0], Some(input_ty));
+                    let result = if is_swap {
+                        self.builder.ins().bswap(value)
+                    } else {
+                        // `rotl`/`rotr` reduzem a quantidade módulo a largura,
+                        // igual a `llvm.fshl`/`fshr` e ao backend C.
+                        let amount = self.translate_operand(&args[1], Some(input_ty));
+                        if kind == Some(arandu_middle::IntrinsicKind::RotateLeft) {
+                            self.builder.ins().rotl(value, amount)
+                        } else {
+                            self.builder.ins().rotr(value, amount)
+                        }
+                    };
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                        && let Some(result_ty) = self.get_temp_clif_type(*destination)
+                    {
+                        let result = self.cast_int_width(result, result_ty);
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::Fma) => {
+                if args.len() == 3 {
+                    let ty = if bare == "fma" || bare.ends_with("64") {
+                        cranelift_codegen::ir::types::F64
+                    } else {
+                        cranelift_codegen::ir::types::F32
+                    };
+                    let a = self.translate_operand(&args[0], Some(ty));
+                    let b = self.translate_operand(&args[1], Some(ty));
+                    let c = self.translate_operand(&args[2], Some(ty));
+                    let result = self.builder.ins().fma(a, b, c);
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::Sqrt) => {
+                if let [arg] = args {
+                    let ty = if bare == "sqrt" || bare.ends_with("64") {
+                        cranelift_codegen::ir::types::F64
+                    } else {
+                        cranelift_codegen::ir::types::F32
+                    };
+                    let val = self.translate_operand(arg, Some(ty));
+                    let result = self.builder.ins().sqrt(val);
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::FloatToBits(width)) => {
+                if let [arg] = args {
+                    let (in_ty, out_ty) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => (
+                            cranelift_codegen::ir::types::F64,
+                            cranelift_codegen::ir::types::I64,
+                        ),
+                        arandu_middle::intrinsics::FloatWidth::F32 => (
+                            cranelift_codegen::ir::types::F32,
+                            cranelift_codegen::ir::types::I32,
+                        ),
+                    };
+                    let val = self.translate_operand(arg, Some(in_ty));
+                    let result = self.builder.ins().bitcast(
+                        out_ty,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        val,
+                    );
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::FloatFromBits(width)) => {
+                if let [arg] = args {
+                    let (in_ty, out_ty) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => (
+                            cranelift_codegen::ir::types::I64,
+                            cranelift_codegen::ir::types::F64,
+                        ),
+                        arandu_middle::intrinsics::FloatWidth::F32 => (
+                            cranelift_codegen::ir::types::I32,
+                            cranelift_codegen::ir::types::F32,
+                        ),
+                    };
+                    let val = self.translate_operand(arg, Some(in_ty));
+                    let result = self.builder.ins().bitcast(
+                        out_ty,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        val,
+                    );
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::SpinLoopHint) => {
+                // Cranelift targets have no direct pause instruction; emit a safe no-op.
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::Likely | arandu_middle::IntrinsicKind::Unlikely) => {
+                if let [arg] = args {
+                    let val = self.translate_operand(arg, Some(cranelift_codegen::ir::types::I8));
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, val);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::intrinsics::IntrinsicKind::OverflowArithmetic(op, arith_int)) => {
+                use arandu_middle::intrinsics::OverflowOp;
+                if args.len() == 2 {
+                    let int_ty = if arith_int.is_64_bit() {
+                        cranelift_codegen::ir::types::I64
+                    } else {
+                        cranelift_codegen::ir::types::I32
+                    };
+                    let a = self.translate_operand(&args[0], Some(int_ty));
+                    let b = self.translate_operand(&args[1], Some(int_ty));
+                    let (res, ov) = match (op, arith_int.is_signed()) {
+                        (OverflowOp::Add, true) => self.builder.ins().sadd_overflow(a, b),
+                        (OverflowOp::Add, false) => self.builder.ins().uadd_overflow(a, b),
+                        (OverflowOp::Sub, true) => self.builder.ins().ssub_overflow(a, b),
+                        (OverflowOp::Sub, false) => self.builder.ins().usub_overflow(a, b),
+                        (OverflowOp::Mul, true) => self.builder.ins().smul_overflow(a, b),
+                        (OverflowOp::Mul, false) => self.builder.ins().umul_overflow(a, b),
+                    };
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        let tuple_ty =
+                            self.resolve_ty(self.current_func.temps[destination.as_usize()].ty);
+                        let layout = self.checked_layout(&tuple_ty);
+                        let ptr_val = self.allocate_aggregate(&tuple_ty);
+                        let ov_i8 = self.cast_int_width(ov, cranelift_codegen::ir::types::I8);
+                        let off0 = layout.field_offsets.first().copied().unwrap_or(0) as i32;
+                        let off1 = layout.field_offsets.get(1).copied().unwrap_or(0) as i32;
+                        self.builder.ins().store(
+                            cranelift_codegen::ir::MemFlagsData::new(),
+                            res,
+                            ptr_val,
+                            off0,
+                        );
+                        self.builder.ins().store(
+                            cranelift_codegen::ir::MemFlagsData::new(),
+                            ov_i8,
+                            ptr_val,
+                            off1,
+                        );
+                        self.builder.def_var(variable, ptr_val);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::intrinsics::IntrinsicKind::SaturatingArithmetic(op, arith_int)) => {
+                use arandu_middle::intrinsics::SaturatingOp;
+                if args.len() == 2 {
+                    let is_64 = arith_int.is_64_bit();
+                    let int_ty = if is_64 {
+                        cranelift_codegen::ir::types::I64
+                    } else {
+                        cranelift_codegen::ir::types::I32
+                    };
+                    let signed = arith_int.is_signed();
+                    let a = self.translate_operand(&args[0], Some(int_ty));
+                    let b = self.translate_operand(&args[1], Some(int_ty));
+                    // Cranelift's `*_sat` opcodes accept vector types only; use hardware
+                    // overflow flags + branchless `select` (`cmov` / `csel`).
+                    let (val, ov) = match (op, signed) {
+                        (SaturatingOp::Add, true) => self.builder.ins().sadd_overflow(a, b),
+                        (SaturatingOp::Add, false) => self.builder.ins().uadd_overflow(a, b),
+                        (SaturatingOp::Sub, true) => self.builder.ins().ssub_overflow(a, b),
+                        (SaturatingOp::Sub, false) => self.builder.ins().usub_overflow(a, b),
+                    };
+                    let sat = if signed {
+                        let zero = self.builder.ins().iconst(int_ty, 0);
+                        let res_neg = self.builder.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::SignedLessThan,
+                            val,
+                            zero,
+                        );
+                        let min_v = self
+                            .builder
+                            .ins()
+                            .iconst(int_ty, if is_64 { i64::MIN } else { i64::from(i32::MIN) });
+                        let max_v = self
+                            .builder
+                            .ins()
+                            .iconst(int_ty, if is_64 { i64::MAX } else { i64::from(i32::MAX) });
+                        self.builder.ins().select(res_neg, max_v, min_v)
+                    } else {
+                        let clamp = match op {
+                            SaturatingOp::Add => -1_i64,
+                            SaturatingOp::Sub => 0,
+                        };
+                        self.builder.ins().iconst(int_ty, clamp)
+                    };
+                    let res = self.builder.ins().select(ov, sat, val);
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                    {
+                        self.builder.def_var(variable, res);
+                    }
+                }
+                true
+            }
             Some(arandu_middle::IntrinsicKind::PtrRead) => {
                 if args.is_empty() {
                     return true;
@@ -400,17 +779,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 // Match `PtrRead`: writing a named struct by value copies the
                 // object bytes from the value's blob into `*p` instead of
                 // storing the 8-byte object pointer.
-                if self.is_inline_aggregate_ty(&val_ty)
-                    && let Some(memmove_id) = self.memmove_func_id()
-                {
+                if self.is_inline_aggregate_ty(&val_ty) {
                     let layout = self.checked_layout(&val_ty);
-                    let memmove_ref = self
-                        .module
-                        .declare_func_in_func(memmove_id, self.builder.func);
-                    let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
-                    self.builder
-                        .ins()
-                        .call(memmove_ref, &[ptr_val, val_to_store, size_val]);
+                    self.copy_aggregate_bytes(ptr_val, val_to_store, layout.size);
                     return true;
                 }
                 self.builder.ins().store(
@@ -490,10 +861,41 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let trap_ref = self.module.declare_func_in_func(trap_id, self.builder.func);
                     self.builder.ins().call(trap_ref, &[]);
                 }
+                if code == cranelift_codegen::ir::TrapCode::unwrap_user(2) {
+                    self.print_trap_message(arandu_middle::amir::TrapKind::GenerationalMismatch);
+                }
                 self.builder.ins().trap(code);
                 true
             }
-            Some(arandu_middle::IntrinsicKind::DropInPlace) => false,
+            Some(arandu_middle::IntrinsicKind::AbortWithMessage) => {
+                if let Some(reason) = args.first()
+                    && let Some(eprint) = self.resolve_function("eprint")
+                {
+                    let (data, len) = self.translate_str_operand(reason);
+                    let eprint_ref = self.module.declare_func_in_func(eprint, self.builder.func);
+                    self.builder.ins().call(eprint_ref, &[data, len]);
+                    if let Some(nl_addr) = self.declare_readonly_bytes("ar_abort_nl", b"\n") {
+                        let one = self.builder.ins().iconst(self.ptr_type, 1);
+                        self.builder.ins().call(eprint_ref, &[nl_addr, one]);
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    if let Some(trap_id) = self.resolve_function("ar_rt_trap") {
+                        let trap_ref = self.module.declare_func_in_func(trap_id, self.builder.func);
+                        self.builder.ins().call(trap_ref, &[]);
+                    } else {
+                        self.record_ice("ar_rt_trap was not declared", self.func_span());
+                    }
+                }
+                self.builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                true
+            }
+            Some(
+                arandu_middle::IntrinsicKind::DropInPlace | arandu_middle::IntrinsicKind::Forget,
+            ) => false,
             _ => false,
         }
     }
@@ -554,5 +956,27 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let dest = self.allocate_aggregate(ty);
         self.copy_aggregate_bytes(dest, src, layout.size);
         Some(dest)
+    }
+}
+
+/// Apple arm64 gives every variadic argument an 8-byte stack slot.
+fn widen_apple_vararg_type(ty: ArType) -> ArType {
+    match ty {
+        ArType::Primitive(Primitive::I32 | Primitive::Int) => ArType::Primitive(Primitive::I64),
+        ArType::Primitive(Primitive::U32 | Primitive::Uint) => ArType::Primitive(Primitive::U64),
+        other => other,
+    }
+}
+
+fn promote_c_vararg_type(ty: ArType) -> ArType {
+    match ty {
+        ArType::Primitive(Primitive::Bool | Primitive::I8 | Primitive::I16) => {
+            ArType::Primitive(Primitive::I32)
+        }
+        ArType::Primitive(Primitive::U8 | Primitive::U16 | Primitive::Byte) => {
+            ArType::Primitive(Primitive::U32)
+        }
+        ArType::Primitive(Primitive::F32) => ArType::Primitive(Primitive::F64),
+        other => other,
     }
 }

@@ -217,6 +217,14 @@ pub fn reparse_subtree(
     if edit_start < old_s || edit_end > old_e {
         return fallback(new_source);
     }
+    // Doc comments are trivia immediately before the item node, but their
+    // lexing depends on the following line break. An insertion at the item's
+    // first byte can therefore extend or otherwise change the preceding doc
+    // token even though it is outside the token's old span.
+    let extent_start = old.item_extents().get(idx).map_or(old_s, |extent| extent.0);
+    if extent_start < old_s && edit_start >= extent_start && edit_start <= old_s {
+        return fallback(new_source);
+    }
 
     let new_s = old_s;
     let Some(new_e) = (old_e as i64).checked_add(delta) else {

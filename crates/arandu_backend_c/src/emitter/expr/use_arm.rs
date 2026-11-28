@@ -24,21 +24,6 @@ impl<'a> CEmitter<'a> {
             expected_ar_type,
             ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
         ) && !expected_ar_type.is_borrowed_slice_abi(self.interner);
-        // Box a `T` into a `T?` handle, and unbox a non-nil handle back to `T`.
-        if let ArType::Nullable(inner) = expected_ar_type
-            && !matches!(source_ty, ArType::Nullable(_))
-            && !matches!(op, AmirOperand::Constant(AmirConstant::Nil))
-        {
-            let inner_ty = self.interner.resolve(*inner);
-            if self.is_boxed_nullable(&inner_ty) {
-                let inner_c = self.format_type(&inner_ty);
-                let _ = write!(
-                    &mut self.output,
-                    "({{ {inner_c}* ar_box = ({inner_c}*)malloc(sizeof({inner_c})); if (!ar_box) abort(); *ar_box = ({inner_c})({op_str}); ar_box; }})"
-                );
-                return;
-            }
-        }
         // Float to integer, as Cranelift and Wasm: truncate in a width of at
         // least 32 bits with the target's signedness, trap on NaN or a value
         // outside that width, then wrap to the target. A plain C conversion
@@ -58,7 +43,8 @@ impl<'a> CEmitter<'a> {
             let wide = format!("{}int{bits}_t", if unsigned { "u" } else { "" });
             let _ = write!(
                 &mut self.output,
-                "({{ double ar_f = (double)({op_str}); if (!(ar_f > {low} && ar_f < {high})) {{ AR_ABORT(); }} ({expected_c_type})({wide})ar_f; }})"
+                "({{ double ar_f = (double)({op_str}); if (!(ar_f > {low} && ar_f < {high})) {{ {}; }} ({expected_c_type})({wide})ar_f; }})",
+                super::super::trap_call(arandu_middle::amir::TrapKind::InvalidCast)
             );
             return;
         }
@@ -76,15 +62,6 @@ impl<'a> CEmitter<'a> {
         {
             let _ = write!(&mut self.output, "({expected_c_type}){{0}}");
             return;
-        }
-        if let ArType::Nullable(inner) = &source_ty
-            && !matches!(expected_ar_type, ArType::Nullable(_))
-        {
-            let inner_ty = self.interner.resolve(*inner);
-            if self.is_boxed_nullable(&inner_ty) {
-                let _ = write!(&mut self.output, "(*({op_str}))");
-                return;
-            }
         }
         if self.is_str_ref_to_str(&source_ty, expected_ar_type) {
             let _ = write!(&mut self.output, "(*({op_str}))");

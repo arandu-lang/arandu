@@ -1,7 +1,7 @@
 //! Scalar atomics use compiler builtins, without runtime or allocator imports.
 use super::CEmitter;
 use arandu_middle::amir::{AmirFunc, AmirOperand, TempId};
-use arandu_middle::intrinsics::{AtomicOp, AtomicWidth, IntrinsicKind};
+use arandu_middle::intrinsics::{AtomicOp, AtomicOrdering, AtomicWidth, IntrinsicKind};
 use std::fmt::Write;
 
 impl CEmitter<'_> {
@@ -12,18 +12,22 @@ impl CEmitter<'_> {
         args: &[AmirOperand],
         func: &AmirFunc,
     ) -> bool {
-        let (op, width) = match kind {
-            IntrinsicKind::Atomic(op, width) => (op, width),
-            IntrinsicKind::AtomicFence | IntrinsicKind::AtomicCompilerFence => {
-                let builtin = if kind == IntrinsicKind::AtomicFence {
+        let (op, width, ordering) = match kind {
+            IntrinsicKind::Atomic(op, width, ordering) => (op, width, ordering),
+            IntrinsicKind::AtomicFence(ordering) | IntrinsicKind::AtomicCompilerFence(ordering) => {
+                let builtin = if matches!(kind, IntrinsicKind::AtomicFence(..)) {
                     "thread"
                 } else {
                     "signal"
                 };
-                let _ = writeln!(
-                    self.output,
-                    "    __atomic_{builtin}_fence(__ATOMIC_SEQ_CST);"
-                );
+                let c_order = match ordering {
+                    AtomicOrdering::Relaxed => "__ATOMIC_RELAXED",
+                    AtomicOrdering::Acquire => "__ATOMIC_ACQUIRE",
+                    AtomicOrdering::Release => "__ATOMIC_RELEASE",
+                    AtomicOrdering::AcqRel => "__ATOMIC_ACQ_REL",
+                    AtomicOrdering::SeqCst => "__ATOMIC_SEQ_CST",
+                };
+                let _ = writeln!(self.output, "    __atomic_{builtin}_fence({c_order});");
                 return true;
             }
             _ => return false,
@@ -47,19 +51,43 @@ impl CEmitter<'_> {
         let value = args
             .get(1)
             .map(|arg| format!("({ty})({})", self.format_operand(arg, func)));
+        let load_order = match ordering {
+            AtomicOrdering::Relaxed => "__ATOMIC_RELAXED",
+            AtomicOrdering::Acquire | AtomicOrdering::AcqRel => "__ATOMIC_ACQUIRE",
+            _ => "__ATOMIC_SEQ_CST",
+        };
+        let store_order = match ordering {
+            AtomicOrdering::Relaxed => "__ATOMIC_RELAXED",
+            AtomicOrdering::Release | AtomicOrdering::AcqRel => "__ATOMIC_RELEASE",
+            _ => "__ATOMIC_SEQ_CST",
+        };
+        let rmw_order = match ordering {
+            AtomicOrdering::Relaxed => "__ATOMIC_RELAXED",
+            AtomicOrdering::Acquire => "__ATOMIC_ACQUIRE",
+            AtomicOrdering::Release => "__ATOMIC_RELEASE",
+            AtomicOrdering::AcqRel => "__ATOMIC_ACQ_REL",
+            AtomicOrdering::SeqCst => "__ATOMIC_SEQ_CST",
+        };
         let expression = match op {
-            AtomicOp::Load => format!("__atomic_load_n({pointer}, __ATOMIC_SEQ_CST)"),
+            AtomicOp::Load => format!("__atomic_load_n({pointer}, {load_order})"),
             AtomicOp::Store => format!(
-                "__atomic_store_n({pointer}, {}, __ATOMIC_SEQ_CST)",
+                "__atomic_store_n({pointer}, {}, {store_order})",
                 value.as_deref().unwrap_or("0")
             ),
             AtomicOp::CompareExchange => {
                 let expected = value.as_deref().unwrap_or("0");
                 let desired = self.format_operand(&args[2], func);
+                let (cas_succ, cas_fail) = match ordering {
+                    AtomicOrdering::Relaxed => ("__ATOMIC_RELAXED", "__ATOMIC_RELAXED"),
+                    AtomicOrdering::Acquire => ("__ATOMIC_ACQUIRE", "__ATOMIC_ACQUIRE"),
+                    AtomicOrdering::Release => ("__ATOMIC_RELEASE", "__ATOMIC_RELAXED"),
+                    AtomicOrdering::AcqRel => ("__ATOMIC_ACQ_REL", "__ATOMIC_ACQUIRE"),
+                    AtomicOrdering::SeqCst => ("__ATOMIC_SEQ_CST", "__ATOMIC_SEQ_CST"),
+                };
                 // Expected is an lvalue modified by the builtin on failure.
                 // The statement expression returns the observation on both paths.
                 format!(
-                    "({{ {ty} ar_expected = {expected}; __atomic_compare_exchange_n({pointer}, &ar_expected, ({ty})({desired}), 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); ar_expected; }})"
+                    "({{ {ty} ar_expected = {expected}; __atomic_compare_exchange_n({pointer}, &ar_expected, ({ty})({desired}), 0, {cas_succ}, {cas_fail}); ar_expected; }})"
                 )
             }
             AtomicOp::Swap
@@ -80,7 +108,7 @@ impl CEmitter<'_> {
                     AtomicOp::CompareExchange => "compare_exchange_n",
                 };
                 format!(
-                    "__atomic_{builtin}({pointer}, {}, __ATOMIC_SEQ_CST)",
+                    "__atomic_{builtin}({pointer}, {}, {rmw_order})",
                     value.as_deref().unwrap_or("0")
                 )
             }

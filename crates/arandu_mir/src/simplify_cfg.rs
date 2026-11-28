@@ -1,10 +1,16 @@
-use crate::amir::{AmirBasicBlock, AmirFunc, AmirStmtTable, AmirTerminator, BlockId};
+use crate::amir::{
+    AmirBasicBlock, AmirConstant, AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirStmtTable,
+    AmirTemp, AmirTerminator, BlockId, TempId, for_each_rvalue_operand,
+};
 use crate::cfg::{clear_block, compute_cfg_edges, retarget_successor, transfer_edges};
 use crate::layout::DenseRange;
+use crate::ops::{BinaryOp, UnaryOp};
+use crate::types::{ArType, Primitive, TypeId, TypeInterner};
 use crate::{DiagCode, Diagnostic, Span};
 use std::collections::VecDeque;
 
-/// CFG simplification pass: jump threading, block merging, unreachable removal.
+/// CFG simplification pass: jump threading, block merging, diamond
+/// if-conversion (when `interner` is available), unreachable removal.
 ///
 /// Uses a local worklist inside an outer fixpoint loop so that each
 /// transformation feeds the next (e.g. block removal enables new merges).
@@ -12,7 +18,16 @@ use std::collections::VecDeque;
 /// change); threading and merging update the CFG incrementally.
 ///
 /// Returns `true` if any change was made.
+#[cfg(test)]
 pub fn simplify_cfg(func: &mut AmirFunc, bump: &bumpalo::Bump) -> Result<bool, Diagnostic> {
+    simplify_cfg_with_interner(func, bump, None)
+}
+
+pub fn simplify_cfg_with_interner(
+    func: &mut AmirFunc,
+    bump: &bumpalo::Bump,
+    interner: Option<&TypeInterner>,
+) -> Result<bool, Diagnostic> {
     // Recompute CFG from scratch to catch any terminator changes made by
     // prior passes (SCCP, DCE) — those passes do not update the CFG.
     func.cfg = compute_cfg_edges(&func.blocks);
@@ -64,6 +79,10 @@ pub fn simplify_cfg(func: &mut AmirFunc, bump: &bumpalo::Bump) -> Result<bool, D
 
         if absorbed.iter().any(|blocks| !blocks.is_empty()) {
             compact_merged_statements(func, &absorbed, bump)?;
+        }
+
+        if let Some(interner) = interner {
+            local |= if_convert_diamonds(func, interner, bump)?;
         }
 
         // Phase 2 — unreachable removal (full CFG recompute, indices shift).
@@ -249,6 +268,510 @@ fn compact_merged_statements(
         func.blocks[i].statements = range;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Diamond if-conversion (Branch diamond -> AmirRvalue::Select)
+// ---------------------------------------------------------------------------
+
+const MAX_SELECT_ARM_PREP_STMTS: usize = 2;
+
+fn is_scalar_select_ty(ty: TypeId, interner: &TypeInterner) -> bool {
+    match interner.resolve(ty) {
+        ArType::Primitive(Primitive::Bool | Primitive::Char) | ArType::Ptr(_) => true,
+        ArType::Primitive(primitive) => primitive.is_numeric(),
+        _ => false,
+    }
+}
+
+fn temp_is_select_scalar(func: &AmirFunc, temp: TempId, interner: &TypeInterner) -> bool {
+    func.temps.get(temp.as_usize()).is_some_and(|meta| {
+        meta.is_copy && !meta.is_nullable && is_scalar_select_ty(meta.ty, interner)
+    })
+}
+
+fn operand_is_speculatable(
+    op: &AmirOperand,
+    lhs_ty: TypeId,
+    func: &AmirFunc,
+    interner: &TypeInterner,
+) -> bool {
+    match op {
+        AmirOperand::Move(_) | AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => false,
+        // `Nil` stands for a value a path leaves undefined; as a select arm
+        // it is valid only where it is a null pointer (as the validator
+        // checks), never for an integer or a float.
+        AmirOperand::Constant(AmirConstant::Nil) => {
+            matches!(interner.resolve(lhs_ty), ArType::Ptr(_))
+        }
+        AmirOperand::Constant(_) => true,
+        AmirOperand::Copy(temp) => {
+            if !temp_is_select_scalar(func, *temp, interner) {
+                return false;
+            }
+            // Narrowing float-to-int casts trap on NaN / out-of-range inputs.
+            let src_float = matches!(
+                interner.resolve(func.temps[temp.as_usize()].ty),
+                ArType::Primitive(p) if p.is_float()
+            );
+            let dst_int = matches!(
+                interner.resolve(lhs_ty),
+                ArType::Primitive(p) if p.is_integer()
+            );
+            !(src_float && dst_int)
+        }
+    }
+}
+
+fn rvalue_is_speculatable(
+    rhs: &AmirRvalue,
+    lhs_ty: TypeId,
+    func: &AmirFunc,
+    interner: &TypeInterner,
+) -> bool {
+    if !is_scalar_select_ty(lhs_ty, interner) {
+        return false;
+    }
+    let mut operands_ok = true;
+    for_each_rvalue_operand(rhs, |op| {
+        operands_ok &= operand_is_speculatable(op, lhs_ty, func, interner);
+    });
+    if !operands_ok {
+        return false;
+    }
+    match rhs {
+        AmirRvalue::Use(_) | AmirRvalue::Select { .. } => true,
+        AmirRvalue::Unary { op, .. } => matches!(op, UnaryOp::Not | UnaryOp::BitNot),
+        AmirRvalue::Binary { op, .. } => matches!(
+            op,
+            BinaryOp::Add
+                | BinaryOp::Sub
+                | BinaryOp::Mul
+                | BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Lt
+                | BinaryOp::LtEqual
+                | BinaryOp::Gt
+                | BinaryOp::GtEqual
+                | BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+        ),
+        _ => false,
+    }
+}
+
+fn collect_speculatable_arm(
+    func: &AmirFunc,
+    bid: BlockId,
+    max_assigns: usize,
+    interner: &TypeInterner,
+) -> Option<Vec<(TempId, AmirRvalue)>> {
+    let mut assigns = Vec::new();
+    for stmt in func.block_stmts(bid) {
+        match stmt {
+            AmirStmt::Nop => continue,
+            AmirStmt::Assign { lhs, rhs } => {
+                if assigns.len() >= max_assigns || !temp_is_select_scalar(func, *lhs, interner) {
+                    return None;
+                }
+                let lhs_ty = func.temps[lhs.as_usize()].ty;
+                if !rvalue_is_speculatable(rhs, lhs_ty, func, interner) {
+                    return None;
+                }
+                assigns.push((*lhs, rhs.clone()));
+            }
+            _ => return None,
+        }
+    }
+    Some(assigns)
+}
+
+fn arm_reads_temp(assigns: &[(TempId, AmirRvalue)], target: TempId) -> bool {
+    let mut found = false;
+    for (_, rhs) in assigns {
+        for_each_rvalue_operand(rhs, |op| {
+            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
+                found |= *t == target;
+            }
+        });
+    }
+    found
+}
+
+fn push_temp(func: &mut AmirFunc, ty: TypeId, span: Span) -> TempId {
+    let id = TempId::from_usize(func.temps.len());
+    func.temps.push(AmirTemp {
+        id,
+        ty,
+        is_copy: true,
+        is_nullable: false,
+        span,
+    });
+    id
+}
+
+fn emit_arm_result(
+    func: &mut AmirFunc,
+    dest_ty: TypeId,
+    span: Span,
+    arm: Vec<(TempId, AmirRvalue)>,
+    out: &mut Vec<AmirStmt>,
+) -> AmirOperand {
+    let len = arm.len();
+    for (idx, (lhs, rhs)) in arm.into_iter().enumerate() {
+        if idx + 1 < len {
+            out.push(AmirStmt::Assign { lhs, rhs });
+        } else {
+            if let AmirRvalue::Use(op @ (AmirOperand::Copy(_) | AmirOperand::Constant(_))) = &rhs
+                && match op {
+                    AmirOperand::Copy(src) => func.temps[src.as_usize()].ty == dest_ty,
+                    AmirOperand::Constant(_) => true,
+                    _ => false,
+                }
+            {
+                return *op;
+            }
+            let tmp = push_temp(func, dest_ty, span);
+            out.push(AmirStmt::Assign { lhs: tmp, rhs });
+            return AmirOperand::Copy(tmp);
+        }
+    }
+    unreachable!("non-empty arm always produces an operand")
+}
+
+fn if_convert_diamonds(
+    func: &mut AmirFunc,
+    interner: &TypeInterner,
+    bump: &bumpalo::Bump,
+) -> Result<bool, Diagnostic> {
+    let n_blocks = func.blocks.len();
+    if n_blocks < 3 || func.temps.is_empty() {
+        return Ok(false);
+    }
+
+    let mut temp_defs = vec![0usize; func.temps.len()];
+    for &p in &func.params {
+        temp_defs[p.as_usize()] += 1;
+    }
+    if let Some(recv) = &func.receiver {
+        temp_defs[recv.temp.as_usize()] += 1;
+    }
+    for block in &func.blocks {
+        for param in func.block_params(block.params) {
+            temp_defs[param.id.as_usize()] += 1;
+        }
+        for stmt in func.block_stmts(block.id) {
+            if let AmirStmt::Assign { lhs, .. } | AmirStmt::Call { lhs: Some(lhs), .. } = stmt {
+                temp_defs[lhs.as_usize()] += 1;
+            }
+        }
+    }
+
+    let mut consumed = vec![false; n_blocks];
+    let mut appended: Vec<Vec<AmirStmt>> = vec![Vec::new(); n_blocks];
+    let mut any_converted = false;
+    let span = optimization_span(func);
+
+    for bi in 0..n_blocks {
+        let bid = BlockId::from_usize(bi);
+        if consumed[bi] {
+            continue;
+        }
+        let AmirTerminator::Branch {
+            condition,
+            if_true,
+            true_args,
+            if_false,
+            false_args,
+        } = func.blocks[bi].terminator.clone()
+        else {
+            continue;
+        };
+        if !true_args.is_empty()
+            || !false_args.is_empty()
+            || if_true == if_false
+            || if_true == bid
+            || if_false == bid
+            || if_true.as_usize() == 0
+            || if_false.as_usize() == 0
+            || consumed[if_true.as_usize()]
+            || consumed[if_false.as_usize()]
+        {
+            continue;
+        }
+        let cond_ok = match &condition {
+            AmirOperand::Constant(AmirConstant::Bool(_)) => true,
+            AmirOperand::Copy(t) => matches!(
+                interner.resolve(func.temps[t.as_usize()].ty),
+                ArType::Primitive(Primitive::Bool)
+            ),
+            _ => false,
+        };
+        if !cond_ok {
+            continue;
+        }
+        if func.predecessors(if_true) != [bid]
+            || func.predecessors(if_false) != [bid]
+            || !func
+                .block_params(func.blocks[if_true.as_usize()].params)
+                .is_empty()
+            || !func
+                .block_params(func.blocks[if_false.as_usize()].params)
+                .is_empty()
+        {
+            continue;
+        }
+
+        let term_t = func.blocks[if_true.as_usize()].terminator.clone();
+        let term_f = func.blocks[if_false.as_usize()].terminator.clone();
+
+        match (&term_t, &term_f) {
+            // Case A: SSA block-param diamond (`goto join(arg_t)` / `goto join(arg_f)`)
+            (
+                AmirTerminator::Goto {
+                    target: join_t,
+                    args: args_t,
+                },
+                AmirTerminator::Goto {
+                    target: join_f,
+                    args: args_f,
+                },
+            ) if join_t == join_f
+                && *join_t != bid
+                && *join_t != if_true
+                && *join_t != if_false
+                && !consumed[join_t.as_usize()]
+                && args_t.len() == 1
+                && args_f.len() == 1 =>
+            {
+                let join_params = func.block_params(func.blocks[join_t.as_usize()].params);
+                if join_params.len() != 1
+                    || !temp_is_select_scalar(func, join_params[0].id, interner)
+                {
+                    continue;
+                }
+                let select_ty = join_params[0].ty;
+                let arg_t = args_t[0];
+                let arg_f = args_f[0];
+                if !operand_is_speculatable(&arg_t, select_ty, func, interner)
+                    || !operand_is_speculatable(&arg_f, select_ty, func, interner)
+                {
+                    continue;
+                }
+                let Some(arm_t) =
+                    collect_speculatable_arm(func, if_true, MAX_SELECT_ARM_PREP_STMTS, interner)
+                else {
+                    continue;
+                };
+                let Some(arm_f) =
+                    collect_speculatable_arm(func, if_false, MAX_SELECT_ARM_PREP_STMTS, interner)
+                else {
+                    continue;
+                };
+                if !arm_t
+                    .iter()
+                    .chain(arm_f.iter())
+                    .all(|(lhs, _)| temp_defs[lhs.as_usize()] == 1)
+                {
+                    continue;
+                }
+                for (lhs, rhs) in arm_t.into_iter().chain(arm_f) {
+                    appended[bi].push(AmirStmt::Assign { lhs, rhs });
+                }
+                let select_tmp = push_temp(func, select_ty, span);
+                appended[bi].push(AmirStmt::Assign {
+                    lhs: select_tmp,
+                    rhs: AmirRvalue::Select {
+                        condition,
+                        if_true: arg_t,
+                        if_false: arg_f,
+                    },
+                });
+                func.blocks[bi].terminator = AmirTerminator::Goto {
+                    target: *join_t,
+                    args: vec![AmirOperand::Copy(select_tmp)],
+                };
+                func.blocks[if_true.as_usize()].terminator = AmirTerminator::Unreachable;
+                func.blocks[if_false.as_usize()].terminator = AmirTerminator::Unreachable;
+                consumed[if_true.as_usize()] = true;
+                consumed[if_false.as_usize()] = true;
+                any_converted = true;
+            }
+            // Case B: shared-dest `if` expression (`dest = rhs_t; goto join()` / `dest = rhs_f; goto join()`)
+            (
+                AmirTerminator::Goto {
+                    target: join_t,
+                    args: args_t,
+                },
+                AmirTerminator::Goto {
+                    target: join_f,
+                    args: args_f,
+                },
+            ) if join_t == join_f
+                && *join_t != bid
+                && *join_t != if_true
+                && *join_t != if_false
+                && !consumed[join_t.as_usize()]
+                && args_t.is_empty()
+                && args_f.is_empty()
+                && func
+                    .block_params(func.blocks[join_t.as_usize()].params)
+                    .is_empty() =>
+            {
+                let Some(arm_t) = collect_speculatable_arm(
+                    func,
+                    if_true,
+                    MAX_SELECT_ARM_PREP_STMTS + 1,
+                    interner,
+                ) else {
+                    continue;
+                };
+                let Some(arm_f) = collect_speculatable_arm(
+                    func,
+                    if_false,
+                    MAX_SELECT_ARM_PREP_STMTS + 1,
+                    interner,
+                ) else {
+                    continue;
+                };
+                let (Some((dest_t, _)), Some((dest_f, _))) = (arm_t.last(), arm_f.last()) else {
+                    continue;
+                };
+                let dest = *dest_t;
+                if dest != *dest_f
+                    || temp_defs[dest.as_usize()] != 2
+                    || arm_reads_temp(&arm_t, dest)
+                    || arm_reads_temp(&arm_f, dest)
+                {
+                    continue;
+                }
+                if !arm_t[..arm_t.len() - 1]
+                    .iter()
+                    .chain(&arm_f[..arm_f.len() - 1])
+                    .all(|(lhs, _)| temp_defs[lhs.as_usize()] == 1)
+                {
+                    continue;
+                }
+                let dest_ty = func.temps[dest.as_usize()].ty;
+                let mut hoisted = Vec::new();
+                let op_t = emit_arm_result(func, dest_ty, span, arm_t, &mut hoisted);
+                let op_f = emit_arm_result(func, dest_ty, span, arm_f, &mut hoisted);
+                appended[bi].extend(hoisted);
+                appended[bi].push(AmirStmt::Assign {
+                    lhs: dest,
+                    rhs: AmirRvalue::Select {
+                        condition,
+                        if_true: op_t,
+                        if_false: op_f,
+                    },
+                });
+                func.blocks[bi].terminator = AmirTerminator::Goto {
+                    target: *join_t,
+                    args: Vec::new(),
+                };
+                func.blocks[if_true.as_usize()].terminator = AmirTerminator::Unreachable;
+                func.blocks[if_false.as_usize()].terminator = AmirTerminator::Unreachable;
+                consumed[if_true.as_usize()] = true;
+                consumed[if_false.as_usize()] = true;
+                any_converted = true;
+            }
+            // Case C: pure scalar early-return diamond (`_0 = t; Return` / `_0 = f; Return`)
+            (AmirTerminator::Return, AmirTerminator::Return)
+                if !func.locals.first().is_some_and(|local| local.is_memory)
+                    && temp_is_select_scalar(func, TempId::from_usize(0), interner) =>
+            {
+                let Some(arm_t) = collect_speculatable_arm(
+                    func,
+                    if_true,
+                    MAX_SELECT_ARM_PREP_STMTS + 1,
+                    interner,
+                ) else {
+                    continue;
+                };
+                let Some(arm_f) = collect_speculatable_arm(
+                    func,
+                    if_false,
+                    MAX_SELECT_ARM_PREP_STMTS + 1,
+                    interner,
+                ) else {
+                    continue;
+                };
+                let ret_temp = TempId::from_usize(0);
+                let (Some((dest_t, _)), Some((dest_f, _))) = (arm_t.last(), arm_f.last()) else {
+                    continue;
+                };
+                if *dest_t != ret_temp
+                    || *dest_f != ret_temp
+                    || arm_reads_temp(&arm_t, ret_temp)
+                    || arm_reads_temp(&arm_f, ret_temp)
+                    || !arm_t[..arm_t.len() - 1]
+                        .iter()
+                        .chain(&arm_f[..arm_f.len() - 1])
+                        .all(|(lhs, _)| *lhs != ret_temp && temp_defs[lhs.as_usize()] == 1)
+                {
+                    continue;
+                }
+                let ret_ty = func.temps[0].ty;
+                let mut hoisted = Vec::new();
+                let op_t = emit_arm_result(func, ret_ty, span, arm_t, &mut hoisted);
+                let op_f = emit_arm_result(func, ret_ty, span, arm_f, &mut hoisted);
+                appended[bi].extend(hoisted);
+                appended[bi].push(AmirStmt::Assign {
+                    lhs: ret_temp,
+                    rhs: AmirRvalue::Select {
+                        condition,
+                        if_true: op_t,
+                        if_false: op_f,
+                    },
+                });
+                func.blocks[bi].terminator = AmirTerminator::Return;
+                func.blocks[if_true.as_usize()].terminator = AmirTerminator::Unreachable;
+                func.blocks[if_false.as_usize()].terminator = AmirTerminator::Unreachable;
+                consumed[if_true.as_usize()] = true;
+                consumed[if_false.as_usize()] = true;
+                any_converted = true;
+            }
+            _ => {}
+        }
+    }
+
+    if !any_converted {
+        return Ok(false);
+    }
+
+    let mut block_stmt_ids = bumpalo::collections::Vec::with_capacity_in(n_blocks, bump);
+    for bi in 0..n_blocks {
+        let mut ids = bumpalo::collections::Vec::new_in(bump);
+        ids.extend(func.block_stmt_ids(BlockId::from_usize(bi)));
+        block_stmt_ids.push(ids);
+    }
+    let old = std::mem::replace(&mut func.stmts, AmirStmtTable::new());
+    let mut slots = bumpalo::collections::Vec::with_capacity_in(old.payloads.raw.len(), bump);
+    slots.extend(old.payloads.raw.into_iter().map(Some));
+    let mut new_stmts = AmirStmtTable::new();
+    let mut new_ranges = bumpalo::collections::Vec::with_capacity_in(n_blocks, bump);
+
+    for bi in 0..n_blocks {
+        let start = new_stmts.len();
+        if !consumed[bi] {
+            for &stmt_id in &block_stmt_ids[bi] {
+                let stmt = take_stmt(&mut slots, stmt_id.as_usize(), span, "diamond if-convert")?;
+                new_stmts.push(stmt);
+            }
+            for stmt in std::mem::take(&mut appended[bi]) {
+                new_stmts.push(stmt);
+            }
+        }
+        new_ranges.push(DenseRange::new(start, new_stmts.len() - start));
+    }
+
+    func.stmts = new_stmts;
+    for (block, range) in func.blocks.iter_mut().zip(new_ranges) {
+        block.statements = range;
+    }
+    func.cfg = compute_cfg_edges(&func.blocks);
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +979,7 @@ fn remap_terminator(term: AmirTerminator, map: &[Option<BlockId>]) -> AmirTermin
         // explicitly account for block renumbering.
         AmirTerminator::Return => AmirTerminator::Return,
         AmirTerminator::Unreachable => AmirTerminator::Unreachable,
+        AmirTerminator::Trap(kind) => AmirTerminator::Trap(kind),
     }
 }
 
@@ -925,5 +1449,338 @@ mod tests {
         let bump = bumpalo::Bump::new();
         let error = simplify_cfg(&mut func, &bump).unwrap_err();
         assert_eq!(error.code, DiagCode::ICEO001);
+    }
+
+    fn bool_temp(id: usize, interner: &TypeInterner) -> AmirTemp {
+        AmirTemp {
+            id: TempId::from_usize(id),
+            ty: interner.intern(ArType::Primitive(Primitive::Bool)),
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        }
+    }
+
+    fn shared_int_temp(id: usize, interner: &TypeInterner) -> AmirTemp {
+        AmirTemp {
+            id: TempId::from_usize(id),
+            ty: interner.intern(ArType::Primitive(Primitive::Int)),
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        }
+    }
+
+    #[test]
+    fn simplify_cfg_converts_block_param_diamond_to_select() {
+        let interner = TypeInterner::new();
+        let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+        let mut st = AmirStmtTable::new();
+        let p_true = TempId::from_usize(1);
+        let p_false = TempId::from_usize(2);
+        let cond = TempId::from_usize(3);
+        let join_param = TempId::from_usize(4);
+        let a = TempId::from_usize(5);
+
+        let b0 = AmirBasicBlock {
+            id: bbid(0),
+            statements: DenseRange::empty(),
+            params: DenseRange::empty(),
+            terminator: AmirTerminator::Branch {
+                condition: AmirOperand::Copy(cond),
+                if_true: bbid(1),
+                true_args: Vec::new(),
+                if_false: bbid(2),
+                false_args: Vec::new(),
+            },
+        };
+        let i_t = st.push(AmirStmt::Assign {
+            lhs: p_true,
+            rhs: AmirRvalue::Binary {
+                op: BinaryOp::Add,
+                left: AmirOperand::Copy(a),
+                right: AmirOperand::Copy(a),
+            },
+        });
+        let mut b1 = block(1, vec![], &mut st);
+        b1.statements = DenseRange::new(i_t.as_usize(), 1);
+        b1.terminator = AmirTerminator::Goto {
+            target: bbid(3),
+            args: vec![AmirOperand::Copy(p_true)],
+        };
+        let mut b2 = block(2, vec![], &mut st);
+        b2.terminator = AmirTerminator::Goto {
+            target: bbid(3),
+            args: vec![AmirOperand::Copy(p_false)],
+        };
+        let i_ret = st.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(AmirOperand::Copy(join_param)),
+        });
+        let mut b3 = block(3, vec![], &mut st);
+        b3.statements = DenseRange::new(i_ret.as_usize(), 1);
+        b3.params = DenseRange::new(0, 1);
+
+        let mut func = make_func(vec![b0, b1, b2, b3], st);
+        func.return_type = int_ty;
+        func.temps = vec![
+            shared_int_temp(0, &interner),
+            shared_int_temp(1, &interner),
+            shared_int_temp(2, &interner),
+            bool_temp(3, &interner),
+            shared_int_temp(4, &interner),
+            shared_int_temp(5, &interner),
+        ];
+        func.params = vec![p_false, cond, a];
+        func.block_params = vec![crate::amir::BlockParam {
+            id: join_param,
+            local: LocalId::from_usize(0),
+            ty: int_ty,
+            from: None,
+            moved: false,
+        }];
+        func.cfg = compute_cfg_edges(&func.blocks);
+
+        let bump = bumpalo::Bump::new();
+        assert!(simplify_cfg_with_interner(&mut func, &bump, Some(&interner)).unwrap());
+        assert_eq!(func.blocks.len(), 2);
+        let has_select = func.stmts.payloads.iter().any(|stmt| {
+            matches!(
+                stmt,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::Select { .. },
+                    ..
+                }
+            )
+        });
+        assert!(has_select, "expected diamond to fold into Select");
+    }
+
+    #[test]
+    fn an_undefined_integer_arm_does_not_become_a_select() {
+        let interner = TypeInterner::new();
+        let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+        let mut st = AmirStmtTable::new();
+        let p_true = TempId::from_usize(1);
+        let p_false = TempId::from_usize(2);
+        let cond = TempId::from_usize(3);
+        let join_param = TempId::from_usize(4);
+        let a = TempId::from_usize(5);
+
+        let b0 = AmirBasicBlock {
+            id: bbid(0),
+            statements: DenseRange::empty(),
+            params: DenseRange::empty(),
+            terminator: AmirTerminator::Branch {
+                condition: AmirOperand::Copy(cond),
+                if_true: bbid(1),
+                true_args: Vec::new(),
+                if_false: bbid(2),
+                false_args: Vec::new(),
+            },
+        };
+        let i_t = st.push(AmirStmt::Assign {
+            lhs: p_true,
+            rhs: AmirRvalue::Binary {
+                op: BinaryOp::Add,
+                left: AmirOperand::Copy(a),
+                right: AmirOperand::Copy(a),
+            },
+        });
+        let mut b1 = block(1, vec![], &mut st);
+        b1.statements = DenseRange::new(i_t.as_usize(), 1);
+        b1.terminator = AmirTerminator::Goto {
+            target: bbid(3),
+            args: vec![AmirOperand::Copy(p_true)],
+        };
+        let mut b2 = block(2, vec![], &mut st);
+        // A path that leaves the joined integer undefined passes `Nil`.
+        b2.terminator = AmirTerminator::Goto {
+            target: bbid(3),
+            args: vec![AmirOperand::Constant(AmirConstant::Nil)],
+        };
+        let i_ret = st.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(AmirOperand::Copy(join_param)),
+        });
+        let mut b3 = block(3, vec![], &mut st);
+        b3.statements = DenseRange::new(i_ret.as_usize(), 1);
+        b3.params = DenseRange::new(0, 1);
+
+        let mut func = make_func(vec![b0, b1, b2, b3], st);
+        func.return_type = int_ty;
+        func.temps = vec![
+            shared_int_temp(0, &interner),
+            shared_int_temp(1, &interner),
+            shared_int_temp(2, &interner),
+            bool_temp(3, &interner),
+            shared_int_temp(4, &interner),
+            shared_int_temp(5, &interner),
+        ];
+        func.params = vec![p_false, cond, a];
+        func.block_params = vec![crate::amir::BlockParam {
+            id: join_param,
+            local: LocalId::from_usize(0),
+            ty: int_ty,
+            from: None,
+            moved: false,
+        }];
+        func.cfg = compute_cfg_edges(&func.blocks);
+
+        let bump = bumpalo::Bump::new();
+        simplify_cfg_with_interner(&mut func, &bump, Some(&interner)).unwrap();
+        let has_select = func.stmts.payloads.iter().any(|stmt| {
+            matches!(
+                stmt,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::Select { .. },
+                    ..
+                }
+            )
+        });
+        assert!(!has_select, "`Nil` is not an integer select arm");
+    }
+
+    #[test]
+    fn simplify_cfg_converts_shared_dest_diamond_and_return_diamond() {
+        let interner = TypeInterner::new();
+        let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+        let cond = TempId::from_usize(1);
+        let a = TempId::from_usize(2);
+        let b = TempId::from_usize(3);
+        let dest = TempId::from_usize(4);
+
+        let mut st = AmirStmtTable::new();
+        let b0 = AmirBasicBlock {
+            id: bbid(0),
+            statements: DenseRange::empty(),
+            params: DenseRange::empty(),
+            terminator: AmirTerminator::Branch {
+                condition: AmirOperand::Copy(cond),
+                if_true: bbid(1),
+                true_args: Vec::new(),
+                if_false: bbid(2),
+                false_args: Vec::new(),
+            },
+        };
+        let it = st.push(AmirStmt::Assign {
+            lhs: dest,
+            rhs: AmirRvalue::Use(AmirOperand::Copy(a)),
+        });
+        let mut b1 = block(1, vec![], &mut st);
+        b1.statements = DenseRange::new(it.as_usize(), 1);
+        b1.terminator = AmirTerminator::Goto {
+            target: bbid(3),
+            args: Vec::new(),
+        };
+        let ie = st.push(AmirStmt::Assign {
+            lhs: dest,
+            rhs: AmirRvalue::Use(AmirOperand::Copy(b)),
+        });
+        let mut b2 = block(2, vec![], &mut st);
+        b2.statements = DenseRange::new(ie.as_usize(), 1);
+        b2.terminator = AmirTerminator::Goto {
+            target: bbid(3),
+            args: Vec::new(),
+        };
+        let ir = st.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(AmirOperand::Copy(dest)),
+        });
+        let mut b3 = block(3, vec![], &mut st);
+        b3.statements = DenseRange::new(ir.as_usize(), 1);
+
+        let mut func = make_func(vec![b0, b1, b2, b3], st);
+        func.return_type = int_ty;
+        func.temps = vec![
+            shared_int_temp(0, &interner),
+            bool_temp(1, &interner),
+            shared_int_temp(2, &interner),
+            shared_int_temp(3, &interner),
+            shared_int_temp(4, &interner),
+        ];
+        func.params = vec![cond, a, b];
+        func.cfg = compute_cfg_edges(&func.blocks);
+
+        let bump = bumpalo::Bump::new();
+        assert!(simplify_cfg_with_interner(&mut func, &bump, Some(&interner)).unwrap());
+        assert_eq!(func.blocks.len(), 1);
+        assert!(func.stmts.payloads.iter().any(|stmt| matches!(
+            stmt,
+            AmirStmt::Assign {
+                rhs: AmirRvalue::Select { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn simplify_cfg_keeps_diamond_with_trapping_div() {
+        let interner = TypeInterner::new();
+        let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+        let cond = TempId::from_usize(1);
+        let a = TempId::from_usize(2);
+        let b = TempId::from_usize(3);
+        let dest = TempId::from_usize(4);
+
+        let mut st = AmirStmtTable::new();
+        let b0 = AmirBasicBlock {
+            id: bbid(0),
+            statements: DenseRange::empty(),
+            params: DenseRange::empty(),
+            terminator: AmirTerminator::Branch {
+                condition: AmirOperand::Copy(cond),
+                if_true: bbid(1),
+                true_args: Vec::new(),
+                if_false: bbid(2),
+                false_args: Vec::new(),
+            },
+        };
+        let it = st.push(AmirStmt::Assign {
+            lhs: dest,
+            rhs: AmirRvalue::Binary {
+                op: BinaryOp::Div,
+                left: AmirOperand::Copy(a),
+                right: AmirOperand::Copy(b),
+            },
+        });
+        let mut b1 = block(1, vec![], &mut st);
+        b1.statements = DenseRange::new(it.as_usize(), 1);
+        b1.terminator = AmirTerminator::Goto {
+            target: bbid(3),
+            args: Vec::new(),
+        };
+        let ie = st.push(AmirStmt::Assign {
+            lhs: dest,
+            rhs: AmirRvalue::Use(AmirOperand::Copy(a)),
+        });
+        let mut b2 = block(2, vec![], &mut st);
+        b2.statements = DenseRange::new(ie.as_usize(), 1);
+        b2.terminator = AmirTerminator::Goto {
+            target: bbid(3),
+            args: Vec::new(),
+        };
+        let ir = st.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(AmirOperand::Copy(dest)),
+        });
+        let mut b3 = block(3, vec![], &mut st);
+        b3.statements = DenseRange::new(ir.as_usize(), 1);
+
+        let mut func = make_func(vec![b0, b1, b2, b3], st);
+        func.return_type = int_ty;
+        func.temps = vec![
+            shared_int_temp(0, &interner),
+            bool_temp(1, &interner),
+            shared_int_temp(2, &interner),
+            shared_int_temp(3, &interner),
+            shared_int_temp(4, &interner),
+        ];
+        func.params = vec![cond, a, b];
+        func.cfg = compute_cfg_edges(&func.blocks);
+
+        let bump = bumpalo::Bump::new();
+        assert!(!simplify_cfg_with_interner(&mut func, &bump, Some(&interner)).unwrap());
+        assert_eq!(func.blocks.len(), 4);
     }
 }

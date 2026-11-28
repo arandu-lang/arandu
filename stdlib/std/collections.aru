@@ -1,0 +1,26 @@
+//! Common heap-allocated collections re-exported behind a shallow facade.
+//!
+//! ## Overview
+//!
+//! `std.collections` re-exports the primary heap-backed collection types from
+//! `std.alloc.*` so user code can import them without memorizing the internal
+//! `core` / `alloc` split:
+//!
+//! ```arandu
+//! from std.collections import { HashMap, VecDeque, BitSet }
+//! ```
+//!
+//! `Vec<T>` is also available directly in the layered prelude outside `std.*`.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
+module std.collections
+
+public use std.alloc.vec.{ Vec }
+public use std.alloc.hash_map.{ HashMap, Entry }
+public use std.alloc.deque.{ VecDeque }
+public use std.alloc.bitset.{ BitSet }
+public use std.alloc.smallvec.{ SmallVec4 }
+public use std.alloc.slab.{ Slab }
+public use std.alloc.arena.{ Arena, ScratchArena }

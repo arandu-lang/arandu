@@ -69,8 +69,20 @@ pub(super) fn dump_stmt(
                 out.push(format!("{pad}Return {} {values}", dump_span(*span)));
             }
         }
-        Stmt::Break { span } => out.push(format!("{pad}Break {}", dump_span(*span))),
-        Stmt::Continue { span } => out.push(format!("{pad}Continue {}", dump_span(*span))),
+        Stmt::Break { span, label } => {
+            let label_str = label
+                .as_deref()
+                .map(|l| format!(" {l}"))
+                .unwrap_or_default();
+            out.push(format!("{pad}Break {}{label_str}", dump_span(*span)))
+        }
+        Stmt::Continue { span, label } => {
+            let label_str = label
+                .as_deref()
+                .map(|l| format!(" {l}"))
+                .unwrap_or_default();
+            out.push(format!("{pad}Continue {}{label_str}", dump_span(*span)))
+        }
         Stmt::Free { span, expr } => {
             out.push(format!(
                 "{pad}Free {} {}",
@@ -106,12 +118,17 @@ pub(super) fn dump_stmt(
         }
         Stmt::For {
             span,
+            label,
             is_comptime,
             clause,
             body,
         } => {
+            let label_str = label
+                .as_deref()
+                .map(|l| format!("{l}: "))
+                .unwrap_or_default();
             out.push(format!(
-                "{pad}{}For {}{}",
+                "{pad}{label_str}{}For {}{}",
                 if *is_comptime { "Comptime " } else { "" },
                 dump_span(*span),
                 dump_for_clause(pool, clause)
@@ -120,11 +137,16 @@ pub(super) fn dump_stmt(
         }
         Stmt::While {
             span,
+            label,
             condition,
             body,
         } => {
+            let label_str = label
+                .as_deref()
+                .map(|l| format!("{l}: "))
+                .unwrap_or_default();
             out.push(format!(
-                "{pad}While {} {}",
+                "{pad}{label_str}While {} {}",
                 dump_span(*span),
                 dump_condition(pool, condition)
             ));
@@ -316,6 +338,7 @@ pub(super) fn dump_place(pool: &AstPool, place: &Place) -> String {
                 out.push_str(&dump_expr(pool, *expr));
                 out.push(']');
             }
+            PlaceSuffix::Deref { .. } => out = format!("(*{out})"),
         }
     }
     out

@@ -455,6 +455,74 @@ fn type_info_pod_struct_is_copy_vec_like_is_not() {
         !info.is_copy(mut_view_ty),
         "exclusive-ref carrier must remain move-only"
     );
+
+    // `@Repr(C)` and `@Union` are layout contracts, not ownership overrides:
+    // scalar fields remain Copy, while pointer/resource fields remain Move.
+    let repr_c_pod_sym = SymbolId::new(0, 15);
+    info.struct_repr_c.insert(repr_c_pod_sym);
+    info.struct_fields.insert(
+        repr_c_pod_sym,
+        Arc::new(StructFields::from_entries([StructFieldInfo {
+            name: "x".into(),
+            symbol: None,
+            ty: u32_ty,
+            index: 0,
+        }])),
+    );
+    let repr_c_pod_ty =
+        info.type_interner
+            .intern(ArType::named(repr_c_pod_sym, &[], &info.type_interner));
+    assert!(
+        info.is_copy(repr_c_pod_ty),
+        "@Repr(C) struct with only scalar fields should remain Copy"
+    );
+
+    let repr_c_ptr_sym = SymbolId::new(0, 16);
+    info.struct_repr_c.insert(repr_c_ptr_sym);
+    info.struct_fields.insert(
+        repr_c_ptr_sym,
+        Arc::new(StructFields::from_entries([StructFieldInfo {
+            name: "raw".into(),
+            symbol: None,
+            ty: ptr_ty,
+            index: 0,
+        }])),
+    );
+    let repr_c_ptr_ty =
+        info.type_interner
+            .intern(ArType::named(repr_c_ptr_sym, &[], &info.type_interner));
+    assert!(
+        !info.is_copy(repr_c_ptr_ty),
+        "@Repr(C) struct with ptr field must not bypass Copy checks"
+    );
+
+    let union_ptr_sym = SymbolId::new(0, 17);
+    info.struct_unions.insert(union_ptr_sym);
+    info.struct_repr_c.insert(union_ptr_sym);
+    info.struct_fields.insert(
+        union_ptr_sym,
+        Arc::new(StructFields::from_entries([
+            StructFieldInfo {
+                name: "raw".into(),
+                symbol: None,
+                ty: ptr_ty,
+                index: 0,
+            },
+            StructFieldInfo {
+                name: "bits".into(),
+                symbol: None,
+                ty: u64_ty,
+                index: 1,
+            },
+        ])),
+    );
+    let union_ptr_ty =
+        info.type_interner
+            .intern(ArType::named(union_ptr_sym, &[], &info.type_interner));
+    assert!(
+        !info.is_copy(union_ptr_ty),
+        "@Union with ptr field must not bypass Copy checks"
+    );
 }
 
 #[test]
@@ -504,15 +572,15 @@ fn translate_func() {
 }
 
 #[test]
-fn translate_nullable() {
+fn translate_option() {
     let from = new_interner();
     let inner = from.intern(ArType::Primitive(Primitive::Int));
-    let nullable = ArType::Nullable(inner);
+    let opt = ArType::Option(inner);
     let mut to = new_interner();
-    let result = translate_type(&nullable, &from, &mut to);
+    let result = translate_type(&opt, &from, &mut to);
     assert_eq!(
         result,
-        ArType::Nullable(to.intern(ArType::Primitive(Primitive::Int)))
+        ArType::Option(to.intern(ArType::Primitive(Primitive::Int)))
     );
 }
 
@@ -1471,6 +1539,53 @@ fn test_contextual_literal_overflow_diagnostic() {
 }
 
 #[test]
+fn t038_structured_quick_fix_replaces_only_direct_annotations() {
+    let source = r#"
+    module test;
+    func main(): int {
+        let a: int = 3_000_000_000;
+        return 0
+    }
+    "#;
+    let program = arandu_parser::parse(source).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let check_res = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    let diag = check_res
+        .diagnostics
+        .iter()
+        .find(|d| d.code == crate::DiagCode::T038IntegerLiteralOutOfRange)
+        .expect("direct literal under `int` must report T038");
+    let replacement = diag
+        .hints
+        .iter()
+        .find_map(|hint| hint.replacement.as_ref())
+        .expect("T038 must carry a structured replacement for `int`");
+    assert_eq!(replacement.new_text, "i64");
+    assert_eq!(
+        &source[replacement.span.start as usize..replacement.span.end as usize],
+        "int"
+    );
+
+    let nested = r#"
+    module test;
+    func take(x: int): int { return x }
+    func main(): int { return take(3_000_000_000) }
+    "#;
+    let program = arandu_parser::parse(nested).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let check_res = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    let diag = check_res
+        .diagnostics
+        .iter()
+        .find(|d| d.code == crate::DiagCode::T038IntegerLiteralOutOfRange)
+        .expect("nested literal must still report T038");
+    assert!(
+        diag.hints.iter().all(|hint| hint.replacement.is_none()),
+        "nested literal has no safe annotation to rewrite"
+    );
+}
+
+#[test]
 fn test_contextual_literal_uint_overflow() {
     // RFC 0023: uint is fixed 32-bit across all targets.
     let source = r#"
@@ -1892,5 +2007,249 @@ fn test_can_call_ref_methods_on_borrowed_receiver() {
         check_res.diagnostics.is_empty(),
         "Calling ref / mut ref methods on a mut ref receiver must succeed: {:?}",
         check_res.diagnostics
+    );
+}
+
+#[test]
+fn test_void_tail_discards_non_result_and_rejects_unhandled_result() {
+    let ok_source = r#"
+    module test;
+    public func mutate(flag: bool): bool { return flag }
+    public func voidTail(): void {
+        mutate(true)
+    }
+    public func voidIfStmt(flag: bool): void {
+        if flag {
+            mutate(true)
+        } else {
+            let x = 1
+        }
+    }
+    public func voidMatchStmt(opt: Option<int>): void {
+        match opt {
+            Some(v) => { mutate(v > 0) }
+            None => {}
+        }
+    }
+    "#;
+    let program = arandu_parser::parse(ok_source).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let check_res = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        check_res.diagnostics.is_empty(),
+        "Non-Result trailing expressions in void functions and void if/match must succeed: {:?}",
+        check_res.diagnostics
+    );
+
+    let result_tail_source = r#"
+    module test;
+    public func fallible(): Result<int, int> { return Result.Ok(1) }
+    public func badVoid(): void {
+        fallible()
+    }
+    "#;
+    let bad_program = arandu_parser::parse(result_tail_source).unwrap();
+    let bad_res = arandu_resolve::resolve_for_test(0, &bad_program);
+    let bad_check = crate::type_check(bad_res, &bad_program, TargetInfo { pointer_width: 64 });
+    assert!(
+        !bad_check.diagnostics.is_empty(),
+        "Unhandled Result tail in void function must still fail typechecking"
+    );
+}
+
+#[test]
+fn onda5_definition_time_array_repeat_requires_copy_bound() {
+    let bad_src = r#"
+    module test;
+    func repeat_unbounded<T>(x: T): [4]T {
+        return [x; 4]
+    }
+    "#;
+    let program = arandu_parser::parse(bad_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::T048InvalidArrayRepeat),
+        "expected T048InvalidArrayRepeat for unbounded T in [x; 4]: {:?}",
+        checked.diagnostics
+    );
+
+    let ok_src = r#"
+    module test;
+    interface Copy {}
+    func repeat_copy<T: Copy>(x: T): [4]T {
+        return [x; 4]
+    }
+    "#;
+    // Also test concrete primitive without interface:
+    let _ = ok_src;
+    let ref_ok_src = r#"
+    module test;
+    func repeat_ref<T>(r: ref T): [4]ref T {
+        return [r; 4]
+    }
+    "#;
+    let program = arandu_parser::parse(ref_ok_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked.diagnostics.is_empty(),
+        "shared ref T is Copy and must succeed in [r; 4]: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn onda5_maranget_match_exhaustiveness_and_nested_equality() {
+    let incomplete_src = r#"
+    module test;
+    enum Wrapper { SomeBool(bool), Empty }
+    public func missing_bool(b: bool): int {
+        match b { true => 1 }
+    }
+    public func missing_opt(o: int?): int {
+        match o { Option.Some(x) => x }
+    }
+    public func missing_res(r: Result<int, bool>): int {
+        match r { Result.Ok(x) => x }
+    }
+    public func missing_nested(w: Wrapper): int {
+        match w {
+            Wrapper.SomeBool(true) => 1
+            Wrapper.Empty => 0
+        }
+    }
+    public func missing_tuple(p: (bool, bool)): int {
+        match p {
+            (true, true) => 1
+            (false, _) => 0
+        }
+    }
+    "#;
+    let program = arandu_parser::parse(incomplete_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    let t024_count = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagCode::T024NonExhaustiveMatch)
+        .count();
+    assert_eq!(
+        t024_count, 5,
+        "expected T024 on all 5 incomplete matches, got: {:?}",
+        checked.diagnostics
+    );
+
+    let complete_src = r#"
+    module test;
+    enum Wrapper { SomeBool(bool), Empty }
+    struct NotEq { v: int }
+    public func ok_all(b: bool, o: int?, r: Result<int, bool>, w: Wrapper, p: (bool, bool), ne: NotEq?): int {
+        let a = match b { true => 1, false => 0 }
+        let c = match o { Option.Some(x) => x, Option.None => 0 }
+        let d = match r { Result.Ok(x) => x, Result.Err(_) => 0 }
+        let e = match w {
+            Wrapper.SomeBool(true) => 1
+            Wrapper.SomeBool(false) => 2
+            Wrapper.Empty => 0
+        }
+        let f = match p {
+            (true, true) => 1
+            (true, false) => 2
+            (false, _) => 0
+        }
+        let is_nil = ne == nil
+        let _ = is_nil
+        return a + c + d + e + f
+    }
+    "#;
+    let program = arandu_parser::parse(complete_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked.diagnostics.is_empty(),
+        "complete Maranget matches and `ne == nil` must pass cleanly: {:?}",
+        checked.diagnostics
+    );
+
+    let bad_opt_eq_src = r#"
+    module test;
+    struct NotEq { v: int }
+    public func cmp_bad(a: NotEq?, b: NotEq?): bool {
+        return a == b
+    }
+    "#;
+    let program = arandu_parser::parse(bad_opt_eq_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        !checked.diagnostics.is_empty(),
+        "comparing Option<NotEq> == Option<NotEq> without Eq must fail"
+    );
+}
+
+#[test]
+fn onda6_never_type_and_diverge_coercion() {
+    let ok_src = r#"
+    module test;
+    public func diverge(): ! {
+        return diverge()
+    }
+    public func pick(cond: bool): int {
+        let val = if cond { diverge() } else { 42 }
+        return val
+    }
+    "#;
+    let program = arandu_parser::parse(ok_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked.diagnostics.is_empty(),
+        "valid `!` coercion must succeed cleanly: {:?}",
+        checked.diagnostics
+    );
+
+    let bad_src = r#"
+    module test;
+    public func bad(): void {
+        let x: ! = 1
+        let _ = x
+    }
+    "#;
+    let program = arandu_parser::parse(bad_src).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == arandu_middle::Severity::Error),
+        "assigning integer to `!` must produce a type error: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn module_std_core_name_alone_cannot_use_arandu_intrinsic() {
+    let spoofed = r#"
+    module std.core.spoof
+    extern "arandu-intrinsic" {
+        func secretIntrinsic(): void
+    }
+    public func main(): int { return 0 }
+    "#;
+    let program = arandu_parser::parse(spoofed).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let checked = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == crate::DiagCode::U001FeatureNotSupported),
+        "spoofed `module std.core.*` without trusted_stdlib must fail with U001: {:?}",
+        checked.diagnostics
     );
 }

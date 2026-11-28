@@ -63,10 +63,9 @@ fn lowering_diagnostics_are_reported_instead_of_missing_ipc_frames() {
         &tmp,
         "lowering_diagnostic",
         r#"module lowering_diagnostic
-import std.core.intrinsics as intrinsics
-func toBytes(s: str): []u8 { return intrinsics.strBytes(s) }
+func fromRaw(p: ptr[u8]): ref u8 { return unsafe { ref *p } }
 @Test
-func rejectedBorrow(): void { let bytes = toBytes("hello") }
+func rejectedBorrow(): void { let _ = fromRaw(nil) }
 func main(): int { return 0 }
 "#,
     );

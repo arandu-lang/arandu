@@ -41,6 +41,9 @@ pub(super) fn merge_import_exports(
                 return;
             }
             match import {
+                arandu_parser::ImportDecl::ModuleGroup { .. } => {
+                    // Expanded before `merge_import_exports` in `resolve_headers_with_poll`.
+                }
                 arandu_parser::ImportDecl::ModuleAlias { alias, .. }
                 | arandu_parser::ImportDecl::ExternalAlias { alias, .. } => {
                     let module_name = alias.clone();
@@ -94,6 +97,10 @@ pub(super) fn merge_import_exports(
                             lang_item,
                         };
                         resolver.symbols.register_imported_symbol(sym);
+                        exports.record_type_path(id, &mut resolver.symbols);
+                        if let Some(table) = &internal {
+                            table.record_type_path(id, &mut resolver.symbols);
+                        }
                         resolver
                             .symbols
                             .module_members_mut()
@@ -199,6 +206,10 @@ pub(super) fn merge_import_exports(
                                 visibility: sym_visibility,
                                 lang_item,
                             };
+                            exports.record_type_path(id, &mut resolver.symbols);
+                            if let Some(table) = &internal {
+                                table.record_type_path(id, &mut resolver.symbols);
+                            }
                             match resolver.symbols.insert_imported(sym) {
                                 Ok(Some(placeholder_id)) => {
                                     if let Some(entry) =
@@ -354,6 +365,7 @@ pub(super) fn merge_import_exports(
             }
             let import_name = match import {
                 arandu_parser::ImportDecl::ModuleAlias { path, .. }
+                | arandu_parser::ImportDecl::ModuleGroup { prefix: path, .. }
                 | arandu_parser::ImportDecl::Named { path, .. }
                 | arandu_parser::ImportDecl::ReExport { path, .. } => path.join("."),
                 arandu_parser::ImportDecl::ExternalAlias { source, .. }
@@ -376,6 +388,7 @@ pub(super) fn merge_import_exports(
         }
         let import_name = match import {
             arandu_parser::ImportDecl::ModuleAlias { path, .. }
+            | arandu_parser::ImportDecl::ModuleGroup { prefix: path, .. }
             | arandu_parser::ImportDecl::Named { path, .. }
             | arandu_parser::ImportDecl::ReExport { path, .. } => path.join("."),
             arandu_parser::ImportDecl::ExternalAlias { source, .. }

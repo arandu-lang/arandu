@@ -2,7 +2,7 @@
 
 - **Número da RFC:** 0036
 - **Título:** Typed holes e ferramental semântico integrado
-- **Status:** `Draft`; typed holes condicionais na direção 0.3.x e tooling na 0.6.x
+- **Status:** `Implemented` para typed holes (§2, 0.3.0); tooling (§3) segue `Draft` para a 0.6.x
 - **Data original:** 2026-10-15
 - **Revisão de escopo:** 2026-10-16
 - **Autor:** Arquiteto da Linguagem Arandu
@@ -14,6 +14,12 @@ Esta RFC propõe lacunas tipadas com contexto de ownership e ferramentas que
 compartilham os resultados do compilador. `todo`/`todo("motivo")` como expressão
 tipada, `arandu repl`, `arandu bindgen`, `arandu lint` e seus flags não são
 superfícies públicas implementadas.
+
+Estado auditado em 2026-11-06: a 0.3.0 implementa o recorte de holes de §2
+([campanha 0.3.x](../campaigns/0.3.x-instances-and-closures.md), trilha TYP.NEXT), depois da separação
+`constraint_gen`/solver que dá ao checker variáveis de inferência além das de
+literais. A palavra-chave `todo` e o `DiagCode` do hole ainda precisam de
+decisão; o tooling (`repl`, `bindgen`, `lint`) continua na 0.6.x.
 
 O compilador atual já possui CST com recuperação, nós de erro, `ArType::Error`,
 LSP incremental, formatter e JIT Cranelift. Recuperar sintaxe/tipos incompletos
@@ -28,6 +34,15 @@ O [roadmap mestre](../arandu-compiler-roadmap-v0.1.md) concentra escopo e gates:
 0.2 motor quente; 0.3 instâncias, com typed holes/reflexão e closures em
 contratos condicionais; 0.5 capabilities; 0.6 tooling/cache. Ter Salsa/JIT não
 entrega automaticamente REPL persistente, reflexão nem latência por célula.
+
+> **Estado em 2026-11-11 (H1 e S1):** `todo`, `todo()` e `todo("motivo")`
+> são holes. `todo` é um nome do escopo de prelúdio, sombreado por qualquer
+> declaração; o goal é o tipo esperado ou uma variável de inferência da S1
+> (modelo do rustc: unificação eager, obrigações adiadas e writeback por
+> corpo). O diagnóstico é **T102**, com goal, motivo, obrigação de move e até
+> cinco locais em escopo como replacements não preferidos; bloqueia check,
+> build, run, emit, testes e comptime, sem `--allow-todo`. O LSP mostra
+> informação, quick fix pelos replacements estruturados e inlay do goal.
 
 ## 2. Typed holes propostos
 

@@ -1,14 +1,14 @@
 use arandu_lexer::Span;
 use arandu_parser::ast_pool::{ExprId, ExprKind};
 
-use super::thread_capture;
+use super::closure;
 use crate::type_checker::TypeChecker;
 use crate::type_checker::types::ArType;
 
 use arandu_middle::types::type_interner::TypeId;
 
 /// Returns true when the call is rejected because the target has no OS.
-/// WebAssembly keeps its `U001` and returns false so the existing spawn
+/// WebAssembly emits `T099` and returns false so the existing spawn
 /// checks still run.
 pub(crate) fn check_target_thread_capabilities(
     checker: &mut TypeChecker<'_>,
@@ -53,7 +53,7 @@ pub(crate) fn check_target_thread_capabilities(
         arandu_middle::symbol_table::LangItem::ThreadParkTimeout => {
             checker.diagnostics.push(
                 crate::Diagnostic::error(
-                    crate::DiagCode::U001FeatureNotSupported,
+                    crate::DiagCode::T099RequiresOperatingSystem,
                     "`parkTimeout` requires target thread support to wake on unpark, which is unavailable on wasm32; use `std.thread.sleep` for a non-interruptible delay",
                     span,
                 )
@@ -68,7 +68,7 @@ pub(crate) fn check_target_thread_capabilities(
         | arandu_middle::symbol_table::LangItem::ThreadSpawn => {
             checker.diagnostics.push(
                 crate::Diagnostic::error(
-                    crate::DiagCode::U001FeatureNotSupported,
+                    crate::DiagCode::T099RequiresOperatingSystem,
                     "thread synchronization and spawning are unsupported on single-threaded WebAssembly targets; use cooperative tasks or async execution instead",
                     span,
                 )
@@ -83,7 +83,7 @@ pub(crate) fn check_target_thread_capabilities(
     false
 }
 
-fn span_contains(outer: Span, inner: Span) -> bool {
+pub(super) fn span_contains(outer: Span, inner: Span) -> bool {
     outer.file_id == inner.file_id && outer.start <= inner.start && outer.end >= inner.end
 }
 
@@ -95,7 +95,7 @@ fn span_contains(outer: Span, inner: Span) -> bool {
 /// and a dropped capture leaves the `run` body naming a local of another
 /// function. Expression uses come from `expr_symbols`; assignment roots,
 /// which are places rather than expressions, come from `value_refs`.
-fn value_uses_within(
+pub(super) fn value_uses_within(
     checker: &TypeChecker<'_>,
     lambda: Span,
 ) -> Vec<(Span, arandu_middle::SymbolId)> {
@@ -228,11 +228,12 @@ pub(crate) fn synth_thread_spawn_closure(
                 } else if cap_ty.is_error() {
                     rejected = true;
                 } else {
-                    captures.push(thread_capture::OwnedCapture {
+                    captures.push(closure::Capture {
                         symbol: sym_id,
                         name: sym_name,
                         ty: cap_ty_id,
                         span: expr_span,
+                        mode: crate::type_checker::info::CaptureMode::Move,
                     });
                 }
             }
@@ -245,7 +246,7 @@ pub(crate) fn synth_thread_spawn_closure(
             expr: inner_expr, ..
         } => super::synth_expr(checker, *inner_expr),
         arandu_parser::LambdaBody::Block { block, .. } => {
-            crate::type_checker::check::check_thread_closure_block(checker, block)
+            crate::type_checker::check::check_closure_block(checker, block, None)
         }
     };
     let ret_ty = checker.resolve(ret_ty_id);
@@ -295,16 +296,26 @@ pub(crate) fn synth_thread_spawn_closure(
         checker.record_expr_type(call_expr, err);
         return Some(err);
     }
-    Some(thread_capture::install_thread_capture(
+    let void_ty = checker.intern(ArType::Void);
+    let struct_ty = closure::install_closure(
         checker,
-        thread_capture::CaptureInstall {
-            call_expr,
-            callee_id,
-            arg_id,
-            arg_span,
-            captures: &captures,
-            ret_ty: ret_ty_id,
-            res_ty,
+        arg_span,
+        &closure::ClosureShape {
+            method: "run",
+            struct_prefix: "__ThreadCapture",
+            host_prefix: "ar_thread_capture",
+            params: &[(None, void_ty)],
+            return_type: ret_ty_id,
+            self_by_mut_ref: false,
+            adapts: None,
+            owning: None,
         },
-    ))
+        &captures,
+    );
+    checker.record_expr_type(arg_id, struct_ty);
+    let call_func_ty = ArType::func(&[struct_ty], res_ty, &checker.type_info.type_interner);
+    let call_func_ty_id = checker.intern(call_func_ty);
+    checker.record_expr_type(callee_id, call_func_ty_id);
+    checker.record_expr_type(call_expr, res_ty);
+    Some(res_ty)
 }

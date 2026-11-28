@@ -1,15 +1,50 @@
 //! Call expression synthesis (callee resolution, free/method/generic calls).
 
 mod arg;
+mod closure;
 mod instantiate;
 mod invoke;
 mod invoke_direct;
-mod thread_capture;
+mod owning;
 mod thread_target;
 
 pub(crate) use arg::check_call_arg;
-pub(crate) use instantiate::infer_and_instantiate_func;
+pub(crate) use closure::{
+    check_callback_args, check_lambda_inferred, check_lambda_owning, check_lambda_value,
+    synth_args_with_callbacks, synth_call_arg,
+};
+pub(crate) use instantiate::{bind_type_params, infer_and_instantiate_func};
+pub(crate) use owning::{
+    adjust_to_expected, adjust_unsize, owning_closure_code, owning_closure_signature,
+};
 pub(crate) use thread_target::check_target_thread_capabilities;
+
+/// A call given more arguments than it takes, the last being a trailing
+/// block, explains that the block is that argument.
+pub(crate) fn note_trailing_block(
+    checker: &TypeChecker<'_>,
+    diagnostic: crate::Diagnostic,
+    arg_ids: &[ExprId],
+    expected: usize,
+) -> crate::Diagnostic {
+    let Some(&last) = arg_ids.last() else {
+        return diagnostic;
+    };
+    let is_trailing_block = arg_ids.len() > expected
+        && matches!(
+            checker.pool.expr(last),
+            ExprKind::Lambda {
+                body: arandu_parser::LambdaBody::Block { span, .. },
+                ..
+            } if *span == checker.pool.expr_span(last)
+        );
+    if !is_trailing_block {
+        return diagnostic;
+    }
+    diagnostic.with_note(
+        "a block after a call is its last argument, the closure `() => { ... }`; this function takes no such parameter",
+    )
+}
 
 use arandu_lexer::Span;
 use arandu_parser::CatchHandler;
@@ -25,6 +60,169 @@ use crate::type_checker::types::{self, ArType};
 
 use arandu_middle::types::type_interner::TypeId;
 
+/// A generic function used as a value is one instance, fixed by the type the
+/// value must have (`let f: (int) -> int = identity`), as Rust infers the
+/// arguments of a `fn` item it coerces to a `fn` pointer.
+fn instantiate_function_value(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    symbol: arandu_middle::SymbolId,
+    span: Span,
+    expected: Option<TypeId>,
+) -> Option<TypeId> {
+    if !checker.symbols.try_get(symbol).is_some_and(|entry| {
+        matches!(
+            entry.kind,
+            arandu_middle::SymbolKind::Func | arandu_middle::SymbolKind::AssociatedFunc
+        )
+    }) {
+        return None;
+    }
+    let generics = checker
+        .type_info
+        .generic_params
+        .get(&symbol)
+        .filter(|params| !params.is_empty())?
+        .clone();
+    let template = checker.decl_type(symbol)?;
+    let mut bindings = rustc_hash::FxHashMap::default();
+    if let Some(expected) = expected
+        && matches!(checker.resolve(expected), ArType::Func(..))
+    {
+        bind_type_params(checker, &generics, &template, expected, &mut bindings);
+    }
+    let concrete = generics
+        .iter()
+        .map(|param| {
+            bindings
+                .get(param)
+                .copied()
+                .filter(|&ty| !closure::mentions_foreign_type_parameter(checker, ty))
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(concrete) = concrete else {
+        let name = checker.symbols.get(symbol).name.clone();
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T001CannotInferType,
+                format!("cannot infer the type arguments of `{name}` used as a function value"),
+                span,
+            )
+            .with_label(span, "this value's type must be known here")
+            .with_note("annotate it, as in `let f: (int) -> int = identity`"),
+        );
+        let error = checker.intern(ArType::Error);
+        checker.record_expr_type(expr, error);
+        return Some(error);
+    };
+    let concrete = concrete
+        .into_iter()
+        .map(|ty| checker.resolve(ty))
+        .collect::<Vec<_>>();
+    types::interfaces::check_instantiation_constraints(checker, &generics, &concrete, span);
+    let subst = arandu_middle::types::build_subst(&generics, &concrete);
+    let instance =
+        arandu_middle::types::substitute_type(&template, &subst, &checker.type_info.type_interner);
+    let instance = checker.intern(instance);
+    checker.record_expr_type(expr, instance);
+    Some(instance)
+}
+
+/// A function used as a value is a plain code pointer called with the
+/// internal convention, by code that cannot see its obligations. An
+/// `@Unsafe` or `extern` function would lose its `unsafe` requirement, an
+/// `@Export` function has a C entry point, and a thread-restricted function
+/// its capability check (RFC 0032, L2).
+fn check_function_value(
+    checker: &mut TypeChecker<'_>,
+    symbol: arandu_middle::SymbolId,
+    span: Span,
+) {
+    let Some(entry) = checker.symbols.try_get(symbol) else {
+        return;
+    };
+    let kind = entry.kind;
+    if !matches!(
+        kind,
+        arandu_middle::SymbolKind::Func
+            | arandu_middle::SymbolKind::ExternFunc
+            | arandu_middle::SymbolKind::AssociatedFunc
+    ) {
+        return;
+    }
+    if kind == arandu_middle::SymbolKind::ExternFunc
+        || checker.type_info.unsafe_functions.contains(&symbol)
+    {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::O013ExternRequiresUnsafe,
+                "an `@Unsafe` or `extern` function cannot be used as a function value",
+                span,
+            )
+            .with_label(span, "a call through the value would not require `unsafe`")
+            .with_note("call it directly inside an `unsafe` block"),
+        );
+        return;
+    }
+    let _ = check_target_thread_capabilities(checker, symbol, span);
+}
+
+fn synth_result_ctor_value_type(
+    checker: &mut TypeChecker<'_>,
+    member: &str,
+    expected: Option<TypeId>,
+) -> TypeId {
+    match member {
+        "Ok" => {
+            let (ok_id, err_id) = match expected.map(|e| checker.resolve(e)) {
+                Some(ArType::Result(ok, err)) => (ok, err),
+                _ => {
+                    let hole = checker.intern(ArType::Error);
+                    let err_lit = checker.intern(ArType::Err);
+                    (hole, err_lit)
+                }
+            };
+            let res_id = checker.intern(ArType::Result(ok_id, err_id));
+            let func_ty = ArType::func(&[ok_id], res_id, &checker.type_info.type_interner);
+            checker.intern(func_ty)
+        }
+        "Err" => {
+            let (ok_id, err_id) = match expected.map(|e| checker.resolve(e)) {
+                Some(ArType::Result(ok, err)) => (ok, err),
+                _ => {
+                    let hole = checker.intern(ArType::Error);
+                    let err_lit = checker.intern(ArType::Err);
+                    (hole, err_lit)
+                }
+            };
+            let res_id = checker.intern(ArType::Result(ok_id, err_id));
+            let func_ty = ArType::func(&[err_id], res_id, &checker.type_info.type_interner);
+            checker.intern(func_ty)
+        }
+        _ => checker.intern(ArType::Error),
+    }
+}
+
+fn synth_option_ctor_value_type(
+    checker: &mut TypeChecker<'_>,
+    member: &str,
+    expected: Option<TypeId>,
+) -> TypeId {
+    let inner_id = match expected.map(|e| checker.resolve(e)) {
+        Some(ArType::Option(inner)) => inner,
+        _ => checker.intern(ArType::Error),
+    };
+    match member {
+        "Some" => {
+            let opt_id = checker.intern(ArType::Option(inner_id));
+            let func_ty = ArType::func(&[inner_id], opt_id, &checker.type_info.type_interner);
+            checker.intern(func_ty)
+        }
+        "None" => checker.intern(ArType::Option(inner_id)),
+        _ => checker.intern(ArType::Error),
+    }
+}
+
 pub(super) fn synth_call_expr(
     checker: &mut TypeChecker<'_>,
     expr: ExprId,
@@ -35,8 +233,92 @@ pub(super) fn synth_call_expr(
     match kind {
         ExprKind::Path { path: _ } => {
             if let Some(symbol_id) = checker.resolved.expr_symbol(expr) {
+                match checker.symbols.try_get(symbol_id).and_then(|s| s.lang_item) {
+                    Some(arandu_middle::symbol_table::LangItem::OptionNone) => {
+                        return Some(synth_option_ctor_value_type(checker, "None", expected));
+                    }
+                    Some(arandu_middle::symbol_table::LangItem::OptionSome)
+                        if checker.direct_callee != Some(expr) =>
+                    {
+                        return Some(synth_option_ctor_value_type(checker, "Some", expected));
+                    }
+                    Some(arandu_middle::symbol_table::LangItem::ResultOk)
+                        if checker.direct_callee != Some(expr) =>
+                    {
+                        return Some(synth_result_ctor_value_type(checker, "Ok", expected));
+                    }
+                    Some(arandu_middle::symbol_table::LangItem::ResultErr)
+                        if checker.direct_callee != Some(expr) =>
+                    {
+                        return Some(synth_result_ctor_value_type(checker, "Err", expected));
+                    }
+                    _ => {}
+                }
+                if checker
+                    .symbols
+                    .try_get(symbol_id)
+                    .is_some_and(|s| s.kind == arandu_middle::SymbolKind::StaticMut)
+                    && !checker.ctx.is_in_unsafe()
+                {
+                    checker.diagnostics.push(crate::Diagnostic::error(
+                        crate::DiagCode::O017StaticMutRequiresUnsafe,
+                        "access to `static mut` requires an `unsafe` block",
+                        span,
+                    ));
+                }
                 if let Some(var_id) = checker.literal_table.var_for_symbol(symbol_id) {
                     checker.literal_table.bind_expr(expr, var_id);
+                }
+                if checker.direct_callee != Some(expr) {
+                    check_function_value(checker, symbol_id, span);
+                    // `own (A) -> R` expected: the function is instantiated at
+                    // `(A) -> R` and wrapped in a closure without environment.
+                    let owning = expected.and_then(|expected| {
+                        owning_closure_signature(checker, expected)
+                            .map(|signature| (expected, signature))
+                    });
+                    let value_expected = owning.map(|(_, signature)| signature).or(expected);
+                    let instance =
+                        instantiate_function_value(checker, expr, symbol_id, span, value_expected);
+                    if let Some((closure_ty, signature)) = owning
+                        && checker.symbols.try_get(symbol_id).is_some_and(|entry| {
+                            matches!(
+                                entry.kind,
+                                arandu_middle::SymbolKind::Func
+                                    | arandu_middle::SymbolKind::AssociatedFunc
+                            )
+                        })
+                        && let Some(function_ty) =
+                            instance.or_else(|| checker.decl_type_id(symbol_id))
+                    {
+                        return Some(closure::adapt_function_owning(
+                            checker,
+                            expr,
+                            function_ty,
+                            closure_ty,
+                            signature,
+                        ));
+                    }
+                    if let Some((closure_ty, signature)) = owning
+                        && checker.symbols.try_get(symbol_id).is_some_and(|entry| {
+                            matches!(
+                                entry.kind,
+                                arandu_middle::SymbolKind::Local | arandu_middle::SymbolKind::Param
+                            )
+                        })
+                        && let Some(value_ty) = checker
+                            .ctx
+                            .lookup(symbol_id)
+                            .or_else(|| checker.decl_type_id(symbol_id))
+                        && matches!(checker.resolve(value_ty), ArType::Func(..))
+                    {
+                        return Some(closure::adapt_value_owning(
+                            checker, expr, symbol_id, value_ty, closure_ty, signature,
+                        ));
+                    }
+                    if let Some(instance) = instance {
+                        return Some(instance);
+                    }
                 }
                 if !checker
                     .type_info
@@ -61,11 +343,22 @@ pub(super) fn synth_call_expr(
                 && checker.symbols.try_get(symbol).is_some_and(|entry| {
                     matches!(
                         entry.kind,
-                        arandu_middle::SymbolKind::ConstParam | arandu_middle::SymbolKind::Const
+                        arandu_middle::SymbolKind::ConstParam
+                            | arandu_middle::SymbolKind::Const
+                            | arandu_middle::SymbolKind::StaticMut
                     )
                 })
                 && let Some(base_ty) = checker.decl_type_id(symbol)
             {
+                if checker.symbols.get(symbol).kind == arandu_middle::SymbolKind::StaticMut
+                    && !checker.ctx.is_in_unsafe()
+                {
+                    checker.diagnostics.push(crate::Diagnostic::error(
+                        crate::DiagCode::O017StaticMutRequiresUnsafe,
+                        "access to `static mut` requires an `unsafe` block",
+                        span,
+                    ));
+                }
                 return Some(crate::type_checker::synth::resolve_field_type(
                     checker,
                     base_ty,
@@ -84,54 +377,18 @@ pub(super) fn synth_call_expr(
                 .get(&type_name.span.into())
                 .copied();
             if type_symbol.is_some_and(|symbol| checker.symbols.is_result_type(symbol)) {
-                return Some(match member.as_str() {
-                    "Ok" => {
-                        let (ok_id, err_id) = match expected.map(|e| checker.resolve(e)) {
-                            Some(ArType::Result(ok, err)) => (ok, err),
-                            _ => {
-                                let hole = checker.intern(ArType::Error);
-                                let err_lit = checker.intern(ArType::Err);
-                                (hole, err_lit)
-                            }
-                        };
-                        let res_id = checker.intern(ArType::Result(ok_id, err_id));
-                        let func_ty =
-                            ArType::func(&[ok_id], res_id, &checker.type_info.type_interner);
-                        checker.intern(func_ty)
-                    }
-                    "Err" => {
-                        let (ok_id, err_id) = match expected.map(|e| checker.resolve(e)) {
-                            Some(ArType::Result(ok, err)) => (ok, err),
-                            _ => {
-                                let hole = checker.intern(ArType::Error);
-                                let err_lit = checker.intern(ArType::Err);
-                                (hole, err_lit)
-                            }
-                        };
-                        let res_id = checker.intern(ArType::Result(ok_id, err_id));
-                        let func_ty =
-                            ArType::func(&[err_id], res_id, &checker.type_info.type_interner);
-                        checker.intern(func_ty)
-                    }
-                    _ => checker.intern(ArType::Error),
-                });
+                return Some(synth_result_ctor_value_type(
+                    checker,
+                    member.as_str(),
+                    expected,
+                ));
             }
             if type_symbol.is_some_and(|symbol| checker.symbols.is_option_type(symbol)) {
-                let inner_id = match expected.map(|e| checker.resolve(e)) {
-                    Some(ArType::Option(inner)) => inner,
-                    _ => checker.intern(ArType::Error),
-                };
-                return Some(match member.as_str() {
-                    "Some" => {
-                        let opt_ty = ArType::Option(inner_id);
-                        let opt_id = checker.intern(opt_ty);
-                        let func_ty =
-                            ArType::func(&[inner_id], opt_id, &checker.type_info.type_interner);
-                        checker.intern(func_ty)
-                    }
-                    "None" => checker.intern(ArType::Option(inner_id)),
-                    _ => checker.intern(ArType::Error),
-                });
+                return Some(synth_option_ctor_value_type(
+                    checker,
+                    member.as_str(),
+                    expected,
+                ));
             }
             if type_symbol.is_some_and(|symbol| checker.symbols.is_poll_type(symbol)) {
                 let inner = match expected.map(|e| checker.resolve(e)) {
@@ -298,7 +555,6 @@ pub(super) fn synth_call_expr(
             let left_ty_id = synth_expr(checker, left_id);
             let left_ty = checker.resolve(left_ty_id);
             let unwrapped_ty = match left_ty {
-                ArType::Nullable(inner) => Some(checker.resolve(inner)),
                 ArType::Option(inner) => Some(checker.resolve(inner)),
                 _ => None,
             };
@@ -344,7 +600,13 @@ pub(super) fn synth_call_expr(
                 Some(checker.intern(ArType::Error))
             }
         }
-        ExprKind::Call { .. } => invoke::synth_invoked_call(checker, expr, kind, span, expected),
+        ExprKind::Call { args, .. } => {
+            // An argument lives until the call ends, so a `String` passed
+            // where a `str` is expected can be viewed in place.
+            let arg_ids = checker.pool.expr_list(*args).to_vec();
+            checker.text_view_sites.extend(arg_ids);
+            invoke::synth_invoked_call(checker, expr, kind, span, expected)
+        }
         ExprKind::Catch {
             expr: inner_expr,
             handler,

@@ -6,10 +6,12 @@
 
 use arandu_base::LineIndex;
 use arandu_query::{AnalysisSnapshot, SourceFile};
-use lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
+use lsp_types::{
+    CompletionItem, CompletionItemKind, InsertTextFormat, Position, Range, TextEdit as LspTextEdit,
+};
 
 use super::presentation::markdown_documentation;
-use crate::conv::position_to_offset;
+use crate::conv::{offset_to_position, position_to_offset};
 
 #[cfg(test)]
 pub(crate) use arandu_ide::completion::import_path_completions;
@@ -25,11 +27,27 @@ pub fn completions(
     let offset = position_to_offset(&index, position, text);
     arandu_ide::completions(snap, source, text, offset)
         .into_iter()
-        .map(to_lsp)
+        .map(|item| to_lsp(item, &index))
         .collect()
 }
 
-fn to_lsp(item: arandu_ide::CompletionItem) -> CompletionItem {
+fn to_lsp(item: arandu_ide::CompletionItem, index: &LineIndex) -> CompletionItem {
+    let additional_text_edits = if item.additional_text_edits.is_empty() {
+        None
+    } else {
+        Some(
+            item.additional_text_edits
+                .into_iter()
+                .map(|edit| LspTextEdit {
+                    range: Range {
+                        start: offset_to_position(index, edit.start),
+                        end: offset_to_position(index, edit.end),
+                    },
+                    new_text: edit.new_text,
+                })
+                .collect(),
+        )
+    };
     CompletionItem {
         label: item.label,
         kind: Some(kind_to_lsp(item.kind)),
@@ -39,6 +57,7 @@ fn to_lsp(item: arandu_ide::CompletionItem) -> CompletionItem {
         insert_text_format: item.is_snippet.then_some(InsertTextFormat::SNIPPET),
         filter_text: item.filter_text,
         sort_text: item.sort_text,
+        additional_text_edits,
         ..CompletionItem::default()
     }
 }

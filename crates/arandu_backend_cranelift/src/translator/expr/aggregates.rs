@@ -82,30 +82,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 if field_layout.size == 0 {
                     continue;
                 }
-                let is_aggregate = matches!(
-                    field_ty,
-                    ArType::Named(..)
-                        | ArType::Array(..)
-                        | ArType::ConstArray(..)
-                        | ArType::Tuple(..)
-                );
-                if is_aggregate && let Some(memcpy_id) = self.memcpy_func_id() {
+                if self.is_inline_aggregate_ty(&field_ty) {
                     let val = self.translate_operand(op, Some(self.ptr_type));
-                    let memcpy_ref = self
-                        .module
-                        .declare_func_in_func(memcpy_id, self.builder.func);
-                    let size_val = self
-                        .builder
-                        .ins()
-                        .iconst(self.ptr_type, field_layout.size as i64);
                     let field_dest = if offset != 0 {
                         self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
                     } else {
                         ptr_val
                     };
-                    self.builder
-                        .ins()
-                        .call(memcpy_ref, &[field_dest, val, size_val]);
+                    self.copy_aggregate_bytes(field_dest, val, field_layout.size);
                     continue;
                 }
                 let expected_field_ty = match crate::types::clif_type(&field_ty, self.ptr_type) {
@@ -166,37 +150,18 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         .unwrap_or(ArType::Error),
                     _ => ArType::Error,
                 };
-                let is_aggregate = matches!(
-                    elem_ty,
-                    ArType::Named(..)
-                        | ArType::Array(..)
-                        | ArType::ConstArray(..)
-                        | ArType::Tuple(..)
-                );
                 let elem_layout = self.checked_layout(&elem_ty);
                 if elem_layout.size == 0 {
                     continue;
                 }
-                if is_aggregate
-                    && elem_layout.size > 0
-                    && let Some(memcpy_id) = self.memcpy_func_id()
-                {
+                if self.is_inline_aggregate_ty(&elem_ty) && elem_layout.size > 0 {
                     let val = self.translate_operand(op, Some(self.ptr_type));
-                    let memcpy_ref = self
-                        .module
-                        .declare_func_in_func(memcpy_id, self.builder.func);
-                    let size_val = self
-                        .builder
-                        .ins()
-                        .iconst(self.ptr_type, elem_layout.size as i64);
                     let elem_dest = if offset != 0 {
                         self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
                     } else {
                         ptr_val
                     };
-                    self.builder
-                        .ins()
-                        .call(memcpy_ref, &[elem_dest, val, size_val]);
+                    self.copy_aggregate_bytes(elem_dest, val, elem_layout.size);
                     continue;
                 }
                 let expected_elem_ty = match crate::types::clif_type(&elem_ty, self.ptr_type) {
@@ -284,26 +249,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 // target layout reserves the full tagged payload. The later
                 // drop glue then reads that pointer as a discriminant and
                 // follows an invalid payload address.
-                if self.is_inline_aggregate_ty(&item_ar_ty)
-                    && item_layout.size > 0
-                    && let Some(memcpy_id) = self.memcpy_func_id()
-                {
+                if self.is_inline_aggregate_ty(&item_ar_ty) && item_layout.size > 0 {
                     let val = self.translate_operand(op, Some(self.ptr_type));
-                    let memcpy_ref = self
-                        .module
-                        .declare_func_in_func(memcpy_id, self.builder.func);
-                    let size_val = self
-                        .builder
-                        .ins()
-                        .iconst(self.ptr_type, item_layout.size as i64);
                     let elem_dest = if offset != 0 {
                         self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
                     } else {
                         ptr_val
                     };
-                    self.builder
-                        .ins()
-                        .call(memcpy_ref, &[elem_dest, val, size_val]);
+                    self.copy_aggregate_bytes(elem_dest, val, item_layout.size);
                     continue;
                 }
                 let expected_item_ty = match crate::types::clif_type(&item_ar_ty, self.ptr_type) {
@@ -339,10 +292,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let struct_ty = match base_ty {
             arandu_middle::types::ArType::Ptr(inner)
             | arandu_middle::types::ArType::Ref(inner)
-            | arandu_middle::types::ArType::RefMut(inner)
-            | arandu_middle::types::ArType::Nullable(inner) => {
-                self.type_info.resolve_type_id(inner)
-            }
+            | arandu_middle::types::ArType::RefMut(inner) => self.type_info.resolve_type_id(inner),
             other => other,
         };
         let layout = self.checked_layout(&struct_ty);
@@ -407,7 +357,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         expected_ty: Option<Type>,
     ) -> Value {
         let (target_ptr, elem_ty) = self.translate_index_address(base, index, in_bounds);
-        if self.is_inline_aggregate_ty(&elem_ty) {
+        if self.is_inline_aggregate_ty(&elem_ty) || matches!(elem_ty, ArType::Func(..)) {
             return target_ptr;
         }
         self.builder.ins().load(
@@ -424,9 +374,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             index,
             len,
         );
-        self.builder
-            .ins()
-            .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+        self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
     }
 
     /// Shared bounds-checked address calculation for scalar, aggregate and
@@ -447,18 +395,27 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             idx_val = self.cast_int_width_signed(idx_val, self.ptr_type, is_signed);
         }
 
-        let base_ty = self.get_operand_ar_type(base);
-        let deref_ty = match &base_ty {
-            ArType::Ptr(inner) => self.type_info.resolve_type_id(*inner),
-            ArType::Ref(inner) | ArType::RefMut(inner)
-                if base_ty
-                    .slice_abi_element(self.type_info.type_interner())
-                    .is_some() =>
-            {
+        let mut base_ty = self.get_operand_ar_type(base);
+        while let ArType::Named(sym, _) = &base_ty {
+            if let Some(underlying) = self.type_info.decl_type(*sym) {
+                base_ty = underlying;
+            } else {
+                break;
+            }
+        }
+        let mut deref_ty = match &base_ty {
+            ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
                 self.type_info.resolve_type_id(*inner)
             }
             other => other.clone(),
         };
+        while let ArType::Named(sym, _) = &deref_ty {
+            if let Some(underlying) = self.type_info.decl_type(*sym) {
+                deref_ty = underlying;
+            } else {
+                break;
+            }
+        }
         let elem_ty = match &deref_ty {
             ArType::Array(len, elem) => {
                 if !in_bounds {
@@ -510,6 +467,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     .copied()
                     .map(|tid| self.type_info.resolve_type_id(tid))
                     .unwrap_or(ArType::Error)
+            }
+            _ if matches!(base_ty, ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)) => {
+                deref_ty.clone()
             }
             _ => ArType::Error,
         };

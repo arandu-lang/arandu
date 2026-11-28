@@ -1,7 +1,10 @@
 mod binary;
-mod call;
+pub(crate) mod call;
 mod control_flow;
+mod hole;
 mod literal;
+pub(crate) mod range;
+pub(crate) mod text;
 
 use arandu_parser::ast_pool::{ExprId, ExprKind};
 
@@ -14,7 +17,9 @@ use control_flow::synth_control_flow_expr;
 use literal::synth_literal_expr;
 
 pub(crate) use call::{
-    check_call_arg, check_target_thread_capabilities, infer_and_instantiate_func,
+    adjust_unsize, check_call_arg, check_callback_args, check_target_thread_capabilities,
+    infer_and_instantiate_func, note_trailing_block, owning_closure_code,
+    synth_args_with_callbacks, synth_call_arg,
 };
 
 use super::ctor::synth_variant_sugar;
@@ -31,7 +36,9 @@ pub fn synth_expr_expected(
     expr: ExprId,
     expected: Option<TypeId>,
 ) -> TypeId {
-    let id = synth_expr_inner(checker, expr, expected);
+    // Expressions nest as deeply as a program writes them.
+    let id = arandu_base::ensure_sufficient_stack(|| synth_expr_inner(checker, expr, expected));
+    let id = call::adjust_to_expected(checker, expr, id, expected);
     checker.record_expr_type(expr, id);
     id
 }
@@ -46,6 +53,10 @@ fn synth_expr_inner(
     // lifetime is independent of the mutable checker borrow used below.
     let pool = checker.pool;
     let kind = pool.expr(expr);
+
+    if let Some(parts) = hole::hole_parts(checker, expr) {
+        return hole::synth_hole(checker, expr, parts, expected);
+    }
 
     if let ExprKind::Layout { query, ty } = kind {
         let result = match query {

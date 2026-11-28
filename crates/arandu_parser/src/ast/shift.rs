@@ -173,6 +173,7 @@ impl Shift {
             | ExprKind::Char { value: _ }
             | ExprKind::Byte { value: _ }
             | ExprKind::ByteString { bytes: _ }
+            | ExprKind::CString { bytes: _ }
             | ExprKind::Nil => {}
             ExprKind::TypePath {
                 type_name,
@@ -194,22 +195,15 @@ impl Shift {
             | ExprKind::Alloc { expr }
             | ExprKind::Group { expr }
             | ExprKind::Unary { op: _, expr } => self.expr_id(expr),
-            ExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
+            ExprKind::Call { callee, args } => {
                 self.expr_id(callee);
                 self.expr_range(args);
-                if let Some(block) = trailing_block {
-                    self.block_id(block);
-                }
             }
             ExprKind::StructLiteral { ty, fields } => {
                 self.type_expr_id(ty);
                 self.field_init_range(fields);
             }
-            ExprKind::Array { items } => self.expr_range(items),
+            ExprKind::Array { items } | ExprKind::Tuple { items } => self.expr_range(items),
             ExprKind::ArrayRepeat { value, count } => {
                 self.expr_id(value);
                 self.type_expr_id(count);
@@ -314,7 +308,9 @@ impl Shift {
             self.span(span);
             for suffix in suffixes {
                 match suffix {
-                    PlaceSuffix::Field { span, name: _ } => self.span(span),
+                    PlaceSuffix::Field { span, name: _ } | PlaceSuffix::Deref { span } => {
+                        self.span(span)
+                    }
                     PlaceSuffix::Index { span, expr } => {
                         self.span(span);
                         self.expr_id(expr);
@@ -392,7 +388,9 @@ impl Shift {
                     self.expr_id(value);
                 }
             }
-            Stmt::Break { span } | Stmt::Continue { span } | Stmt::Error(span) => self.span(span),
+            Stmt::Break { span, label: _ }
+            | Stmt::Continue { span, label: _ }
+            | Stmt::Error(span) => self.span(span),
             Stmt::Free { span, expr }
             | Stmt::Match { span, expr }
             | Stmt::Expr {
@@ -419,6 +417,7 @@ impl Shift {
             }
             Stmt::For {
                 span,
+                label: _,
                 is_comptime: _,
                 clause,
                 body,
@@ -461,6 +460,7 @@ impl Shift {
             }
             Stmt::While {
                 span,
+                label: _,
                 condition,
                 body,
             } => {
@@ -501,6 +501,9 @@ impl Shift {
                 self.span(span);
                 self.expr_id(expression);
             }
+            TypeExpr::Never { span } => {
+                self.span(span);
+            }
             TypeExpr::Named { span, name, args } => {
                 self.span(span);
                 self.type_name(name);
@@ -528,16 +531,28 @@ impl Shift {
                 self.opt_type_expr(size_expression);
                 self.type_expr_id(elem);
             }
+            TypeExpr::Tuple { span, items } => {
+                self.span(span);
+                self.type_expr_range(items);
+            }
             TypeExpr::Func {
                 span,
                 params,
                 result,
+                ..
             } => {
                 self.span(span);
                 self.type_expr_range(params);
                 if let Some(result) = result {
                     self.result_type(result);
                 }
+            }
+            TypeExpr::OwnFunc {
+                span, func, bounds, ..
+            } => {
+                self.span(span);
+                self.type_expr_id(func);
+                self.type_expr_range(bounds);
             }
         }
     }
@@ -656,11 +671,15 @@ impl Shift {
             ty,
             is_variadic: _,
             is_receiver: _,
+            default,
         } in params
         {
             self.span(span);
             self.attributes(attrs);
             self.type_expr_id(ty);
+            if let Some(default) = default {
+                self.expr_id(default);
+            }
         }
     }
 
@@ -709,6 +728,7 @@ impl Shift {
                 name: _,
                 ty,
                 value,
+                is_static_mut: _,
             }) => {
                 self.span(span);
                 self.attributes(attrs);
@@ -869,7 +889,12 @@ impl Shift {
                 self.span(span);
                 return;
             }
-            ImportDecl::Named {
+            ImportDecl::ModuleGroup {
+                span,
+                prefix: _,
+                items,
+            }
+            | ImportDecl::Named {
                 span,
                 items,
                 path: _,

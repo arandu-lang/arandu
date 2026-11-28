@@ -28,10 +28,9 @@ fn resolve_method_target(
     let mut base_ty = interner.resolve(base_expr.ty);
     for _ in 0..4 {
         base_ty = match base_ty {
-            ArType::Nullable(inner)
-            | ArType::Ref(inner)
-            | ArType::RefMut(inner)
-            | ArType::Ptr(inner) => interner.resolve(inner),
+            ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                interner.resolve(inner)
+            }
             other => other,
         };
         if matches!(
@@ -42,6 +41,7 @@ fn resolve_method_target(
                 | ArType::Primitive(_)
                 | ArType::Slice(_)
                 | ArType::MutSlice(_)
+                | ArType::Array(_, _)
         ) {
             break;
         }
@@ -58,13 +58,16 @@ fn resolve_method_target(
         ArType::Primitive(Primitive::Int) | ArType::IntLiteral => symbols.builtins.int_type,
         ArType::Primitive(Primitive::U32) => symbols.builtins.u32_type,
         ArType::Primitive(Primitive::U64) => symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::I32) => symbols.builtins.i32_type,
+        ArType::Primitive(Primitive::I64) => symbols.builtins.i64_type,
         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => symbols.builtins.float_type,
-        ArType::Slice(_) | ArType::MutSlice(_) => symbols.builtins.slice_type,
+        ArType::Slice(_) | ArType::MutSlice(_) | ArType::Array(_, _) => symbols.builtins.slice_type,
         ArType::Ptr(_) => symbols.builtins.ptr_type,
         _ => None,
-    }?;
-
-    symbols.lookup_associated_member(type_id, field)
+    };
+    type_id
+        .and_then(|owner| symbols.lookup_associated_member(owner, field))
+        .or_else(|| symbols.pointer_method(&interner.resolve(base_expr.ty), interner, field))
 }
 
 impl LowerCtx<'_> {
@@ -99,6 +102,22 @@ impl LowerCtx<'_> {
         result_ty: crate::types::TypeId,
     ) -> bool {
         let interner = &self.tc.type_info.type_interner;
+        // `String.from(text)` copies its argument into a buffer it owns, as an
+        // interpolation built as a `String` relies on.
+        if let HirExprKind::Path { symbol } = self.hir.pool.expr(callee).kind
+            && let Some(string) = self
+                .tc
+                .symbols
+                .lang_item_symbol(arandu_middle::symbol_table::LangItem::String)
+            && self
+                .tc
+                .symbols
+                .associated_members
+                .get(&(string, "from".into()))
+                == Some(&symbol)
+        {
+            return true;
+        }
         if result_may_hold_view(result_ty, interner) {
             return false;
         }
@@ -376,6 +395,9 @@ impl LowerCtx<'_> {
             let arg_op = if let Some(param_ty) = formal {
                 if matches!(param_ty, ArType::Primitive(Primitive::Str)) {
                     self.maybe_to_str(arg_op, arg_expr.ty)?
+                } else if matches!(param_ty, ArType::Option(_)) {
+                    let expected_id = self.intern_ty(param_ty.clone());
+                    self.coerce_to_option(arg_op, arg_expr.ty, expected_id)
                 } else {
                     arg_op
                 }
@@ -431,6 +453,10 @@ impl LowerCtx<'_> {
                     if_true: *if_true,
                     if_false: *if_false,
                 },
+                (SimdOperation::Bitmask, [vector]) => AmirRvalue::VectorBitmask { vector: *vector },
+                (SimdOperation::LoadUnaligned, [source]) => {
+                    AmirRvalue::VectorLoadUnaligned { source: *source }
+                }
                 _ => {
                     return Err(Diagnostic::ice(
                         DiagCode::ICEGEN001,
@@ -455,6 +481,14 @@ impl LowerCtx<'_> {
                 name,
                 symbols.get(symbol).lang_item,
             );
+            if kind == Some(arandu_middle::IntrinsicKind::Forget)
+                && let (Some(&arg), [value]) = (args_slice.first(), arg_ops.as_slice())
+            {
+                let value_ty = self.hir.pool.expr(arg).ty;
+                let sink = self.new_temp_id(value_ty);
+                self.emit_assign_temp(sink, AmirRvalue::Use(*value));
+                return Ok(AmirOperand::Constant(AmirConstant::Nil));
+            }
             if kind == Some(arandu_middle::IntrinsicKind::DropInPlace)
                 && let (Some(&arg), [pointer]) = (args_slice.first(), arg_ops.as_slice())
             {
@@ -527,10 +561,16 @@ impl LowerCtx<'_> {
         // `abort` never returns (Rust's `!`): code after it is unreachable,
         // and a path ending in it needs no return value.
         if callee_symbol.is_some_and(|symbol| {
-            arandu_middle::IntrinsicKind::from_declared_name(
-                symbols.get(symbol).name.as_str(),
-                symbols.get(symbol).lang_item,
-            ) == Some(arandu_middle::IntrinsicKind::Abort)
+            matches!(
+                arandu_middle::IntrinsicKind::from_declared_name(
+                    symbols.get(symbol).name.as_str(),
+                    symbols.get(symbol).lang_item,
+                ),
+                Some(
+                    arandu_middle::IntrinsicKind::Abort
+                        | arandu_middle::IntrinsicKind::AbortWithMessage
+                )
+            )
         }) {
             self.builder.current_block = None;
         }
@@ -599,6 +639,11 @@ impl LowerCtx<'_> {
         let bare = match kind {
             Some(arandu_middle::IntrinsicKind::SizeOf) => "sizeOf",
             Some(arandu_middle::IntrinsicKind::AlignOf) => "alignOf",
+            Some(arandu_middle::IntrinsicKind::TypeInfo) => {
+                return self
+                    .lower_type_info(type_args[0], result_ty, target, callee_expr.span)
+                    .map(Some);
+            }
             _ => return Ok(None),
         };
 
@@ -653,12 +698,9 @@ impl LowerCtx<'_> {
 /// Named aggregates and tuples stay conservative.
 fn result_may_hold_view(ty: crate::types::TypeId, interner: &crate::types::TypeInterner) -> bool {
     match interner.try_resolve(ty) {
-        Some(
-            ArType::Option(inner)
-            | ArType::Nullable(inner)
-            | ArType::Array(_, inner)
-            | ArType::ConstArray(_, inner),
-        ) => result_may_hold_view(inner, interner),
+        Some(ArType::Option(inner) | ArType::Array(_, inner) | ArType::ConstArray(_, inner)) => {
+            result_may_hold_view(inner, interner)
+        }
         Some(ArType::Result(ok, err)) => {
             result_may_hold_view(ok, interner) || result_may_hold_view(err, interner)
         }

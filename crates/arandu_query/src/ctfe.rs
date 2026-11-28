@@ -50,6 +50,9 @@ pub struct CapturedRuntimeValue {
 pub enum BuildFailure {
     MissingFunction,
     GenericFunction,
+    /// The body calls a generic function: the narrow scalar lowering never
+    /// monomorphizes, so only the concrete instance path can evaluate it.
+    CallsGeneric,
     InvalidRoot,
     RuntimeCapture(Box<CapturedRuntimeValue>),
     Diagnostics(Vec<Diagnostic>),
@@ -210,6 +213,63 @@ pub(crate) fn link_extern_headers(
             .ok_or_else(|| BuildFailure::Diagnostics(context.diagnostics.clone()))?;
         arandu_semantics::link_hir_module(checked, hir, &context.type_check, source);
     }
+    link_imported_generic_headers(db, checked, hir)
+}
+
+/// A call to a generic function of another module (`str.len` calls
+/// `slice.len<u8>`) becomes an instance only when the monomorphizer sees the
+/// generic declaration. The narrow CTFE context holds local headers only, so
+/// the declaration surface of each such module is linked, as executable
+/// composition does; its bodies are never read here.
+fn link_imported_generic_headers(
+    db: &dyn ArandCompilerDb,
+    checked: &mut arandu_semantics::TypeCheckResult,
+    hir: &mut arandu_middle::hir::HirProgram,
+) -> Result<(), BuildFailure> {
+    let own_file = checked.symbols.file_id;
+    let declared = hir
+        .decls
+        .iter()
+        .filter_map(|&id| match hir.pool.decl(id) {
+            arandu_middle::hir::HirDecl::Func(function) => Some(function.symbol),
+            _ => None,
+        })
+        .collect::<rustc_hash::FxHashSet<_>>();
+    let mut files = hir
+        .pool
+        .exprs
+        .iter()
+        .filter_map(|expression| match expression.kind {
+            arandu_middle::hir::HirExprKind::Path { symbol } => Some(symbol),
+            arandu_middle::hir::HirExprKind::TypePath { member_symbol, .. } => Some(member_symbol),
+            _ => None,
+        })
+        .filter(|symbol| {
+            symbol.file_id != own_file
+                && checked.type_info.generic_params.contains_key(symbol)
+                && !declared.contains(symbol)
+                && checked
+                    .symbols
+                    .try_get(*symbol)
+                    .is_some_and(|symbol| symbol.kind != arandu_middle::SymbolKind::ExternFunc)
+        })
+        .map(|symbol| symbol.file_id)
+        .collect::<Vec<_>>();
+    files.sort_unstable();
+    files.dedup();
+    for file_id in files {
+        db.unwind_if_revision_cancelled();
+        let file = db
+            .source_file_by_id(file_id)
+            .ok_or(BuildFailure::MissingFunction)?;
+        let surface = crate::runtime::declaration_surface(db, file);
+        let source = surface
+            .artifacts
+            .hir
+            .as_ref()
+            .ok_or_else(|| BuildFailure::Diagnostics(surface.artifacts.diagnostics.clone()))?;
+        arandu_semantics::link_hir_module(checked, hir, &surface.artifacts.type_check, source);
+    }
     Ok(())
 }
 
@@ -350,11 +410,28 @@ impl FunctionProvider for QueryProvider<'_> {
             .db
             .source_file_by_id(symbol.file_id)
             .ok_or(EvalErrorKind::MissingFunction(symbol))?;
-        let lowered = if self.headers_only || !self.context.is_empty() {
-            ctfe_header_func_amir_in_context(self.db, file, symbol, self.context.clone())
-        } else {
-            ctfe_func_amir(self.db, file, symbol)
-        };
+        if self.headers_only || !self.context.is_empty() {
+            let lowered =
+                ctfe_header_func_amir_in_context(self.db, file, symbol, self.context.clone());
+            return self.unit(&lowered.result, symbol);
+        }
+        let scalar = ctfe_func_amir(self.db, file, symbol);
+        // The scalar path never monomorphizes, so a body that calls a generic
+        // helper (`str.len` calls `slice.len<u8>`) takes the concrete path,
+        // which binds each call as the monomorphizer does. Every other unit
+        // keeps the narrow lowering and its cutoff.
+        if !matches!(scalar.result, Err(BuildFailure::CallsGeneric)) {
+            return self.unit(&scalar.result, symbol);
+        }
+        let instance = crate::runtime::Instance::new(
+            self.db,
+            file,
+            FunctionInstance {
+                definition: symbol,
+                arguments: Vec::new(),
+            },
+        );
+        let lowered = ctfe_instance_amir(self.db, instance);
         self.unit(&lowered.result, symbol)
     }
 
@@ -367,9 +444,7 @@ impl FunctionProvider for QueryProvider<'_> {
                 &def.name,
                 def.lang_item,
             )?;
-            if kind.is_pure_bit_operation()
-                || kind == arandu_middle::intrinsics::IntrinsicKind::Abort
-            {
+            if kind.is_pure_ctfe_intrinsic() {
                 return Some(kind);
             }
         }
@@ -440,9 +515,7 @@ impl FunctionProvider for InstanceProvider<'_> {
                 &def.name,
                 def.lang_item,
             )?;
-            if kind.is_pure_bit_operation()
-                || kind == arandu_middle::intrinsics::IntrinsicKind::Abort
-            {
+            if kind.is_pure_ctfe_intrinsic() {
                 return Some(kind);
             }
         }

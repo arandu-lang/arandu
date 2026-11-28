@@ -1,6 +1,6 @@
 [package]
 name = "arandu_runtime"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
@@ -31,6 +31,7 @@ windows-sys = { version = "0.60.2", features = [
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_LibraryLoader",
 ] }
 
 [lib]

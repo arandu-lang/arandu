@@ -113,14 +113,17 @@ public func FnvHasher.writeU32(self: mut ref FnvHasher, i: u32): void {
 
 /// Hashes a `u64` in little-endian order.
 public func FnvHasher.writeU64(self: mut ref FnvHasher, i: u64): void {
-    self.writeU8(i as u8)
-    self.writeU8((i >> 8) as u8)
-    self.writeU8((i >> 16) as u8)
-    self.writeU8((i >> 24) as u8)
-    self.writeU8((i >> 32) as u8)
-    self.writeU8((i >> 40) as u8)
-    self.writeU8((i >> 48) as u8)
-    self.writeU8((i >> 56) as u8)
+    let prime: u64 = 1099511628211 as u64
+    let mut s = self.state
+    s = (s ^ (i & (255 as u64))) * prime
+    s = (s ^ ((i >> (8 as u64)) & (255 as u64))) * prime
+    s = (s ^ ((i >> (16 as u64)) & (255 as u64))) * prime
+    s = (s ^ ((i >> (24 as u64)) & (255 as u64))) * prime
+    s = (s ^ ((i >> (32 as u64)) & (255 as u64))) * prime
+    s = (s ^ ((i >> (40 as u64)) & (255 as u64))) * prime
+    s = (s ^ ((i >> (48 as u64)) & (255 as u64))) * prime
+    s = (s ^ ((i >> (56 as u64)) & (255 as u64))) * prime
+    self.state = s
 }
 
 /// Feeds the four little-endian bytes of the fixed-width `int` bit pattern.

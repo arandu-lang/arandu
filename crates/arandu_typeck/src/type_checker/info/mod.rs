@@ -17,12 +17,13 @@ use arandu_middle::layout::StructFieldInfo;
 #[cfg(test)]
 use arandu_middle::types::BorrowKind;
 
+mod importable;
 mod merge;
 mod query;
 mod translate;
 
 pub use merge::{ItemPlacement, PlacedSegment};
-pub use translate::{import_thread_captures, translate_type};
+pub use translate::{import_closures, translate_type};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnumPayloadShape {
@@ -37,37 +38,96 @@ pub struct InterfaceConstraint {
     pub type_args: SmallVec<[TypeId; 2]>,
 }
 
-/// One owned local moved into a synthesized `ThreadJob`.
+/// How a closure holds one captured local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureMode {
+    /// A `Copy` value of an immutable binding: a copy is indistinguishable
+    /// from a shared borrow, because nothing can write the binding.
+    Copy,
+    /// A value only read: the field is a `ref` to the caller's local.
+    Borrow,
+    /// A value written or mutably borrowed: the field is a `mut ref`.
+    BorrowMut,
+    /// The value moves into the closure (`move`).
+    Move,
+}
+
+/// One local held by a synthesized closure struct.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThreadCaptureField {
+pub struct ClosureCaptureField {
     pub name: smol_str::SmolStr,
     pub symbol: SymbolId,
     pub source: SymbolId,
+    /// The captured local's type.
     pub ty: TypeId,
+    /// The environment field's type: `ty`, or a reference to it for a borrow.
+    pub field_ty: TypeId,
     pub span: arandu_middle::Span,
+    pub mode: CaptureMode,
 }
 
-/// `move ||` with no parameters, lowered as a capture struct plus `run`.
+/// One real parameter of the synthesized closure method.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThreadCaptureRecipe {
+pub struct ClosureParam {
+    pub symbol: SymbolId,
+    pub ty: TypeId,
+}
+
+/// A lambda lowered as a capture struct plus one method: `run` for a
+/// `ThreadJob`, `call` for a non-escaping callback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosureRecipe {
     pub lambda_span: arandu_middle::Span,
     pub struct_symbol: SymbolId,
-    pub run_symbol: SymbolId,
+    pub struct_name: smol_str::SmolStr,
+    pub method_symbol: SymbolId,
+    pub method_name: smol_str::SmolStr,
     pub self_param: SymbolId,
-    pub arg_param: SymbolId,
-    pub fields: Vec<ThreadCaptureField>,
+    pub params: Vec<ClosureParam>,
+    pub fields: Vec<ClosureCaptureField>,
     pub return_type: TypeId,
-    /// Backend name. The source method is `run`; this spelling has no dots.
+    /// Backend name. This spelling has no dots.
     pub host_name: smol_str::SmolStr,
+    /// A named function passed as a callback: `call` forwards its
+    /// parameters to it, and there is no lambda in the source.
+    pub adapts: Option<SymbolId>,
+    /// The code an owning closure stores (RFC 0032, L3).
+    pub owning: Option<OwningCode>,
 }
 
-impl ThreadCaptureRecipe {
+/// The code function of an owning closure, `(env: ptr[u8], A) -> R`. With
+/// captures it forwards to the closure method through the environment;
+/// without, it calls the lambda's function or the adapted function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwningCode {
+    pub symbol: SymbolId,
+    pub env_param: SymbolId,
+    /// The forwarded parameters, typed as the recipe's `params`.
+    pub params: Vec<SymbolId>,
+    pub host_name: smol_str::SmolStr,
+    /// `Closure<F>` or `SendClosure<F>`, the type of the closure value.
+    pub closure_ty: TypeId,
+}
+
+impl ClosureRecipe {
+    /// A non-escaping callback environment, as opposed to a `ThreadJob`.
+    /// An owning closure's environment is reached the same way.
     #[must_use]
-    pub fn struct_symbol_name(&self) -> String {
-        format!(
-            "__ThreadCapture_{}_{}",
-            self.lambda_span.start, self.lambda_span.end
-        )
+    pub fn is_callback(&self) -> bool {
+        self.method_name == "call"
+    }
+
+    /// The recipe of an owning closure (RFC 0032, L3) or of its code.
+    #[must_use]
+    pub fn is_owning(&self) -> bool {
+        self.owning.is_some()
+    }
+
+    /// A capture-free lambda used as a function value: its method has no
+    /// receiver and the value is a pointer to it (RFC 0032, L2).
+    #[must_use]
+    pub fn is_function(&self) -> bool {
+        self.method_name == "fn"
     }
 }
 
@@ -116,6 +176,18 @@ pub struct TypeInfo {
     pub private_fields: FxHashSet<SymbolId>,
     /// Canonical interior-mutable owners must never gain structural Copy.
     pub interior_mutable_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols explicitly opted out of structural Copy via `@NoCopy`.
+    pub non_copy_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols explicitly opted out of structural `Send` via `@NoSend`.
+    pub non_send_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols explicitly opted out of structural `Sync` via `@NoSync`.
+    pub non_sync_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols asserting `Send` despite raw pointer fields via `@UnsafeSend`.
+    pub unsafe_send_types: FxHashSet<SymbolId>,
+    /// Struct/enum symbols asserting `Sync` despite raw pointer fields via `@UnsafeSync`.
+    pub unsafe_sync_types: FxHashSet<SymbolId>,
+    /// Canonical `std.core.pointer.NonNull<T>` wrapper guaranteeing non-zero offset-0 storage.
+    pub non_null_types: FxHashSet<SymbolId>,
     pub enum_variants: FxHashMap<SymbolId, (SymbolId, EnumPayloadShape)>,
     /// Pre-computed discriminant tag for each enum variant symbol.
     pub enum_variant_tags: FxHashMap<SymbolId, usize>,
@@ -130,6 +202,9 @@ pub struct TypeInfo {
     pub generic_params: FxHashMap<SymbolId, Arc<Vec<SymbolId>>>,
     /// T2.1: type-parameter symbol → default type (`A = GlobalAllocator`).
     pub generic_defaults: FxHashMap<SymbolId, TypeId>,
+    /// Implicit type parameter of a `(A) -> R` parameter → that function type.
+    /// The argument is a closure struct whose `call` has this signature.
+    pub callback_bounds: FxHashMap<SymbolId, TypeId>,
     /// Type-parameter symbol → interface constraints required (`T: Display`, `I: Iterator<Item>`).
     pub param_constraints: FxHashMap<SymbolId, Arc<Vec<InterfaceConstraint>>>,
     /// Interface symbol → method signatures (nominal, Go-style structural check).
@@ -141,13 +216,93 @@ pub struct TypeInfo {
     /// Functions whose API contract requires callers to establish unsafe
     /// preconditions in an explicit `unsafe` block (`@Unsafe`).
     pub unsafe_functions: FxHashSet<SymbolId>,
+    /// Functions with variadic arguments (`args: any...`).
+    pub variadic_functions: FxHashSet<SymbolId>,
+    /// Functions with `@Export`: their entry point uses the C convention.
+    pub exported_functions: FxHashSet<SymbolId>,
+    /// Functions marked `@Cold` (suppresses leaf inlining and emits cold hints).
+    pub cold_functions: FxHashSet<SymbolId>,
     /// Struct symbols that explicitly declare `@Repr("C")` / `#[repr(C)]`.
     pub struct_repr_c: rustc_hash::FxHashSet<SymbolId>,
+    /// Nominal aggregates declared with `union` / `@Union` (overlapping fields at offset 0).
+    pub struct_unions: rustc_hash::FxHashSet<SymbolId>,
     /// Struct field default value expressions (`(struct_symbol, field_name) -> default_expr`).
     pub struct_field_defaults: FxHashMap<(SymbolId, smol_str::SmolStr), ExprId>,
-    /// Thread-closure capture jobs keyed by the lambda span. Empty unless a
-    /// `move ||` was accepted as a `ThreadJob`.
-    pub thread_captures: FxHashMap<arandu_middle::Span, ThreadCaptureRecipe>,
+    /// Function/method parameter defaults (`(func_symbol, param_index) -> default`).
+    pub func_param_defaults: FxHashMap<(SymbolId, usize), ParamDefault>,
+    /// Synthesized `@Derive(...)` associated method recipes, keyed by method `SymbolId`.
+    pub derived_methods: FxHashMap<SymbolId, DeriveRecipe>,
+    /// Lambdas lowered as capture structs, keyed by the lambda span. Empty
+    /// unless a `move ||` job or a callback argument was accepted.
+    pub closures: FxHashMap<arandu_middle::Span, ClosureRecipe>,
+    /// Conversions the type checker applied, keyed by the converted
+    /// expression's span (RFC 0032, L3).
+    pub adjustments: FxHashMap<arandu_middle::Span, Adjustment>,
+    /// Owning closures used as temporaries (`make()(x)`, or lent to a
+    /// callback), keyed by the temporary's span: lowering binds the value to
+    /// this synthetic local for the rest of the statement, like Rust's
+    /// temporary scope, so its code and environment are read from one value.
+    pub closure_temporaries: FxHashMap<arandu_middle::Span, ClosureTemporary>,
+}
+
+/// Recipe for synthesizing a built-in `@Derive(...)` method body in HIR lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeriveRecipe {
+    pub type_symbol: SymbolId,
+    pub method_symbol: SymbolId,
+    pub kind: arandu_middle::derive::DeriveMethodKind,
+    pub self_param_ty: TypeId,
+    pub explicit_param_tys: Vec<TypeId>,
+    pub return_ty: TypeId,
+    pub param_symbols: Vec<SymbolId>,
+    pub is_copy: bool,
+    pub span: arandu_middle::Span,
+}
+
+/// Default value attached to a function or method parameter (`port: int = 8080`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ParamDefault {
+    LocalExpr { expr: ExprId, ty: TypeId },
+    Int { raw: smol_str::SmolStr, ty: TypeId },
+    Float { raw: smol_str::SmolStr, ty: TypeId },
+    Bool(bool),
+    Str(smol_str::SmolStr),
+    Char(smol_str::SmolStr),
+    Nil { ty: TypeId },
+}
+
+/// The local an owning closure temporary is bound to, and the closure's type
+/// (the expression itself may be checked as the adapter that borrows it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosureTemporary {
+    pub local: SymbolId,
+    pub ty: TypeId,
+}
+
+/// An expression converted where its value is used into the checked type
+/// `to`. Like rustc's adjustments, the expression itself keeps its own
+/// type, `from`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adjustment {
+    pub kind: AdjustmentKind,
+    pub from: TypeId,
+    pub to: TypeId,
+}
+
+/// How lowering converts an adjusted value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdjustmentKind {
+    /// Passed to `function<type_args>`, which returns `to`.
+    Call {
+        function: SymbolId,
+        type_args: Vec<TypeId>,
+    },
+    /// A `[N]T` array viewed as the `[]T` slice of all its elements.
+    Unsize,
+    /// A `String` (or a reference to one) viewed as `str`.
+    TextView,
+    /// A `Vec<T>` (or a reference to one) viewed as `[]T`.
+    VecView,
 }
 
 impl Default for TypeInfo {
@@ -184,60 +339,88 @@ impl TypeInfo {
             struct_fields: FxHashMap::default(),
             private_fields: FxHashSet::default(),
             interior_mutable_types: FxHashSet::default(),
+            non_copy_types: FxHashSet::default(),
+            non_send_types: FxHashSet::default(),
+            non_sync_types: FxHashSet::default(),
+            unsafe_send_types: FxHashSet::default(),
+            unsafe_sync_types: FxHashSet::default(),
+            non_null_types: FxHashSet::default(),
             enum_variants: FxHashMap::default(),
             enum_variant_tags: FxHashMap::default(),
             destructors: FxHashMap::default(),
             destructor_instances: FxHashMap::default(),
             generic_params: FxHashMap::default(),
             generic_defaults: FxHashMap::default(),
+            callback_bounds: FxHashMap::default(),
             param_constraints: FxHashMap::default(),
             interfaces: FxHashMap::default(),
             variant_instantiations: FxHashMap::default(),
             function_effects: FxHashMap::default(),
             unsafe_functions: FxHashSet::default(),
+            variadic_functions: FxHashSet::default(),
+            exported_functions: FxHashSet::default(),
+            cold_functions: FxHashSet::default(),
             struct_repr_c: rustc_hash::FxHashSet::default(),
+            struct_unions: rustc_hash::FxHashSet::default(),
             struct_field_defaults: FxHashMap::default(),
-            thread_captures: FxHashMap::default(),
+            func_param_defaults: FxHashMap::default(),
+            derived_methods: FxHashMap::default(),
+            closures: FxHashMap::default(),
+            adjustments: FxHashMap::default(),
+            closure_temporaries: FxHashMap::default(),
         }
     }
 
     #[must_use]
-    pub fn thread_capture_at(&self, span: arandu_middle::Span) -> Option<&ThreadCaptureRecipe> {
-        self.thread_captures.get(&span)
+    pub fn closure_at(&self, span: arandu_middle::Span) -> Option<&ClosureRecipe> {
+        self.closures.get(&span)
     }
 
     #[must_use]
-    pub fn thread_capture_for_run(&self, symbol: SymbolId) -> Option<&ThreadCaptureRecipe> {
-        self.thread_captures
-            .values()
-            .find(|recipe| recipe.run_symbol == symbol)
+    pub fn closure_for_method(&self, symbol: SymbolId) -> Option<&ClosureRecipe> {
+        self.closures.values().find(|recipe| {
+            recipe.method_symbol == symbol
+                || recipe
+                    .owning
+                    .as_ref()
+                    .is_some_and(|code| code.symbol == symbol)
+        })
     }
 
     /// Re-register span-derived capture symbols on a signature table.
     ///
     /// Item body checks already hold them. File composition keeps the
     /// signature table, so this runs only when a recipe was recorded.
-    pub fn materialize_thread_captures(&self, symbols: &mut crate::SymbolTable) {
-        if self.thread_captures.is_empty() {
-            return;
-        }
+    pub fn materialize_closures(&self, symbols: &mut crate::SymbolTable) {
         let scope = symbols.global_scope();
-        for recipe in self.thread_captures.values() {
+        for (span, temporary) in &self.closure_temporaries {
+            if temporary.local.file_id == symbols.file_id {
+                Self::ensure_capture_symbol(
+                    symbols,
+                    temporary.local,
+                    "closure",
+                    arandu_middle::SymbolKind::Local,
+                    *span,
+                    scope,
+                );
+            }
+        }
+        for recipe in self.closures.values() {
             if recipe.struct_symbol.file_id != symbols.file_id {
                 continue;
             }
             Self::ensure_capture_symbol(
                 symbols,
                 recipe.struct_symbol,
-                &recipe.struct_symbol_name(),
+                &recipe.struct_name,
                 arandu_middle::SymbolKind::Struct,
                 recipe.lambda_span,
                 scope,
             );
             Self::ensure_capture_symbol(
                 symbols,
-                recipe.run_symbol,
-                &format!("{}.run", recipe.struct_symbol_name()),
+                recipe.method_symbol,
+                &format!("{}.{}", recipe.struct_name, recipe.method_name),
                 arandu_middle::SymbolKind::AssociatedFunc,
                 recipe.lambda_span,
                 scope,
@@ -250,14 +433,16 @@ impl TypeInfo {
                 recipe.lambda_span,
                 scope,
             );
-            Self::ensure_capture_symbol(
-                symbols,
-                recipe.arg_param,
-                "argument",
-                arandu_middle::SymbolKind::Param,
-                recipe.lambda_span,
-                scope,
-            );
+            for param in &recipe.params {
+                Self::ensure_capture_symbol(
+                    symbols,
+                    param.symbol,
+                    "argument",
+                    arandu_middle::SymbolKind::Param,
+                    recipe.lambda_span,
+                    scope,
+                );
+            }
             for field in &recipe.fields {
                 Self::ensure_capture_symbol(
                     symbols,
@@ -268,12 +453,47 @@ impl TypeInfo {
                     scope,
                 );
             }
-            symbols
-                .associated_members_mut()
-                .insert((recipe.struct_symbol, "run".into()), recipe.run_symbol);
+            symbols.associated_members_mut().insert(
+                (recipe.struct_symbol, recipe.method_name.clone()),
+                recipe.method_symbol,
+            );
             symbols
                 .host_function_names
-                .insert(recipe.run_symbol, recipe.host_name.clone());
+                .insert(recipe.method_symbol, recipe.host_name.clone());
+            if let Some(code) = &recipe.owning {
+                Self::ensure_capture_symbol(
+                    symbols,
+                    code.symbol,
+                    &format!("{}.code", recipe.struct_name),
+                    arandu_middle::SymbolKind::AssociatedFunc,
+                    recipe.lambda_span,
+                    scope,
+                );
+                Self::ensure_capture_symbol(
+                    symbols,
+                    code.env_param,
+                    "env",
+                    arandu_middle::SymbolKind::Param,
+                    recipe.lambda_span,
+                    scope,
+                );
+                for &param in &code.params {
+                    Self::ensure_capture_symbol(
+                        symbols,
+                        param,
+                        "argument",
+                        arandu_middle::SymbolKind::Param,
+                        recipe.lambda_span,
+                        scope,
+                    );
+                }
+                symbols
+                    .associated_members_mut()
+                    .insert((recipe.struct_symbol, "code".into()), code.symbol);
+                symbols
+                    .host_function_names
+                    .insert(code.symbol, code.host_name.clone());
+            }
         }
     }
 
@@ -524,12 +744,20 @@ impl arandu_middle::layout::StructLayoutProvider for TypeInfo {
         Some(self.is_copy(ty))
     }
 
+    fn is_non_null_type(&self, sym: SymbolId) -> bool {
+        self.non_null_types.contains(&sym)
+    }
+
     fn destructor_for_type(&self, ty: TypeId) -> Option<SymbolId> {
         self.destructor_instances.get(&ty).copied()
     }
 
     fn is_repr_c(&self, struct_id: SymbolId) -> bool {
         self.struct_repr_c.contains(&struct_id)
+    }
+
+    fn is_union(&self, struct_id: SymbolId) -> bool {
+        self.struct_unions.contains(&struct_id)
     }
 }
 
@@ -573,6 +801,20 @@ impl arandu_middle::type_context::AmirTypeContext for TypeInfo {
         TypeInfo::borrow_paths(self, ty)
     }
 
+    fn may_borrow_paths(
+        &self,
+        ty: TypeId,
+    ) -> Result<
+        Vec<(
+            arandu_middle::types::BorrowPath,
+            arandu_middle::types::BorrowKind,
+            bool,
+        )>,
+        BorrowShapeError,
+    > {
+        TypeInfo::may_borrow_paths(self, ty)
+    }
+
     fn enum_variant_tag(&self, variant: SymbolId) -> Option<usize> {
         self.enum_variant_tags.get(&variant).copied()
     }
@@ -589,6 +831,12 @@ impl arandu_middle::type_context::AmirTypeContext for TypeInfo {
         self.destructor_instances
             .values()
             .any(|symbol| *symbol == function)
+    }
+
+    fn is_closure_env(&self, symbol: SymbolId) -> bool {
+        self.closures
+            .values()
+            .any(|recipe| recipe.struct_symbol == symbol && recipe.is_callback())
     }
 }
 
@@ -618,6 +866,14 @@ impl arandu_middle::type_context::CodegenTypeContext for TypeInfo {
 
     fn fields_for(&self, owner: SymbolId, args: &[TypeId]) -> Option<&StructFields> {
         TypeInfo::fields_for(self, owner, args)
+    }
+
+    fn is_variadic_function(&self, symbol: SymbolId) -> bool {
+        self.variadic_functions.contains(&symbol)
+    }
+
+    fn is_cold_function(&self, symbol: SymbolId) -> bool {
+        self.cold_functions.contains(&symbol)
     }
 }
 
@@ -737,6 +993,11 @@ mod borrow_shape_tests {
         let str_view = info.type_interner.intern(ArType::Primitive(Primitive::Str));
 
         assert!(info.borrow_paths(str_view).expect("str shape").is_empty());
+        assert_eq!(
+            info.may_borrow_paths(str_view)
+                .expect("str may-borrow shape"),
+            vec![(BorrowPath::root(), BorrowKind::Shared, false)]
+        );
         assert!(info.is_copy(str_view));
     }
 

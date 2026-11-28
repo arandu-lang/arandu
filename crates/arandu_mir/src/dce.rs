@@ -192,7 +192,9 @@ fn optimization_span(func: &AmirFunc) -> Span {
 
 /// Locals whose slot may be read: the return slot `0`, any place loaded or
 /// borrowed (so its address may escape), any destroyed place, and any local
-/// whose pointer a store dereferences. Everything else is write-only.
+/// whose pointer or indexed view a store writes through (an indexed store may
+/// write into external slice/pointer/Vec storage or trap out of bounds).
+/// Everything else is write-only.
 fn observed_locals(func: &AmirFunc) -> Vec<bool> {
     let mut observed = vec![false; func.locals.len()];
     let mut observe = |local: crate::amir::LocalId| {
@@ -210,10 +212,14 @@ fn observed_locals(func: &AmirFunc) -> Vec<bool> {
                 }
             }
             AmirStmt::Store { lhs, .. }
-                if lhs
-                    .projections
-                    .iter()
-                    .any(|projection| matches!(projection, AmirProjection::Deref)) =>
+                if lhs.projections.iter().any(|projection| {
+                    matches!(
+                        projection,
+                        AmirProjection::Deref
+                            | AmirProjection::Index(_)
+                            | AmirProjection::IndexConstant(_)
+                    )
+                }) =>
             {
                 observe(lhs.local);
             }
@@ -251,6 +257,7 @@ fn has_side_effect(stmt: &AmirStmt) -> bool {
         AmirStmt::Call { .. }
         | AmirStmt::Store { .. }
         | AmirStmt::Free(_)
+        | AmirStmt::ArenaRewind(_)
         | AmirStmt::Destroy(_)
         | AmirStmt::StorageLive(_)
         | AmirStmt::StorageDead(_) => true,
@@ -320,7 +327,7 @@ fn collect_stmt_temps(stmt: &AmirStmt) -> SmallVec<[TempId; 4]> {
             }
             temps
         }
-        AmirStmt::Free(op) => collect_operand_temps(op),
+        AmirStmt::Free(op) | AmirStmt::ArenaRewind(op) => collect_operand_temps(op),
         AmirStmt::Destroy(place) => {
             let mut temps = SmallVec::new();
             for proj in &place.projections {
@@ -820,6 +827,16 @@ mod tests {
         let mut f = with_int_locals(func(store_one(1, &[]), vec![int_temp(0), int_temp(1)]), 2);
         assert!(mark_sweep_dce(&mut f).unwrap());
         assert_eq!(f.blocks[0].statements.len, 0);
+
+        let mut field_only = with_int_locals(
+            func(
+                store_one(1, &[AmirProjection::Field(crate::SymbolId::new(0, 1))]),
+                vec![int_temp(0), int_temp(1)],
+            ),
+            2,
+        );
+        assert!(mark_sweep_dce(&mut field_only).unwrap());
+        assert_eq!(field_only.blocks[0].statements.len, 0);
     }
 
     #[test]
@@ -864,6 +881,68 @@ mod tests {
         );
         assert!(!mark_sweep_dce(&mut through_pointer).unwrap());
         assert_eq!(through_pointer.blocks[0].statements.len, 3);
+    }
+
+    #[test]
+    fn keeps_slice_init_and_indexed_stores_when_slice_local_is_otherwise_unread() {
+        let make_slice = AmirStmt::Call {
+            lhs: Some(TempId::from_usize(2)),
+            callee: AmirOperand::FunctionRef(crate::SymbolId::new(0, 9)),
+            args: smallvec::smallvec![],
+            return_borrow: None,
+        };
+        let init_slice_local = AmirStmt::Store {
+            lhs: place(1, &[]),
+            rhs: AmirOperand::Copy(TempId::from_usize(2)),
+        };
+        let idx_val = AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Bool(true))),
+        };
+        let dynamic_indexed_store = AmirStmt::Store {
+            lhs: place(
+                1,
+                &[AmirProjection::Index(AmirOperand::Copy(
+                    TempId::from_usize(1),
+                ))],
+            ),
+            rhs: AmirOperand::Copy(TempId::from_usize(1)),
+        };
+        let mut with_dynamic = with_int_locals(
+            func(
+                vec![
+                    make_slice.clone(),
+                    AmirStmt::StorageLive(LocalId::from_usize(1)),
+                    init_slice_local.clone(),
+                    idx_val.clone(),
+                    dynamic_indexed_store,
+                ],
+                vec![int_temp(0), int_temp(1), int_temp(2)],
+            ),
+            2,
+        );
+        assert!(!mark_sweep_dce(&mut with_dynamic).unwrap());
+        assert_eq!(with_dynamic.blocks[0].statements.len, 5);
+
+        let const_indexed_store = AmirStmt::Store {
+            lhs: place(1, &[AmirProjection::IndexConstant(0)]),
+            rhs: AmirOperand::Copy(TempId::from_usize(1)),
+        };
+        let mut with_const = with_int_locals(
+            func(
+                vec![
+                    make_slice,
+                    AmirStmt::StorageLive(LocalId::from_usize(1)),
+                    init_slice_local,
+                    idx_val,
+                    const_indexed_store,
+                ],
+                vec![int_temp(0), int_temp(1), int_temp(2)],
+            ),
+            2,
+        );
+        assert!(!mark_sweep_dce(&mut with_const).unwrap());
+        assert_eq!(with_const.blocks[0].statements.len, 5);
     }
 
     #[test]

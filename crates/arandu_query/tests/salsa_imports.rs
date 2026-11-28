@@ -352,13 +352,13 @@ fn test_local_generic_spawn_infer_still_ok() {
         }
         struct SyncExecutor { flags: int }
         struct TaskHandle { id: int }
-        func spawn_g<T>(shared ex: SyncExecutor, job: Coroutine<T>): TaskHandle {
+        func spawn_g<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle {
             unsafe {
                 let id = ar_rt_spawn_i64(job as ptr[u8])
                 return TaskHandle { id: id }
             }
         }
-        func join_g<T>(shared ex: SyncExecutor, handle: TaskHandle): T {
+        func join_g<T>(ex: ref SyncExecutor, handle: TaskHandle): T {
             unsafe {
                 let v = ar_rt_join_i64(handle.id)
                 return v as T

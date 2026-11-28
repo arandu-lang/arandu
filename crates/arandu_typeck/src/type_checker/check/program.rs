@@ -2,7 +2,7 @@ use arandu_parser::{Program, TopLevelDecl};
 
 use super::super::TypeChecker;
 use super::super::types::collect_interfaces_and_constraints;
-use super::collect::{collect_signature_types, collect_type_shapes};
+use super::collect::{collect_derive_methods, collect_signature_types, collect_type_shapes};
 use super::func::check_func_body;
 use super::prelude::register_prelude;
 use super::validate::validate_top_level_any;
@@ -15,6 +15,7 @@ pub fn check_signatures(checker: &mut TypeChecker<'_>, program: &Program) {
     // so `func new<T>(): Vec<T>` expands to `Vec<T, GlobalAllocator>` at collect time.
     collect_interfaces_and_constraints(checker, program);
     collect_signature_types(checker, program);
+    collect_derive_methods(checker, program);
 
     duplicate_module_member_info(checker, program);
     super::validate::validate_type_constraints_in_program(checker, program);
@@ -31,29 +32,20 @@ pub fn check_bodies(checker: &mut TypeChecker<'_>, program: &Program) {
                 check_func_body(checker, func_decl);
             }
             TopLevelDecl::Const(const_decl) => {
-                let val_ty = super::super::synth::synth_expr(checker, const_decl.value);
-                let const_key = crate::NodeKey::from(const_decl.span);
-                if let Some(&symbol_id) = checker.resolved.definitions.get(&const_key) {
-                    checker.record_decl_type(symbol_id, val_ty);
-                    if let Some(var_id) = checker.literal_table.var_for_expr(const_decl.value) {
-                        checker.literal_table.bind_symbol(symbol_id, var_id);
-                    }
-                }
-                checker.finalize_literal_vars();
+                super::program_items::check_const_value(checker, const_decl);
             }
             TopLevelDecl::Extern(extern_decl)
                 if arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
-                    == arandu_parser::AbiKind::AranduIntrinsic =>
+                    == arandu_parser::AbiKind::AranduIntrinsic
+                    && !checker.symbols.trusted_stdlib =>
             {
-                let module_name = program
-                    .module
-                    .as_ref()
-                    .map(|m| m.path.join("."))
-                    .unwrap_or_default();
-                if !module_name.starts_with("std.core") {
+                let already_reported = checker.diagnostics.iter().any(|d| {
+                    d.code == crate::DiagCode::U001FeatureNotSupported && d.span == extern_decl.span
+                });
+                if !already_reported {
                     checker.diagnostics.push(crate::Diagnostic::error(
                         crate::DiagCode::U001FeatureNotSupported,
-                        "the 'arandu-intrinsic' ABI is restricted to the std.core module"
+                        "the 'arandu-intrinsic' ABI requires a trusted standard-library source"
                             .to_string(),
                         extern_decl.span,
                     ));
@@ -131,6 +123,19 @@ fn duplicate_module_member_info(checker: &mut TypeChecker<'_>, program: &Program
                     .type_info
                     .struct_field_defaults
                     .insert((member_id, fname), expr_id);
+            }
+            let param_defaults_for_free: Vec<_> = checker
+                .type_info
+                .func_param_defaults
+                .iter()
+                .filter(|((sym, _), _)| *sym == free_id)
+                .map(|((_, idx), pd)| (*idx, pd.clone()))
+                .collect();
+            for (idx, pd) in param_defaults_for_free {
+                checker
+                    .type_info
+                    .func_param_defaults
+                    .insert((member_id, idx), pd);
             }
         }
     }

@@ -155,12 +155,6 @@ pub fn expand_named_with_defaults(checker: &mut TypeChecker<'_>, ty: ArType) -> 
             let tid = checker.intern(expanded);
             ArType::ConstArray(param, tid)
         }
-        ArType::Nullable(inner) => {
-            let inner_ty = checker.resolve(inner);
-            let expanded = expand_named_with_defaults(checker, inner_ty);
-            let tid = checker.intern(expanded);
-            ArType::Nullable(tid)
-        }
         ArType::Option(inner) => {
             let inner_ty = checker.resolve(inner);
             let expanded = expand_named_with_defaults(checker, inner_ty);
@@ -408,24 +402,51 @@ pub fn synth_generic_instantiation(
         return ArType::Error;
     };
 
+    // Callback parameters are implicit generics, like `impl Fn` in argument
+    // position: explicit arguments name only the declared parameters and the
+    // implicit ones stay open until the call infers them from its arguments.
+    let implicit = param_symbols
+        .iter()
+        .rev()
+        .take_while(|param| checker.type_info.callback_bounds.contains_key(param))
+        .count();
+    let declared = param_symbols.len() - implicit;
+    let written = arg_tys.len();
+    let wrong_count = |checker: &mut TypeChecker<'_>| {
+        let diag = crate::Diagnostic::error(
+            crate::DiagCode::T012WrongArgCount,
+            format!("generic callee expects {declared} type argument(s), found {written}"),
+            span,
+        )
+        .with_label(checker.pool.expr_span(callee), "generic callee is here")
+        .with_label(span, format!("{written} type arguments provided"));
+        checker.diagnostics.push(diag);
+        ArType::Error
+    };
+    if implicit > 0 && written > declared {
+        // A callback's type is its closure's; it is never written.
+        return wrong_count(checker);
+    }
+    let mut arg_tys = arg_tys;
+    if implicit > 0 {
+        for &param in &param_symbols[arg_tys.len()..declared] {
+            let Some(&default) = checker.type_info.generic_defaults.get(&param) else {
+                break;
+            };
+            arg_tys.push(checker.resolve(default));
+        }
+        if arg_tys.len() == declared {
+            arg_tys.extend(
+                param_symbols[declared..]
+                    .iter()
+                    .map(|&param| ArType::named(param, &[], &checker.type_info.type_interner)),
+            );
+        }
+    }
     // T2.1: fill trailing defaults when fewer type args are written.
     let mut arg_tys = match expand_type_args_with_defaults(checker, callee_symbol, &arg_tys) {
         Some(expanded) => expanded,
-        None => {
-            let diag = crate::Diagnostic::error(
-                crate::DiagCode::T012WrongArgCount,
-                format!(
-                    "generic callee expects {} type argument(s), found {}",
-                    param_symbols.len(),
-                    arg_tys.len()
-                ),
-                span,
-            )
-            .with_label(checker.pool.expr_span(callee), "generic callee is here")
-            .with_label(span, format!("{} type arguments provided", arg_tys.len()));
-            checker.diagnostics.push(diag);
-            return ArType::Error;
-        }
+        None => return wrong_count(checker),
     };
 
     if param_symbols.len() != arg_tys.len() {
@@ -535,9 +556,7 @@ fn resolve_generic_callee_symbol(
                 .unwrap_or_else(|| crate::passes::type_checker::synth::synth_expr(checker, *base));
             let base_ty = checker.resolve(base_ty_id);
             let actual_base_ty = match &base_ty {
-                ArType::Nullable(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
-                    checker.resolve(*inner)
-                }
+                ArType::Ref(inner) | ArType::RefMut(inner) => checker.resolve(*inner),
                 other => other.clone(),
             };
             let struct_id = match &actual_base_ty {
@@ -642,11 +661,6 @@ fn expand_aliases_rec(checker: &mut TypeChecker<'_>, ty: ArType, depth: usize) -
                 }
                 ArType::named(symbol_id, &expanded_args, &checker.type_info.type_interner)
             }
-        }
-        ArType::Nullable(inner) => {
-            let inner_ty = checker.resolve(inner);
-            let expanded = expand_aliases_rec(checker, inner_ty, depth + 1);
-            ArType::Nullable(checker.intern(expanded))
         }
         ArType::Option(inner) => {
             let inner_ty = checker.resolve(inner);

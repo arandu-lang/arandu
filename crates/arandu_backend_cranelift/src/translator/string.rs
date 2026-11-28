@@ -72,9 +72,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             sum,
             lhs,
         );
-        self.builder
-            .ins()
-            .trapnz(overflow, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+        self.trap_if(overflow, arandu_middle::amir::TrapKind::LengthOverflow);
         sum
     }
 
@@ -170,8 +168,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let struct_ty = match base_ty {
                     arandu_middle::types::ArType::Ptr(inner)
                     | arandu_middle::types::ArType::Ref(inner)
-                    | arandu_middle::types::ArType::RefMut(inner)
-                    | arandu_middle::types::ArType::Nullable(inner) => {
+                    | arandu_middle::types::ArType::RefMut(inner) => {
                         self.type_info.resolve_type_id(inner)
                     }
                     other => other,
@@ -284,6 +281,23 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     len_result = self.builder.ins().ireduce(self.ptr_type, len_result);
                 }
                 (ptr_result, len_result)
+            }
+            AmirRvalue::StrView { owner } => {
+                let op_ty = self.get_operand_ar_type(owner);
+                if matches!(op_ty, ArType::Primitive(Primitive::Str)) {
+                    self.translate_str_operand(owner)
+                } else {
+                    let ptr_val = self.translate_operand(owner, Some(self.ptr_type));
+                    let flags = cranelift_codegen::ir::MemFlagsData::new();
+                    let data = self.builder.ins().load(self.ptr_type, flags, ptr_val, 0);
+                    let len = self.builder.ins().load(
+                        self.ptr_type,
+                        flags,
+                        ptr_val,
+                        self.ptr_type.bytes() as i32,
+                    );
+                    (data, len)
+                }
             }
             _ => {
                 self.record_ice(

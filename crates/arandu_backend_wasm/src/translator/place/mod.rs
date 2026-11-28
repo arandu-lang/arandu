@@ -57,7 +57,8 @@ impl<'a> FuncTranslator<'a> {
             let memarg = |o: u64| wasm_encoder::MemArg {
                 offset: o,
                 align: 2,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             };
             // Reorder the stack into the three words, then emit two stores.
             self.code.push(Instruction::LocalSet(self.scratch_d));
@@ -76,7 +77,8 @@ impl<'a> FuncTranslator<'a> {
         let memarg = |align: u32| wasm_encoder::MemArg {
             offset,
             align,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         };
         match size {
             1 => self.code.push(Instruction::I32Store8(memarg(0))),
@@ -98,7 +100,8 @@ impl<'a> FuncTranslator<'a> {
             let memarg = |o: u64| wasm_encoder::MemArg {
                 offset: o,
                 align: 2,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             };
             self.code.push(Instruction::LocalSet(self.scratch));
             self.code.push(Instruction::LocalGet(self.scratch));
@@ -113,7 +116,8 @@ impl<'a> FuncTranslator<'a> {
         let memarg = |align: u32| wasm_encoder::MemArg {
             offset,
             align,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         };
         match size {
             1 => {
@@ -144,17 +148,7 @@ impl<'a> FuncTranslator<'a> {
     pub(super) fn emit_load(&mut self, place: &AmirPlace, result_ty: TypeId) {
         if place.projections.is_empty() {
             let local = &self.func.locals[place.local.as_usize()];
-            let ty = self.interner.resolve(local.ty);
-            let pointer_like = matches!(
-                ty,
-                ArType::Ptr(_)
-                    | ArType::Ref(_)
-                    | ArType::RefMut(_)
-                    | ArType::Nullable(_)
-                    | ArType::Slice(_)
-                    | ArType::MutSlice(_)
-            );
-            if local.is_memory && !pointer_like && !self.is_owned_aggregate(result_ty) {
+            if self.is_cell_local(local) && !self.is_owned_aggregate(result_ty) {
                 let slot = self.local_slot(local.id).unwrap_or(0);
                 self.code.push(Instruction::LocalGet(slot));
                 self.emit_load_value_at(result_ty, 0);
@@ -218,7 +212,8 @@ impl<'a> FuncTranslator<'a> {
             None => self.code.push(Instruction::I32Const(0)),
         }
         let mut cur_ty = local.ty;
-        let mut from_memory = false;
+        // A reference kept in a cell is read from it before the first Deref.
+        let mut from_memory = self.ref_cells.contains(&local.id);
         for proj in &place.projections {
             cur_ty = self.emit_place_projection(cur_ty, proj, base_slot, &mut from_memory);
         }

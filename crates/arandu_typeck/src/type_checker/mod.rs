@@ -8,13 +8,14 @@ pub mod check;
 pub mod constraints;
 pub mod context;
 pub mod errors;
+mod infer;
 pub mod info;
 pub mod provenance;
 pub mod solver;
 pub mod synth;
 pub mod types;
 
-pub use info::{EnumPayloadShape, TypeInfo, translate_type};
+pub use info::{DeriveRecipe, EnumPayloadShape, ParamDefault, TypeInfo, translate_type};
 
 use constraints::{Constraint, ConstraintOrigin};
 use context::TyCtx;
@@ -156,6 +157,12 @@ pub struct TypeChecker<'a> {
     /// Scope for lowering type expressions inside the current function body.
     type_scope_id: Option<ScopeId>,
     current_owner_type: Option<SymbolId>,
+    /// The item whose body is being checked: its closures are named after it
+    /// and their offset in it, so editing another item never renames them.
+    pub(crate) closure_owner: Option<ClosureOwner>,
+    /// The path being called directly; any other path naming a function
+    /// makes a function value.
+    pub(crate) direct_callee: Option<ExprId>,
     pub pool: &'a AstPool,
     pub target_info: TargetInfo,
     pub current_observed_effects: arandu_middle::EffectFlags,
@@ -163,6 +170,26 @@ pub struct TypeChecker<'a> {
     /// Concrete owner arguments during isolated instance checking. Source
     /// templates keep this empty; it never becomes exported declaration data.
     pub(crate) generic_substitution: arandu_middle::types::GenericSubst,
+    /// Inference variables of the body being checked (S1).
+    pub(crate) infer: infer::InferState,
+    /// Expressions whose `String` value may be viewed as a `str`: call
+    /// arguments and `let` initializers, where the value outlives the view.
+    pub(crate) text_view_sites: rustc_hash::FxHashSet<ExprId>,
+    /// Type annotation span for a direct literal initializer, used to attach a
+    /// structured quick fix to T038 without changing `synth_expr` signatures.
+    pub(crate) expected_type_span: Option<arandu_base::Span>,
+}
+
+/// Identity of the item that encloses a closure.
+#[derive(Debug, Clone)]
+pub(crate) struct ClosureOwner {
+    /// Owner name escaped to `[A-Za-z0-9_]` injectively.
+    pub name: smol_str::SmolStr,
+    /// Byte offset where the owner item starts.
+    pub start: u32,
+    /// The owner's type parameters, which a closure capturing a value of
+    /// generic type inherits (RFC 0032, L3).
+    pub generics: Vec<crate::SymbolId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,16 +294,36 @@ impl<'a> TypeChecker<'a> {
             solved_constraints: Vec::new(),
             type_scope_id: None,
             current_owner_type: None,
+            closure_owner: None,
+            direct_callee: None,
             pool,
             target_info,
             current_observed_effects: arandu_middle::EffectFlags::NONE,
             literal_table: solver::LiteralTable::new(),
             generic_substitution: arandu_middle::types::GenericSubst::new(),
+            infer: infer::InferState::default(),
+            text_view_sites: rustc_hash::FxHashSet::default(),
+            expected_type_span: None,
         }
     }
 
     pub fn intern(&mut self, ty: ArType) -> TypeId {
         self.type_info.type_interner.intern(ty)
+    }
+
+    /// Runs `f` with the type annotation span that governs a direct literal.
+    /// Nested expressions clear it so a quick fix never rewrites an unrelated
+    /// annotation for a literal inside a call or an aggregate.
+    pub(crate) fn with_expected_type_span<T>(
+        &mut self,
+        span: Option<arandu_base::Span>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.expected_type_span;
+        self.expected_type_span = span;
+        let result = f(self);
+        self.expected_type_span = previous;
+        result
     }
 
     #[must_use]
@@ -354,111 +401,7 @@ impl<'a> TypeChecker<'a> {
             )
         };
         let ty = types::expand_named_with_defaults(self, ty);
-        let ty = types::expand_aliases(self, ty);
-        self.reject_owned_nullable(&ty, self.pool.type_expr_span(expr_id));
-        ty
-    }
-
-    /// `T?` is a bare value-or-nil with no drop flag, so a `T` that owns
-    /// resources would be copied and never destroyed; `Option<T>` carries
-    /// that ownership instead (T006).
-    fn reject_owned_nullable(&mut self, ty: &ArType, span: arandu_base::Span) {
-        let ArType::Nullable(inner) = ty else {
-            return;
-        };
-        let inner_ty = self.type_info.type_interner.resolve(*inner);
-        if matches!(
-            inner_ty,
-            ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_) | ArType::Error
-        ) || self.mentions_type_param(&inner_ty)
-            || !self.owns_resources(*inner, &mut Vec::new())
-            || self
-                .diagnostics
-                .iter()
-                .any(|d| d.span == span && d.code == crate::DiagCode::T006NotNullable)
-        {
-            return;
-        }
-        let name = inner_ty.display(&self.symbols, &self.type_info.type_interner);
-        self.diagnostics.push(
-            crate::Diagnostic::error(
-                crate::DiagCode::T006NotNullable,
-                format!("type '{name}' owns resources and cannot be nullable"),
-                span,
-            )
-            .with_label(span, "`?` would copy this value and never destroy it")
-            .with_hint(format!(
-                "use `Option<{name}>`, which tracks ownership of the value"
-            )),
-        );
-    }
-
-    /// Whether a value of `id` carries a destructor obligation, directly or
-    /// through a field, payload or element. Recursive types stop at their
-    /// first revisit.
-    fn owns_resources(&self, id: TypeId, visiting: &mut Vec<SymbolId>) -> bool {
-        let interner = &self.type_info.type_interner;
-        match interner.resolve(id) {
-            ArType::Named(sym, _) => {
-                if self.type_info.destructors.contains_key(&sym) {
-                    return true;
-                }
-                if visiting.contains(&sym) {
-                    return false;
-                }
-                visiting.push(sym);
-                let fields = self.type_info.struct_fields.get(&sym).cloned();
-                let owns = fields.is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .any(|field| self.owns_resources(field.ty, visiting))
-                }) || self
-                    .type_info
-                    .enum_variants
-                    .values()
-                    .any(|(owner, payload)| {
-                        *owner == sym
-                            && matches!(payload, info::EnumPayloadShape::Tuple(items)
-                            if items.iter().any(|&item| self.owns_resources(item, visiting)))
-                    });
-                visiting.pop();
-                owns
-            }
-            ArType::Array(_, inner)
-            | ArType::ConstArray(_, inner)
-            | ArType::Option(inner)
-            | ArType::Nullable(inner) => self.owns_resources(inner, visiting),
-            ArType::Result(ok, err) => {
-                self.owns_resources(ok, visiting) || self.owns_resources(err, visiting)
-            }
-            ArType::Tuple(items) => interner
-                .type_args(items)
-                .iter()
-                .any(|&item| self.owns_resources(item, visiting)),
-            _ => false,
-        }
-    }
-
-    fn mentions_type_param(&self, ty: &ArType) -> bool {
-        match ty {
-            ArType::Named(sym, args) => {
-                self.symbols.try_get(*sym).is_some_and(|symbol| {
-                    matches!(
-                        symbol.kind,
-                        crate::SymbolKind::TypeParam | crate::SymbolKind::ConstParam
-                    )
-                }) || self
-                    .type_info
-                    .type_interner
-                    .type_args(*args)
-                    .iter()
-                    .any(|&arg| {
-                        self.mentions_type_param(&self.type_info.type_interner.resolve(arg))
-                    })
-            }
-            ArType::ConstParam(_) => true,
-            _ => false,
-        }
+        types::expand_aliases(self, ty)
     }
 
     pub fn lower_result_type(
@@ -694,7 +637,12 @@ impl TypeChecker<'_> {
     }
 
     #[must_use]
-    pub fn finish(self) -> TypeCheckResult {
+    pub fn finish(mut self) -> TypeCheckResult {
+        // Every body writes its variables back when it ends; a path that
+        // created one outside a body must not let it reach a later phase.
+        if self.type_info.type_interner.has_infer_vars() {
+            self.write_back_inference();
+        }
         TypeCheckResult {
             symbols: self.symbols,
             resolved: self.resolved,

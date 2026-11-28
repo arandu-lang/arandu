@@ -153,6 +153,11 @@ impl<'a> Lexer<'a> {
                     return self.lex_byte_string();
                 }
             }
+            b'c' => {
+                if remaining >= 2 && bytes[self.pos + 1] == b'"' {
+                    return self.lex_c_string();
+                }
+            }
             b'r' => {
                 if remaining >= 4 && &bytes[self.pos..self.pos + 4] == b"r\"\"\"" {
                     return self.lex_raw_multiline_string();
@@ -274,19 +279,25 @@ impl<'a> Lexer<'a> {
     }
 
     fn maybe_insert_semicolon_at(&mut self, span: Span, interpolation_boundary: bool) {
-        let can_insert = self
-            .prev_significant
-            .is_some_and(TokenKind::can_end_statement);
+        let next = self.peek_next_significant_kind();
+        let next_is_boundary = self.next_significant_index() == self.source.len()
+            || next.is_some_and(is_generic_signature_boundary);
+        let can_insert = self.prev_significant.is_some_and(|previous| {
+            previous.can_end_statement()
+                || (matches!(previous, TokenKind::Gt | TokenKind::ShiftRight) && next_is_boundary)
+        });
         if !can_insert {
             return;
         }
 
-        if self.peek_next_significant_kind().is_some_and(|kind| {
-            kind.prevents_semicolon_before()
+        if !self.next_line_starts_with_prefix_star()
+            && next.is_some_and(|kind| {
+                kind.prevents_semicolon_before()
                     // At depth zero this closes an expression interpolation,
                     // rather than a statement block. Nested blocks retain ASI.
                     || (interpolation_boundary && kind == TokenKind::RBrace)
-        }) {
+            })
+        {
             return;
         }
 
@@ -294,9 +305,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn insert_semicolon_if_needed(&mut self) {
-        let can_insert = self
-            .prev_significant
-            .is_some_and(TokenKind::can_end_statement);
+        let can_insert = self.prev_significant.is_some_and(|previous| {
+            previous.can_end_statement()
+                || matches!(previous, TokenKind::Gt | TokenKind::ShiftRight)
+        });
         if can_insert {
             let span = self.current_span();
             self.push_token(TokenKind::Semicolon, span, true);
@@ -385,6 +397,30 @@ impl<'a> Lexer<'a> {
     }
 
     fn peek_next_significant_kind(&self) -> Option<TokenKind> {
+        let index = self.next_significant_index();
+        if index >= self.source.len() {
+            return Some(TokenKind::Eof);
+        }
+        // Ensure the index is on a UTF-8 char boundary before slicing into &str
+        let valid_i = (index..=self.source.len())
+            .find(|&pos| self.source.is_char_boundary(pos))
+            .unwrap_or(self.source.len());
+        Some(peek_kind_from(&self.source[valid_i..]))
+    }
+
+    /// A line starting with `*` glued to its operand (`*target = v`) starts a
+    /// statement that writes through a reference, as Swift reads a prefix
+    /// operator; `* b` with a space still continues a multiplication.
+    fn next_line_starts_with_prefix_star(&self) -> bool {
+        let bytes = self.source.as_bytes();
+        let index = self.next_significant_index();
+        bytes.get(index) == Some(&b'*')
+            && bytes.get(index + 1).is_some_and(|next| {
+                next.is_ascii_alphabetic() || matches!(next, b'_' | b'*' | b'(')
+            })
+    }
+
+    fn next_significant_index(&self) -> usize {
         let bytes = self.source.as_bytes();
         let mut i = self.pos;
         while i < bytes.len() {
@@ -417,13 +453,9 @@ impl<'a> Lexer<'a> {
                     continue;
                 }
             }
-            // Ensure i is on a UTF-8 char boundary before slicing into &str
-            let valid_i = (i..=bytes.len())
-                .find(|&pos| self.source.is_char_boundary(pos))
-                .unwrap_or(bytes.len());
-            return Some(peek_kind_from(&self.source[valid_i..]));
+            return i;
         }
-        Some(TokenKind::Eof)
+        bytes.len()
     }
 
     fn push_token(&mut self, kind: TokenKind, span: Span, inserted: bool) {
@@ -529,4 +561,37 @@ impl<'a> Lexer<'a> {
     fn is_at_end(&self) -> bool {
         self.pos >= self.source.len()
     }
+}
+
+fn is_generic_signature_boundary(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::RBrace
+            | TokenKind::KwFunc
+            | TokenKind::KwPublic
+            | TokenKind::KwAsync
+            | TokenKind::KwStruct
+            | TokenKind::KwEnum
+            | TokenKind::KwInterface
+            | TokenKind::KwConst
+            | TokenKind::KwType
+            | TokenKind::KwImport
+            | TokenKind::KwFrom
+            | TokenKind::KwModule
+            | TokenKind::KwExtern
+            | TokenKind::KwImpl
+            | TokenKind::KwLet
+            | TokenKind::KwReturn
+            | TokenKind::KwBreak
+            | TokenKind::KwContinue
+            | TokenKind::KwIf
+            | TokenKind::KwFor
+            | TokenKind::KwWhile
+            | TokenKind::KwMatch
+            | TokenKind::KwDefer
+            | TokenKind::KwErrdefer
+            | TokenKind::KwUnsafe
+            | TokenKind::KwSet
+            | TokenKind::KwFree
+    )
 }

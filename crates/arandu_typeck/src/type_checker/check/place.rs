@@ -8,15 +8,24 @@ pub(super) fn peel_auto_deref_place(
     base_ty_id: TypeId,
 ) -> (TypeId, bool) {
     let mut id = base_ty_id;
-    let mut was_nullable = false;
+    let was_nullable = false;
     for _ in 0..8 {
         match checker.resolve(id) {
-            ArType::Nullable(inner) => {
-                was_nullable = true;
+            ArType::Ref(inner) | ArType::RefMut(inner) => {
                 id = inner;
             }
-            ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
-                id = inner;
+            ArType::Ptr(inner) => {
+                if matches!(
+                    checker.resolve(inner),
+                    ArType::Array(_, _)
+                        | ArType::ConstArray(_, _)
+                        | ArType::Slice(_)
+                        | ArType::MutSlice(_)
+                ) {
+                    id = inner;
+                } else {
+                    break;
+                }
             }
             _ => break,
         }
@@ -44,6 +53,35 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
             break;
         }
         match suffix {
+            arandu_parser::PlaceSuffix::Deref { span } => match checker.resolve(current_ty_id) {
+                ArType::Ref(inner) | ArType::RefMut(inner) => current_ty_id = inner,
+                ArType::Ptr(inner) => {
+                    if !checker.ctx.is_in_unsafe() {
+                        checker.diagnostics.push(
+                            crate::Diagnostic::error(
+                                crate::DiagCode::O019RawPtrRequiresUnsafe,
+                                "writing through a raw pointer requires an `unsafe` block",
+                                *span,
+                            )
+                            .with_label(*span, "raw `ptr[T]` deref is unsafe"),
+                        );
+                    }
+                    current_ty_id = inner;
+                }
+                _ => {
+                    checker.add_constraint(
+                        ArType::Error,
+                        current_ty_id,
+                        ConstraintOrigin::UnaryOp {
+                            op: arandu_parser::UnaryOp::Deref,
+                            op_span: *span,
+                            operand_span: place.span,
+                        },
+                    );
+                    current_ty_id = checker.intern(ArType::Error);
+                    break;
+                }
+            },
             arandu_parser::PlaceSuffix::Field { span, name } => {
                 let interner = &checker.type_info.type_interner;
                 let (actual_base_ty_id, was_nullable) =
@@ -79,6 +117,16 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     }
                     ArType::Ptr(inner) => match interner.resolve(inner) {
                         ArType::Named(id, args) => {
+                            if !checker.ctx.is_in_unsafe() {
+                                checker.diagnostics.push(
+                                    crate::Diagnostic::error(
+                                        crate::DiagCode::O019RawPtrRequiresUnsafe,
+                                        "writing a field through a raw pointer requires an `unsafe` block",
+                                        *span,
+                                    )
+                                    .with_label(*span, "raw `ptr[T]` field access is unsafe"),
+                                );
+                            }
                             let args_vec = interner.type_args(args);
                             Some((id, args_vec))
                         }
@@ -87,7 +135,18 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     _ => None,
                 };
                 let struct_owner = struct_info_opt.as_ref().map(|(id, _)| *id);
-                let field_from_struct = if let Some((struct_id, args)) = struct_info_opt {
+                // `t.0`: an element of a tuple, by position.
+                let tuple_element = match &actual_base_ty {
+                    ArType::Tuple(items) if arandu_parser::is_tuple_index(name) => name
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| interner.type_args(*items).get(index).copied())
+                        .map(|element| interner.resolve(element)),
+                    _ => None,
+                };
+                let field_from_struct = if tuple_element.is_some() {
+                    tuple_element
+                } else if let Some((struct_id, args)) = struct_info_opt {
                     let resolved_args: Vec<ArType> =
                         args.iter().map(|&a| interner.resolve(a)).collect();
                     if let Some(field_ty) = super::super::types::struct_field_instantiated(
@@ -158,11 +217,25 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     current_ty_id = checker.intern(ArType::Error);
                     break;
                 }
+                let mut is_trait_index = false;
                 match &actual_base_ty {
                     ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)
                     | ArType::Slice(inner)
                     | ArType::MutSlice(inner) => {
+                        current_ty_id = *inner;
+                    }
+                    ArType::Ptr(inner) => {
+                        if !checker.ctx.is_in_unsafe() {
+                            checker.diagnostics.push(
+                                crate::Diagnostic::error(
+                                    crate::DiagCode::O019RawPtrRequiresUnsafe,
+                                    "indexing a raw pointer requires an `unsafe` block",
+                                    *span,
+                                )
+                                .with_label(*span, "raw `ptr[T]` indexing is unsafe"),
+                            );
+                        }
                         current_ty_id = *inner;
                     }
                     ArType::Named(_, args)
@@ -171,21 +244,36 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                         current_ty_id = interner.type_args(*args)[0];
                     }
                     _ => {
-                        let err_id = checker.intern(ArType::Error);
-                        checker.add_constraint(
-                            actual_base_ty_id,
-                            err_id,
-                            ConstraintOrigin::InvalidIndex {
-                                base_span: place.span,
-                                index_span: checker.pool.expr_span(*expr),
-                                is_base_error: true,
-                            },
-                        );
-                        current_ty_id = err_id;
+                        if let Some((_idx_ty, out_ty)) =
+                            super::super::synth::field::resolve_trait_index(
+                                checker,
+                                &actual_base_ty,
+                                Some(*expr),
+                                index_ty_id,
+                                true,
+                                place.span,
+                                checker.pool.expr_span(*expr),
+                            )
+                        {
+                            is_trait_index = true;
+                            current_ty_id = out_ty;
+                        } else {
+                            let err_id = checker.intern(ArType::Error);
+                            checker.add_constraint(
+                                actual_base_ty_id,
+                                err_id,
+                                ConstraintOrigin::InvalidIndex {
+                                    base_span: place.span,
+                                    index_span: checker.pool.expr_span(*expr),
+                                    is_base_error: true,
+                                },
+                            );
+                            current_ty_id = err_id;
+                        }
                     }
                 }
                 let index_ty = checker.resolve(index_ty_id);
-                if !index_ty.is_error() && !index_ty.is_integer() {
+                if !is_trait_index && !index_ty.is_error() && !index_ty.is_integer() {
                     checker.add_constraint(
                         ArType::Primitive(Primitive::Int),
                         index_ty_id,

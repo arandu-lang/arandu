@@ -175,7 +175,7 @@ fn new_generic_instance_reuses_unrelated_cgus_and_matches_a_clean_build() {
     );
     let edited = original.replace(
         "return 0",
-        "let flag = identity<bool>(true) if flag { return 1 } return 0",
+        "let flag = identity<bool>(true); if flag { return 1 }; return 0",
     );
     fs::write(&source, &edited).unwrap();
     let incremental = run_cli_in(&project, &["build", "-v"]);

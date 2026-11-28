@@ -10,7 +10,7 @@ mod items;
 
 use block::emit_block_with_stmts;
 pub use items::find_top_level_item_spans;
-use items::{is_item_start_keyword, is_soft_from_tok};
+use items::{is_item_start_keyword, is_soft_from_tok, is_soft_item_tok};
 
 /// Result of building a CST (authoritative text + green tree + token stream).
 ///
@@ -299,13 +299,29 @@ pub fn parse_syntax_arc(text: Arc<str>) -> SyntaxTree {
     let diags = Arc::new(lexed.diagnostics);
 
     let mut parser = crate::parser::Parser::new(text.as_ref(), Arc::clone(&tokens)).with_events();
-    let _ = parser.parse_program();
+    let parse_succeeded = parser.parse_program().is_ok() && parser.diagnostics.is_empty();
     let events = parser.take_events();
 
-    let green =
-        super::events::build_green_from_events(text.as_ref(), &events).unwrap_or_else(|| {
-            let spans = find_top_level_item_spans(&text, &tokens, text.len() as u32);
-            build_green(text.as_ref(), &tokens, &spans)
+    let fallback = || {
+        let spans = find_top_level_item_spans(&text, &tokens, text.len() as u32);
+        let green = build_green(text.as_ref(), &tokens, &spans);
+        if SyntaxNode::new_root(green.clone()).text() == text.as_ref() {
+            green
+        } else {
+            // Malformed item structure can make the heuristic sink omit a
+            // token. A flat token tree still preserves every source byte.
+            build_green(text.as_ref(), &tokens, &[])
+        }
+    };
+    let flat_fallback = || build_green(text.as_ref(), &tokens, &[]);
+    let green = super::events::build_green_from_events(text.as_ref(), &events)
+        .filter(|green| SyntaxNode::new_root(green.clone()).text() == text.as_ref())
+        .unwrap_or_else(|| {
+            if parse_succeeded {
+                fallback()
+            } else {
+                flat_fallback()
+            }
         });
 
     #[cfg(debug_assertions)]
@@ -447,7 +463,10 @@ pub fn classify_item_kind(
         if te <= range_start || tok.start >= range_end {
             continue;
         }
-        if is_item_start_keyword(tok.kind) || is_soft_from_tok(source, tok) {
+        if is_item_start_keyword(tok.kind)
+            || is_soft_from_tok(source, tok)
+            || is_soft_item_tok(source, tok)
+        {
             return match tok.kind {
                 TokenKind::KwModule => {
                     let mut is_submodule = false;
@@ -482,6 +501,8 @@ pub fn classify_item_kind(
                 TokenKind::KwConst => SyntaxKind::CONST_ITEM,
                 TokenKind::KwType => SyntaxKind::TYPE_ALIAS_ITEM,
                 TokenKind::KwExtern => SyntaxKind::EXTERN_ITEM,
+                TokenKind::IdentValue if tok.lexeme(source) == "static" => SyntaxKind::CONST_ITEM,
+                TokenKind::IdentValue if tok.lexeme(source) == "union" => SyntaxKind::STRUCT_ITEM,
                 // `from` is a soft keyword: it only opens an import when found
                 // as a standalone identifier, never when a preceding `func` /
                 // `public` / receiver already consumed the name.
@@ -619,11 +640,13 @@ pub fn map_token_kind(kind: TokenKind) -> SyntaxKind {
     use TokenKind::*;
     match kind {
         DocComment => SyntaxKind::COMMENT,
-        IdentValue | KwSelf => SyntaxKind::IDENT,
+        IdentValue | Label | KwSelf => SyntaxKind::IDENT,
         IdentType => SyntaxKind::TYPE_IDENT,
         IntDec | IntHex | IntBin | IntOct | Float => SyntaxKind::NUMBER,
         StringStart | StringText | StringEscape | InterpStart | InterpEnd | StringEnd
-        | RawString | ByteString | MultilineStringStart | MultilineStringEnd => SyntaxKind::STRING,
+        | RawString | ByteString | CString | MultilineStringStart | MultilineStringEnd => {
+            SyntaxKind::STRING
+        }
         Char | ByteChar => SyntaxKind::CHAR,
         TypeInt | TypeUint | TypeIsize | TypeUsize | TypeFloat | TypeI8 | TypeI16 | TypeI32
         | TypeI64 | TypeU8 | TypeU16 | TypeU32 | TypeU64 | TypeF32 | TypeF64 | TypeBool

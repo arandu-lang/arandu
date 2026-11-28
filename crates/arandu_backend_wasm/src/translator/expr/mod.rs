@@ -24,7 +24,14 @@ impl<'a> FuncTranslator<'a> {
             Shape::Scalar => {
                 let local = self.temp_local.get(&lhs).copied().unwrap_or(0);
                 if self.is_owned_aggregate(lhs_ty)
-                    && let AmirRvalue::Use(AmirOperand::Copy(t)) = rhs
+                    && let AmirRvalue::Use(AmirOperand::Copy(t) | AmirOperand::Move(t)) = rhs
+                    && (matches!(rhs, AmirRvalue::Use(AmirOperand::Copy(_)))
+                        || (self
+                            .func
+                            .temps
+                            .get(t.as_usize())
+                            .is_some_and(|temp| temp.is_copy)
+                            && self.temp_aliases_local_cell(*t)))
                 {
                     let size = self.layout_of_id(lhs_ty).size as i32;
                     if size > 0 {
@@ -65,6 +72,20 @@ impl<'a> FuncTranslator<'a> {
             AmirRvalue::Use(op) => {
                 self.emit_operand(op, result_ty);
             }
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                // Wasm `select` pops [val2, val1, cond] and pushes val1 when cond != 0.
+                self.emit_operand(if_true, result_ty);
+                self.emit_operand(if_false, result_ty);
+                let bool_ty = self
+                    .interner
+                    .intern(ArType::Primitive(arandu_middle::types::Primitive::Bool));
+                self.emit_operand(condition, bool_ty);
+                self.code.push(Instruction::Select);
+            }
             AmirRvalue::Binary { op, left, right } => {
                 self.emit_binary(*op, left, right, result_ty);
             }
@@ -77,7 +98,9 @@ impl<'a> FuncTranslator<'a> {
             | AmirRvalue::VectorSplat { .. }
             | AmirRvalue::VectorShuffle { .. }
             | AmirRvalue::VectorExtractLane { .. }
-            | AmirRvalue::VectorInsertLane { .. } => self.emit_vector_rvalue(rvalue, result_ty),
+            | AmirRvalue::VectorInsertLane { .. }
+            | AmirRvalue::VectorBitmask { .. }
+            | AmirRvalue::VectorLoadUnaligned { .. } => self.emit_vector_rvalue(rvalue, result_ty),
             AmirRvalue::Discriminant { .. }
             | AmirRvalue::Len(_)
             | AmirRvalue::SliceData(_)
@@ -86,6 +109,9 @@ impl<'a> FuncTranslator<'a> {
             | AmirRvalue::BorrowMut(_)
             | AmirRvalue::Load(_)
             | AmirRvalue::Alloc(_)
+            | AmirRvalue::ArenaAlloc { .. }
+            | AmirRvalue::ArenaCheckpoint
+            | AmirRvalue::StaticAddr(_)
             | AmirRvalue::StrView { .. }
             | AmirRvalue::StrBytes { .. }
             | AmirRvalue::SliceSubslice { .. }
@@ -116,7 +142,8 @@ impl<'a> FuncTranslator<'a> {
                 self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                     offset: 0,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 }));
                 // magic = CO_MAGIC (0x4152434f) at offset 4
                 self.code.push(Instruction::LocalGet(self.scratch_b));
@@ -124,7 +151,8 @@ impl<'a> FuncTranslator<'a> {
                 self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                     offset: 4,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 }));
                 // payload at offset 8
                 let shape =
@@ -161,7 +189,8 @@ impl<'a> FuncTranslator<'a> {
         let opaque_zero_memarg = wasm_encoder::MemArg {
             offset: base_offset + if vector { 16 } else { 8 },
             align: 2,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         };
         let shape = types::shape(value_ty, self.interner, self.layout_engine.data_layout);
         match shape {
@@ -180,7 +209,8 @@ impl<'a> FuncTranslator<'a> {
                         let m = wasm_encoder::MemArg {
                             offset: base_offset,
                             align: 4,
-                            memory_index: 0,
+                            target: wasm_encoder::MemArgTarget::Memory(0),
+                            ordering: None,
                         };
                         self.code.push(Instruction::V128Store(m));
                         self.code.push(Instruction::I32Const(0));
@@ -191,7 +221,8 @@ impl<'a> FuncTranslator<'a> {
                         let m = wasm_encoder::MemArg {
                             offset: base_offset,
                             align: 3,
-                            memory_index: 0,
+                            target: wasm_encoder::MemArgTarget::Memory(0),
+                            ordering: None,
                         };
                         self.code.push(Instruction::I64Store(m));
                         self.code.push(Instruction::I32Const(0));
@@ -202,7 +233,8 @@ impl<'a> FuncTranslator<'a> {
                         let m = wasm_encoder::MemArg {
                             offset: base_offset,
                             align: 2,
-                            memory_index: 0,
+                            target: wasm_encoder::MemArgTarget::Memory(0),
+                            ordering: None,
                         };
                         self.code.push(Instruction::F32Store(m));
                         self.code.push(Instruction::I32Const(0));
@@ -213,7 +245,8 @@ impl<'a> FuncTranslator<'a> {
                         let m = wasm_encoder::MemArg {
                             offset: base_offset,
                             align: 3,
-                            memory_index: 0,
+                            target: wasm_encoder::MemArgTarget::Memory(0),
+                            ordering: None,
                         };
                         self.code.push(Instruction::F64Store(m));
                         self.code.push(Instruction::I32Const(0));
@@ -224,7 +257,8 @@ impl<'a> FuncTranslator<'a> {
                         let m = wasm_encoder::MemArg {
                             offset: base_offset,
                             align: 2,
-                            memory_index: 0,
+                            target: wasm_encoder::MemArgTarget::Memory(0),
+                            ordering: None,
                         };
                         self.code.push(Instruction::I32Store(m));
                         self.code.push(Instruction::I32Const(0));
@@ -237,12 +271,14 @@ impl<'a> FuncTranslator<'a> {
                 let m0 = wasm_encoder::MemArg {
                     offset: base_offset,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 };
                 let m1 = wasm_encoder::MemArg {
                     offset: base_offset + 4,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 };
                 self.emit_operand(value, value_ty);
                 self.code.extend([

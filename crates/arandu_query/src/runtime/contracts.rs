@@ -120,7 +120,7 @@ pub fn instance_contracts<'db>(
             if unit
                 .context
                 .type_info
-                .borrow_paths(result)
+                .may_borrow_paths(result)
                 .is_ok_and(|paths| paths.is_empty())
             {
                 continue;

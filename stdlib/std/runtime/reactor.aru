@@ -24,31 +24,31 @@ import std.runtime.waker as waker
 
 extern "C" {
     /// Host reactor creation.
-    func ar_rt_reactor_create(): int
+    func ar_rt_reactor_create(): i64
     /// Host reactor destruction.
-    func ar_rt_reactor_destroy(id: int): void
+    func ar_rt_reactor_destroy(id: i64): void
     /// Host reactor sleep in milliseconds.
-    func ar_rt_reactor_sleep_ms(id: int, ms: int): int
+    func ar_rt_reactor_sleep_ms(id: i64, ms: i64): i64
     /// Host reactor timer arming in milliseconds.
-    func ar_rt_reactor_arm_timer_ms(id: int, ms: int): int
+    func ar_rt_reactor_arm_timer_ms(id: i64, ms: i64): i64
     /// Host reactor event polling with a millisecond timeout.
-    func ar_rt_reactor_poll_ms(id: int, timeout_ms: int): int
+    func ar_rt_reactor_poll_ms(id: i64, timeout_ms: i64): i64
     /// Host query for the active reactor backend.
-    func ar_rt_reactor_backend(): int
+    func ar_rt_reactor_backend(): i64
     /// Host registration of a socket and waker with a reactor.
-    func ar_rt_reactor_register_socket(reactor_id: int, sock_id: int, events: int, waker_id: int): int
+    func ar_rt_reactor_register_socket(reactor_id: i64, sock_id: i64, events: i64, waker_id: i64): i64
 }
 
 /// experimental — not Minimal 0.1
 public struct EpollReactor {
     /// Opaque host handle.
-    id: int
+    id: i64
 }
 
 /// 0 = portable, 1 = epoll, 2 = io_uring (runtime detect), 3 = kqueue, 4 = WSAPoll.
 public func reactorBackend(): int {
     unsafe {
-        return ar_rt_reactor_backend()
+        return ar_rt_reactor_backend() as int
     }
 }
 
@@ -79,7 +79,7 @@ public func EpollReactor.close(self: mut ref EpollReactor): void {
 /// invalid duration, or another host failure.
 public func EpollReactor.sleepMs(self: ref EpollReactor, ms: int): int {
     unsafe {
-        return ar_rt_reactor_sleep_ms(self.id, ms)
+        return ar_rt_reactor_sleep_ms(self.id, ms as i64) as int
     }
 }
 
@@ -89,7 +89,7 @@ public func EpollReactor.sleepMs(self: ref EpollReactor, ms: int): int {
 /// fires or the reactor is closed.
 public func EpollReactor.armTimerMs(self: ref EpollReactor, ms: int): int {
     unsafe {
-        return ar_rt_reactor_arm_timer_ms(self.id, ms)
+        return ar_rt_reactor_arm_timer_ms(self.id, ms as i64) as int
     }
 }
 
@@ -99,7 +99,7 @@ public func EpollReactor.armTimerMs(self: ref EpollReactor, ms: int): int {
 /// Polling may block for the requested duration.
 public func EpollReactor.pollMs(self: ref EpollReactor, timeoutMs: int): int {
     unsafe {
-        return ar_rt_reactor_poll_ms(self.id, timeoutMs)
+        return ar_rt_reactor_poll_ms(self.id, timeoutMs as i64) as int
     }
 }
 
@@ -109,8 +109,8 @@ public func EpollReactor.pollMs(self: ref EpollReactor, timeoutMs: int): int {
 /// signaled once when a matching event is observed; register again to rearm.
 /// `-2` means the host has no readiness backend; any other negative result is a host
 /// registration failure.
-internal func reactorRegisterSocket(r: ref EpollReactor, sockId: int, events: int, w: ref waker.Waker): int {
+internal func reactorRegisterSocket(r: ref EpollReactor, sockId: i64, events: int, w: ref waker.Waker): int {
     unsafe {
-        return ar_rt_reactor_register_socket(r.id, sockId, events, w.id)
+        return ar_rt_reactor_register_socket(r.id, sockId, events as i64, w.id) as int
     }
 }

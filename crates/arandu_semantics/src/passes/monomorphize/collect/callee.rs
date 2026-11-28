@@ -22,13 +22,10 @@ pub(crate) fn generic_callee_symbol(
     }
 }
 
-/// Peel Nullable / & / &mut / ptr layers so method mono keys see the Named receiver.
+/// Peel & / &mut / ptr layers so method mono keys see the Named receiver.
 fn peel_recv_base_ty(tc: &TypeCheckResult, base_ty: ArType) -> ArType {
     let interner = &tc.type_info.type_interner;
-    let mut actual = match base_ty {
-        ArType::Nullable(inner) => interner.resolve(inner),
-        other => other,
-    };
+    let mut actual = base_ty;
     for _ in 0..4 {
         actual = match actual {
             ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
@@ -47,7 +44,7 @@ fn method_symbol_from_field(
     field: &str,
 ) -> Option<SymbolId> {
     let base_ty = tc.type_info.type_interner.resolve(pool.expr(base).ty);
-    let actual = peel_recv_base_ty(tc, base_ty);
+    let actual = peel_recv_base_ty(tc, base_ty.clone());
     let type_id = match actual {
         ArType::Vector(shape) => tc.symbols.vector_type_symbol(shape),
         ArType::Named(id, _) => Some(id),
@@ -65,10 +62,15 @@ fn method_symbol_from_field(
         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
             tc.symbols.builtins.float_type
         }
-        ArType::Slice(_) => tc.symbols.builtins.slice_type,
+        ArType::Slice(_) | ArType::MutSlice(_) => tc.symbols.builtins.slice_type,
         _ => None,
-    }?;
-    tc.symbols.lookup_associated_member(type_id, field)
+    };
+    type_id
+        .and_then(|owner| tc.symbols.lookup_associated_member(owner, field))
+        .or_else(|| {
+            tc.symbols
+                .pointer_method(&base_ty, &tc.type_info.type_interner, field)
+        })
 }
 
 /// Build an instantiation key for a call that is not wrapped in `Generic`.
@@ -114,6 +116,7 @@ pub(in crate::passes::monomorphize) fn instantiation_key_for_call(
                 },
                 ArType::Result(ok, err) => vec![ok, err],
                 ArType::Option(inner) => vec![inner],
+                ArType::Slice(elem) | ArType::MutSlice(elem) => vec![elem],
                 _ => Vec::new(),
             };
             let call_info = CallSiteInfo {

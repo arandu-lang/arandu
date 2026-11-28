@@ -21,6 +21,19 @@ use arandu_middle::type_context::AmirTypeContext;
 
 type Origins = BTreeMap<BorrowPath, BTreeSet<BorrowSource>>;
 
+/// Sentinel `parameter_index` representing a local variable whose storage
+/// locus (`\lambda_store`) is promoted to `TaskArena` under Dual-Locus
+/// semantics (RFC 0043). This allows the return-interface solver to recognize
+/// that an aggregate return path is backed by valid arena storage (so it is
+/// not rejected as an unproven stack borrow), while filtering it out of the
+/// caller-visible formal parameter dependencies.
+const DUAL_LOCUS_LOCAL_SOURCE: u32 = u32::MAX;
+
+/// Sentinel `parameter_index` for storage that lives as long as the program:
+/// a `static` or a `const` kept in static storage. A borrow of it is valid
+/// for any caller, like Rust's `'static`, and is no caller dependency.
+const STATIC_SOURCE: u32 = u32::MAX - 1;
+
 /// A borrow-bearing result path for which no formal origin was demonstrated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnprovenBorrowReturn {
@@ -45,6 +58,19 @@ pub struct BorrowInterfaceSolution {
 pub fn solve_borrow_interfaces(
     program: &mut AmirProgram,
     type_info: &dyn AmirTypeContext,
+) -> BorrowInterfaceSolution {
+    solve_borrow_interfaces_with_layout(
+        program,
+        type_info,
+        arandu_middle::layout::DataLayout::ptr_width(8),
+    )
+}
+
+#[must_use]
+pub fn solve_borrow_interfaces_with_layout(
+    program: &mut AmirProgram,
+    type_info: &dyn AmirTypeContext,
+    data_layout: arandu_middle::layout::DataLayout,
 ) -> BorrowInterfaceSolution {
     let local_symbols = program
         .funcs
@@ -77,7 +103,9 @@ pub fn solve_borrow_interfaces(
         let mut changed = false;
         for &index in &order {
             let function = &program.funcs[index];
-            let summary = infer_function_interface(function, type_info, &summaries).0;
+            let summary =
+                infer_function_interface_with_layout(function, type_info, &summaries, data_layout)
+                    .0;
             let old = summaries.get(&function.symbol);
             if old != Some(&summary) {
                 summaries.insert(function.symbol, summary);
@@ -92,7 +120,8 @@ pub fn solve_borrow_interfaces(
     let mut unproven = Vec::new();
     for &index in &order {
         let function = &program.funcs[index];
-        let (summary, missing) = infer_function_interface(function, type_info, &summaries);
+        let (summary, missing) =
+            infer_function_interface_with_layout(function, type_info, &summaries, data_layout);
         summaries.insert(function.symbol, summary);
         unproven.extend(missing.into_iter().map(|result_path| UnprovenBorrowReturn {
             function: function.symbol,
@@ -131,7 +160,21 @@ pub fn infer_function_interface(
     type_info: &dyn AmirTypeContext,
     summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
 ) -> (ReturnBorrowSummary, Vec<BorrowPath>) {
-    let expected = match type_info.borrow_paths(function.return_type) {
+    infer_function_interface_with_layout(
+        function,
+        type_info,
+        summaries,
+        arandu_middle::layout::DataLayout::ptr_width(8),
+    )
+}
+
+fn infer_function_interface_with_layout(
+    function: &AmirFunc,
+    type_info: &dyn AmirTypeContext,
+    summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
+    data_layout: arandu_middle::layout::DataLayout,
+) -> (ReturnBorrowSummary, Vec<BorrowPath>) {
+    let expected = match type_info.may_borrow_paths(function.return_type) {
         Ok(expected) => expected,
         Err(_) => return (ReturnBorrowSummary::default(), vec![BorrowPath::root()]),
     };
@@ -148,10 +191,10 @@ pub fn infer_function_interface(
         let Some(parameter) = function.temps.get(temp.as_usize()) else {
             continue;
         };
-        let Ok(paths) = type_info.borrow_paths(parameter.ty) else {
+        let Ok(paths) = type_info.may_borrow_paths(parameter.ty) else {
             continue;
         };
-        for (path, _) in paths {
+        for (path, _, _) in paths {
             temps[temp.as_usize()]
                 .entry(path.clone())
                 .or_default()
@@ -185,6 +228,7 @@ pub fn infer_function_interface(
                     function,
                     statement,
                     type_info,
+                    data_layout,
                     summaries,
                     &mut temps,
                     &mut locals,
@@ -201,14 +245,22 @@ pub fn infer_function_interface(
     let returned = temps.first().cloned().unwrap_or_default();
     let mut summary = ReturnBorrowSummary::default();
     let mut missing = Vec::new();
-    for (result_path, kind) in expected {
-        let sources = returned
-            .get(&result_path)
-            .map(|sources| sources.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
-        if sources.is_empty() {
-            missing.push(result_path);
-        } else {
+    for (result_path, kind, required) in expected {
+        let Some(raw_sources) = returned.get(&result_path).filter(|s| !s.is_empty()) else {
+            if required {
+                missing.push(result_path);
+            }
+            continue;
+        };
+        let sources = raw_sources
+            .iter()
+            .filter(|source| {
+                source.parameter_index != DUAL_LOCUS_LOCAL_SOURCE
+                    && source.parameter_index != STATIC_SOURCE
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !sources.is_empty() {
             summary.dependencies.push(ReturnBorrowDependency {
                 result_path,
                 sources,
@@ -246,6 +298,7 @@ fn transfer_statement(
     function: &AmirFunc,
     statement: &AmirStmt,
     type_info: &dyn AmirTypeContext,
+    data_layout: arandu_middle::layout::DataLayout,
     summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
     temps: &mut [Origins],
     locals: &mut [Origins],
@@ -256,17 +309,18 @@ fn transfer_statement(
             let mut produced = match rhs {
                 AmirRvalue::Use(operand) => operand_origins(*operand, temps),
                 AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
-                    borrowed_place_origins(function, place, type_info, locals)
+                    borrowed_place_origins(function, place, type_info, data_layout, locals)
                 }
                 AmirRvalue::RelativeBorrow { local, .. } => {
                     locals.get(local.as_usize()).cloned().unwrap_or_default()
                 }
+                AmirRvalue::StaticAddr(_) => static_origins(function, *lhs, type_info),
                 AmirRvalue::Load(place) if place.projections.is_empty() => locals
                     .get(place.local.as_usize())
                     .cloned()
                     .unwrap_or_default(),
                 AmirRvalue::Load(place) => {
-                    borrowed_place_origins(function, place, type_info, locals)
+                    borrowed_place_origins(function, place, type_info, data_layout, locals)
                 }
                 AmirRvalue::Tuple { items } => {
                     aggregate_origins(items, temps, BorrowPathSegment::Tuple)
@@ -457,7 +511,7 @@ fn transfer_terminator(
             }
             transfer(otherwise.0, &otherwise.1);
         }
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }
 }
 
@@ -540,10 +594,39 @@ fn merge_origins(target: &mut Origins, source: &mut Origins) -> bool {
 /// returning `ref option_payload` could not be related to the caller's
 /// `ref Option<T>` input (and nested borrowed payloads were misclassified as
 /// ownerless).
+/// Every borrow path of the storage a static address points at comes from
+/// the program's static storage.
+fn static_origins(
+    function: &AmirFunc,
+    address: arandu_middle::amir::TempId,
+    type_info: &dyn AmirTypeContext,
+) -> Origins {
+    let Some(temp) = function.temps.get(address.as_usize()) else {
+        return Origins::new();
+    };
+    let ArType::Ptr(pointee) = type_info.resolve_type_id(temp.ty) else {
+        return Origins::new();
+    };
+    let Ok(paths) = type_info.may_borrow_paths(pointee) else {
+        return Origins::new();
+    };
+    paths
+        .into_iter()
+        .map(|(path, _, _)| {
+            let source = BorrowSource {
+                parameter_index: STATIC_SOURCE,
+                parameter_path: path.clone(),
+            };
+            (path, BTreeSet::from([source]))
+        })
+        .collect()
+}
+
 fn borrowed_place_origins(
     function: &AmirFunc,
     place: &AmirPlace,
     type_info: &dyn AmirTypeContext,
+    data_layout: arandu_middle::layout::DataLayout,
     locals: &[Origins],
 ) -> Origins {
     let mut origins = locals
@@ -643,6 +726,28 @@ fn borrowed_place_origins(
         if let Some(segment) = segment {
             origins = strip_prefix(&origins, &segment);
         }
+    }
+    if origins.is_empty()
+        && crate::dual_locus::return_is_dual_locus_carrier(
+            function,
+            type_info.type_interner(),
+            Some(type_info),
+        )
+        && crate::dual_locus::is_dual_locus_promotable(
+            function,
+            place.local,
+            type_info.type_interner(),
+            Some(type_info),
+            data_layout,
+        )
+    {
+        origins
+            .entry(BorrowPath::root())
+            .or_default()
+            .insert(BorrowSource {
+                parameter_index: DUAL_LOCUS_LOCAL_SOURCE,
+                parameter_path: BorrowPath::root(),
+            });
     }
     origins
 }

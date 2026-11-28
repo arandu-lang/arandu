@@ -8,6 +8,7 @@ use arandu_middle::types::{ArType, Primitive};
 #[derive(Default)]
 pub(super) struct RuntimeFeatures {
     pub arena: bool,
+    pub task_arena: bool,
     pub buffers: bool,
     pub coroutine: bool,
     pub tasks: bool,
@@ -51,6 +52,9 @@ impl CEmitter<'_> {
                 );
             }
             for stmt in function.stmts.payloads.iter() {
+                if matches!(stmt, AmirStmt::ArenaRewind(_)) {
+                    features.task_arena = true;
+                }
                 if let AmirStmt::Assign { rhs, .. } = stmt {
                     match rhs {
                         AmirRvalue::GenInsert { .. }
@@ -58,6 +62,10 @@ impl CEmitter<'_> {
                         | AmirRvalue::GenSet { .. }
                         | AmirRvalue::GenUpsert { .. }
                         | AmirRvalue::GenRemove { .. } => features.arena = true,
+                        AmirRvalue::ArenaAlloc { .. } | AmirRvalue::ArenaCheckpoint => {
+                            features.task_arena = true;
+                        }
+                        AmirRvalue::StaticAddr(_) => {}
                         AmirRvalue::CoroutineReady { .. } => features.coroutine = true,
                         AmirRvalue::Unary {
                             op: UnaryOp::Await, ..
@@ -124,11 +132,14 @@ impl CEmitter<'_> {
                         | AmirRvalue::BorrowMut(_)
                         | AmirRvalue::VectorCompare { .. }
                         | AmirRvalue::VectorSelect { .. }
+                        | AmirRvalue::Select { .. }
                         | AmirRvalue::VectorOp { .. }
                         | AmirRvalue::VectorSplat { .. }
                         | AmirRvalue::VectorShuffle { .. }
                         | AmirRvalue::VectorExtractLane { .. }
                         | AmirRvalue::VectorInsertLane { .. }
+                        | AmirRvalue::VectorBitmask { .. }
+                        | AmirRvalue::VectorLoadUnaligned { .. }
                         | AmirRvalue::RelativeBorrow { .. } => {}
                     }
                 }
@@ -160,6 +171,7 @@ impl RuntimeFeatures {
         self.env |= name.starts_with("ar_env_")
             || matches!(name, "ar_time_monotonic_ns" | "ar_process_exit");
         self.arena |= name.starts_with("ar_gen_");
+        self.task_arena |= name.starts_with("ar_task_arena_");
         self.coroutine |= name.starts_with("ar_co_");
         self.tasks |= matches!(
             name,

@@ -6,6 +6,7 @@ use super::super::place::synth_place;
 pub(super) fn check_set_stmt(
     checker: &mut TypeChecker<'_>,
     places: &[arandu_parser::Place],
+    op: arandu_parser::SetOp,
     value: arandu_parser::ast_pool::ExprId,
 ) {
     for place in places {
@@ -16,19 +17,110 @@ pub(super) fn check_set_stmt(
     } else {
         None
     };
-    let val_ty_id = super::super::super::synth::synth_expr_expected(checker, value, expected);
+    // `s += t` appends text to a `String` in place (`s.pushStr(t)`); a `str`
+    // is a view and has nothing to append to.
+    if op == arandu_parser::SetOp::AddAssign
+        && let Some(target) = expected
+    {
+        let target_ty = checker.resolve(target);
+        let text = crate::type_checker::synth::expr_text::is_string(checker, &target_ty);
+        let view = matches!(
+            target_ty,
+            ArType::Primitive(arandu_middle::types::Primitive::Str)
+        );
+        if text || view {
+            let str_ty = checker.intern(ArType::Primitive(arandu_middle::types::Primitive::Str));
+            checker.text_view_sites.insert(value);
+            let value_ty =
+                super::super::super::synth::synth_expr_expected(checker, value, Some(str_ty));
+            let value_ty = checker.resolve(value_ty);
+            let span = places
+                .first()
+                .map_or(checker.pool.expr_span(value), |place| place.span);
+            if view {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T002IncompatibleAssignment,
+                        "cannot append to a `str`: it is a view of text owned elsewhere",
+                        span,
+                    )
+                    .with_primary_label("this binding is a `str`")
+                    .with_hint("build the text in a `String`: `let mut s = String.from(\"...\")`, then `s += ...`"),
+                );
+            } else if !value_ty.is_error()
+                && !crate::type_checker::synth::expr_text::is_text(checker, &value_ty)
+            {
+                let value_id = checker.intern(value_ty);
+                checker.add_constraint(
+                    str_ty,
+                    value_id,
+                    ConstraintOrigin::Assignment {
+                        lhs_span: span,
+                        rhs_span: checker.pool.expr_span(value),
+                    },
+                );
+            }
+            return;
+        }
+    }
+    let is_ptr_offset_assign = matches!(
+        op,
+        arandu_parser::SetOp::AddAssign | arandu_parser::SetOp::SubAssign
+    ) && expected
+        .is_some_and(|id| matches!(checker.resolve(id), ArType::Ptr(_)));
+    let synth_expected = if is_ptr_offset_assign {
+        Some(checker.intern(ArType::Primitive(arandu_middle::types::Primitive::USize)))
+    } else {
+        expected
+    };
+    let val_ty_id = super::super::super::synth::synth_expr_expected(checker, value, synth_expected);
 
     if places.len() > 1 {
-        let val_tys: Vec<TypeId> =
-            if let Some((ok_id, err_id)) = checker.result_ok_err_ids(val_ty_id) {
-                vec![ok_id, err_id]
-            } else {
-                match checker.resolve(val_ty_id) {
-                    ArType::Tuple(tys) => checker.type_info.type_interner.type_args(tys),
-                    ArType::Error => vec![checker.intern(ArType::Error); places.len()],
-                    _ => vec![val_ty_id; places.len()],
+        let val_tys: Vec<TypeId> = if let Some((ok_id, err_id)) =
+            checker.result_ok_err_ids(val_ty_id)
+        {
+            vec![ok_id, err_id]
+        } else {
+            match checker.resolve(val_ty_id) {
+                ArType::Tuple(tys) => {
+                    let elems = checker.type_info.type_interner.type_args(tys);
+                    if elems.len() != places.len() {
+                        let found_str = checker
+                            .resolve(val_ty_id)
+                            .display(&checker.symbols, &checker.type_info.type_interner);
+                        checker.diagnostics.push(
+                                crate::Diagnostic::error(
+                                    crate::DiagCode::T002IncompatibleAssignment,
+                                    format!(
+                                        "incompatible assignment: expected a tuple with {} elements, found '{found_str}'",
+                                        places.len()
+                                    ),
+                                    checker.pool.expr_span(value),
+                                ),
+                            );
+                        vec![checker.intern(ArType::Error); places.len()]
+                    } else {
+                        elems
+                    }
                 }
-            };
+                ArType::Error => vec![checker.intern(ArType::Error); places.len()],
+                other => {
+                    let found_str =
+                        other.display(&checker.symbols, &checker.type_info.type_interner);
+                    checker.diagnostics.push(
+                            crate::Diagnostic::error(
+                                crate::DiagCode::T002IncompatibleAssignment,
+                                format!(
+                                    "incompatible assignment: expected a tuple with {} elements, found '{found_str}'",
+                                    places.len()
+                                ),
+                                checker.pool.expr_span(value),
+                            ),
+                        );
+                    vec![checker.intern(ArType::Error); places.len()]
+                }
+            }
+        };
 
         for (i, place) in places.iter().enumerate() {
             let expected_ty_id = synth_place(checker, place);
@@ -53,7 +145,10 @@ pub(super) fn check_set_stmt(
         let mut final_val_ty_id = val_ty_id;
 
         if matches!(checker.pool.expr(value), arandu_parser::ExprKind::Nil)
-            && !checker.resolve(expected_ty_id).is_error()
+            && matches!(
+                checker.resolve(expected_ty_id),
+                ArType::Option(_) | ArType::Ptr(_)
+            )
         {
             checker.type_info.record_expr_type(value, expected_ty_id);
             final_val_ty_id = expected_ty_id;
@@ -72,6 +167,32 @@ pub(super) fn check_set_stmt(
                 "Result value must be handled with `?` or `value, err = f()`",
                 checker.pool.expr_span(value),
             ));
+        }
+
+        if is_ptr_offset_assign && checker.resolve(final_val_ty_id).is_integer() {
+            if !checker.ctx.is_in_unsafe() {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::O019RawPtrRequiresUnsafe,
+                        "pointer arithmetic requires an `unsafe` block",
+                        place.span,
+                    )
+                    .with_label(place.span, "raw pointer offset assignment is unsafe"),
+                );
+            }
+            if let Some(var_id) = checker.literal_table.var_for_expr(value) {
+                let usize_id =
+                    checker.intern(ArType::Primitive(arandu_middle::types::Primitive::USize));
+                checker.constrain_literal_var(
+                    var_id,
+                    usize_id,
+                    ConstraintOrigin::SetTarget {
+                        place_span: place.span,
+                        value_span: checker.pool.expr_span(value),
+                    },
+                );
+            }
+            return;
         }
 
         if let Some(var_id) = checker.literal_table.var_for_expr(value) {
@@ -173,9 +294,51 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
     let root_key = crate::NodeKey::from(place.span);
     let symbol_id_opt = checker.resolved.value_refs.get(&root_key).copied();
 
+    // A `static mut` is writable storage at any projection; only the
+    // `unsafe` requirement applies.
+    if !place.suffixes.is_empty()
+        && let Some(symbol_id) = symbol_id_opt
+        && checker.symbols.get(symbol_id).kind == crate::SymbolKind::StaticMut
+    {
+        if !checker.ctx.is_in_unsafe() {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::O017StaticMutRequiresUnsafe,
+                    "access to `static mut` requires an `unsafe` block",
+                    place.span,
+                )
+                .with_label(place.span, "modifying `static mut` is unsafe"),
+            );
+        }
+        return;
+    }
+
     if place.suffixes.is_empty() {
         if let Some(symbol_id) = symbol_id_opt {
             let symbol = checker.symbols.get(symbol_id);
+            if symbol.kind == crate::SymbolKind::StaticMut {
+                if !checker.ctx.is_in_unsafe() {
+                    let diag = crate::Diagnostic::error(
+                        crate::DiagCode::O017StaticMutRequiresUnsafe,
+                        "access to `static mut` requires an `unsafe` block",
+                        place.span,
+                    )
+                    .with_label(place.span, "modifying `static mut` is unsafe");
+                    checker.diagnostics.push(diag);
+                }
+                return;
+            }
+            if symbol.kind == crate::SymbolKind::Const {
+                let name = &symbol.name;
+                let diag = crate::Diagnostic::error(
+                    crate::DiagCode::T026CannotAssignImmutable,
+                    format!("cannot assign to constant '{name}'"),
+                    place.span,
+                )
+                .with_label(place.span, "cannot assign to constant");
+                checker.diagnostics.push(diag);
+                return;
+            }
             if (symbol.kind == crate::SymbolKind::Local || symbol.kind == crate::SymbolKind::Param)
                 && !checker.resolved.mutable_symbols.contains(&symbol_id)
             {
@@ -220,9 +383,38 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
         symbol_id_opt.is_some_and(|sym_id| checker.resolved.mutable_symbols.contains(&sym_id));
     let mut is_mutable = is_root_mutable;
 
-    for suffix in &place.suffixes {
+    let last = place.suffixes.len().saturating_sub(1);
+    for (index, suffix) in place.suffixes.iter().enumerate() {
         if checker.resolve(current_ty_id).is_error() {
             return;
+        }
+
+        // An explicit `*` grants exactly what the reference grants: writing
+        // through `mut ref` needs no `mut` binding, and `ref` never allows it.
+        if let arandu_parser::PlaceSuffix::Deref { span } = suffix {
+            match checker.resolve(current_ty_id) {
+                ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                    is_mutable = true;
+                    current_ty_id = inner;
+                }
+                ArType::Ref(inner) => {
+                    is_mutable = false;
+                    current_ty_id = inner;
+                }
+                _ => return,
+            }
+            if index == last && !is_mutable {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T026CannotAssignImmutable,
+                        "cannot assign through a shared reference",
+                        *span,
+                    )
+                    .with_label(*span, "this place is behind a `ref`")
+                    .with_hint("take it as `mut ref` to write through it"),
+                );
+            }
+            continue;
         }
 
         let (peeled_id, was_nullable) =
@@ -242,9 +434,6 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                     is_mutable = false;
                     check_id = inner;
                 }
-                ArType::Nullable(inner) => {
-                    check_id = inner;
-                }
                 _ => break,
             }
         }
@@ -252,84 +441,185 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
         let actual_base_ty = checker.resolve(peeled_id);
 
         match suffix {
-            arandu_parser::PlaceSuffix::Index { span, .. } => {
-                match &actual_base_ty {
-                    ArType::Slice(_) => {
-                        let diag = crate::Diagnostic::error(
+            arandu_parser::PlaceSuffix::Index { span, expr } => match &actual_base_ty {
+                ArType::Slice(_) => {
+                    let diag = crate::Diagnostic::error(
+                        crate::DiagCode::T026CannotAssignImmutable,
+                        "cannot assign to immutable slice element",
+                        *span,
+                    )
+                    .with_label(
+                        *span,
+                        "cannot assign to element of immutable slice view `[]T`",
+                    )
+                    .with_hint("consider using a mutable slice `mut []T`".to_string());
+                    checker.diagnostics.push(diag);
+                    return;
+                }
+                ArType::MutSlice(inner) | ArType::Ptr(inner) => {
+                    is_mutable = true;
+                    current_ty_id = *inner;
+                }
+                ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
+                    if !is_mutable {
+                        let (sym_name, sym_span, is_local) = symbol_id_opt
+                            .map(|s| {
+                                let sym = checker.symbols.get(s);
+                                (
+                                    sym.name.as_str(),
+                                    sym.span,
+                                    sym.kind == crate::SymbolKind::Local,
+                                )
+                            })
+                            .unwrap_or(("", place.span, false));
+                        let mut diag = crate::Diagnostic::error(
                             crate::DiagCode::T026CannotAssignImmutable,
-                            "cannot assign to immutable slice element",
+                            format!("cannot mutate immutable array '{sym_name}'"),
                             *span,
                         )
-                        .with_label(
-                            *span,
-                            "cannot assign to element of immutable slice view `[]T`",
-                        )
-                        .with_hint("consider using a mutable slice `mut []T`".to_string());
+                        .with_label(*span, "cannot assign to element of immutable array")
+                        .with_label(sym_span, "variable declared here as immutable");
+                        let msg = format!(
+                            "consider declaring the variable as mutable: `mut {sym_name} = ...;`"
+                        );
+                        diag = if is_local {
+                            diag.with_hint_replacement(crate::Hint {
+                                message: msg,
+                                replacement: Some(crate::CodeReplacement {
+                                    span: sym_span,
+                                    new_text: format!("mut {sym_name}"),
+                                }),
+                            })
+                        } else {
+                            diag.with_hint(msg)
+                        };
                         checker.diagnostics.push(diag);
                         return;
                     }
-                    ArType::MutSlice(inner) => {
-                        is_mutable = true;
-                        current_ty_id = *inner;
+                    current_ty_id = *inner;
+                }
+                ArType::Named(_, args)
+                    if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
+                {
+                    if !is_mutable {
+                        let (sym_name, sym_span, is_local) = symbol_id_opt
+                            .map(|s| {
+                                let sym = checker.symbols.get(s);
+                                (
+                                    sym.name.as_str(),
+                                    sym.span,
+                                    sym.kind == crate::SymbolKind::Local,
+                                )
+                            })
+                            .unwrap_or(("", place.span, false));
+                        let mut diag = crate::Diagnostic::error(
+                            crate::DiagCode::T026CannotAssignImmutable,
+                            format!("cannot mutate immutable variable '{sym_name}'"),
+                            *span,
+                        )
+                        .with_label(*span, "cannot assign to element of immutable vector")
+                        .with_label(sym_span, "variable declared here as immutable");
+                        let msg = format!(
+                            "consider declaring the variable as mutable: `mut {sym_name} = ...;`"
+                        );
+                        diag = if is_local {
+                            diag.with_hint_replacement(crate::Hint {
+                                message: msg,
+                                replacement: Some(crate::CodeReplacement {
+                                    span: sym_span,
+                                    new_text: format!("mut {sym_name}"),
+                                }),
+                            })
+                        } else {
+                            diag.with_hint(msg)
+                        };
+                        checker.diagnostics.push(diag);
+                        return;
                     }
-                    ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
-                        if !is_mutable {
-                            let (sym_name, sym_span) = symbol_id_opt
-                                .map(|s| {
-                                    (
-                                        checker.symbols.get(s).name.as_str(),
-                                        checker.symbols.get(s).span,
-                                    )
-                                })
-                                .unwrap_or(("", place.span));
-                            let diag = crate::Diagnostic::error(
-                                crate::DiagCode::T026CannotAssignImmutable,
-                                format!("cannot mutate immutable array '{sym_name}'"),
-                                *span,
-                            )
-                            .with_label(*span, "cannot assign to element of immutable array")
-                            .with_label(sym_span, "variable declared here as immutable")
-                            .with_hint(format!("consider declaring the variable as mutable: `mut {sym_name} = ...;`"));
-                            checker.diagnostics.push(diag);
-                            return;
-                        }
-                        current_ty_id = *inner;
-                    }
-                    ArType::Named(_, args)
-                        if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
+                    current_ty_id = checker.type_info.type_interner.type_args(*args)[0];
+                }
+                _ => {
+                    let index_ty_id = checker
+                        .type_info
+                        .expr_type_id(*expr)
+                        .unwrap_or_else(|| checker.intern(ArType::Error));
+                    let index_span = checker.pool.expr_span(*expr);
+                    let base_cloned = actual_base_ty.clone();
+                    if let Some((_idx_ty, out_ty)) =
+                        super::super::super::synth::field::resolve_trait_index(
+                            checker,
+                            &base_cloned,
+                            Some(*expr),
+                            index_ty_id,
+                            true,
+                            place.span,
+                            index_span,
+                        )
                     {
                         if !is_mutable {
-                            let (sym_name, sym_span) = symbol_id_opt
+                            let (sym_name, sym_span, is_local) = symbol_id_opt
                                 .map(|s| {
+                                    let sym = checker.symbols.get(s);
                                     (
-                                        checker.symbols.get(s).name.as_str(),
-                                        checker.symbols.get(s).span,
+                                        sym.name.as_str(),
+                                        sym.span,
+                                        sym.kind == crate::SymbolKind::Local,
                                     )
                                 })
-                                .unwrap_or(("", place.span));
-                            let diag = crate::Diagnostic::error(
+                                .unwrap_or(("", place.span, false));
+                            let mut diag = crate::Diagnostic::error(
                                 crate::DiagCode::T026CannotAssignImmutable,
                                 format!("cannot mutate immutable variable '{sym_name}'"),
                                 *span,
                             )
-                            .with_label(*span, "cannot assign to element of immutable vector")
-                            .with_label(sym_span, "variable declared here as immutable")
-                            .with_hint(format!("consider declaring the variable as mutable: `mut {sym_name} = ...;`"));
+                            .with_label(*span, "cannot assign to element of immutable container")
+                            .with_label(sym_span, "variable declared here as immutable");
+                            let msg = format!(
+                                "consider declaring the variable as mutable: `mut {sym_name} = ...;`"
+                            );
+                            diag = if is_local {
+                                diag.with_hint_replacement(crate::Hint {
+                                    message: msg,
+                                    replacement: Some(crate::CodeReplacement {
+                                        span: sym_span,
+                                        new_text: format!("mut {sym_name}"),
+                                    }),
+                                })
+                            } else {
+                                diag.with_hint(msg)
+                            };
                             checker.diagnostics.push(diag);
                             return;
                         }
-                        current_ty_id = checker.type_info.type_interner.type_args(*args)[0];
+                        current_ty_id = out_ty;
+                    } else {
+                        return;
                     }
-                    _ => return,
                 }
-            }
+            },
             arandu_parser::PlaceSuffix::Field { name, span, .. } => {
                 let interner = &checker.type_info.type_interner;
                 let struct_info_opt = match actual_base_ty {
                     ArType::Named(id, args) => Some((id, interner.type_args(args))),
+                    ArType::Ptr(inner) => {
+                        is_mutable = true;
+                        match interner.resolve(inner) {
+                            ArType::Named(id, args) => Some((id, interner.type_args(args))),
+                            _ => None,
+                        }
+                    }
                     _ => None,
                 };
-                if let Some((struct_id, args)) = struct_info_opt {
+                let tuple_element = match &actual_base_ty {
+                    ArType::Tuple(items) if arandu_parser::is_tuple_index(name) => name
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| interner.type_args(*items).get(index).copied()),
+                    _ => None,
+                };
+                if let Some(element) = tuple_element {
+                    current_ty_id = element;
+                } else if let Some((struct_id, args)) = struct_info_opt {
                     let resolved_args: Vec<ArType> =
                         args.iter().map(|&a| interner.resolve(a)).collect();
                     if let Some(field_ty) = super::super::super::types::struct_field_instantiated(
@@ -353,15 +643,17 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                     return;
                 }
                 if !is_mutable {
-                    let (sym_name, sym_span) = symbol_id_opt
+                    let (sym_name, sym_span, is_local) = symbol_id_opt
                         .map(|s| {
+                            let sym = checker.symbols.get(s);
                             (
-                                checker.symbols.get(s).name.as_str(),
-                                checker.symbols.get(s).span,
+                                sym.name.as_str(),
+                                sym.span,
+                                sym.kind == crate::SymbolKind::Local,
                             )
                         })
-                        .unwrap_or(("", place.span));
-                    let diag = crate::Diagnostic::error(
+                        .unwrap_or(("", place.span, false));
+                    let mut diag = crate::Diagnostic::error(
                         crate::DiagCode::T026CannotAssignImmutable,
                         format!("cannot assign to field `{name}` of immutable '{sym_name}'"),
                         *span,
@@ -370,14 +662,26 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                         *span,
                         "cannot assign to a field reached without mutable access",
                     )
-                    .with_label(sym_span, "declared here without mutable access")
-                    .with_hint(format!(
+                    .with_label(sym_span, "declared here without mutable access");
+                    let msg = format!(
                         "declare it mutable (`mut {sym_name}`) or take it as `mut ref`/`mut self`"
-                    ));
+                    );
+                    diag = if is_local {
+                        diag.with_hint_replacement(crate::Hint {
+                            message: msg,
+                            replacement: Some(crate::CodeReplacement {
+                                span: sym_span,
+                                new_text: format!("mut {sym_name}"),
+                            }),
+                        })
+                    } else {
+                        diag.with_hint(msg)
+                    };
                     checker.diagnostics.push(diag);
                     return;
                 }
             }
+            arandu_parser::PlaceSuffix::Deref { .. } => {}
         }
     }
 }

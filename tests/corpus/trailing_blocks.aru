@@ -1,0 +1,47 @@
+module trailingBlocks
+
+// A block after a call is its last argument, a closure without parameters:
+// `f(a) { body }` is `f(a, () => { body })` and `f { body }` is
+// `f(() => { body })`, as in Kotlin and Swift.
+
+func twice(f: () -> int): int {
+    return f() + f()
+}
+
+func repeat(times: int, body: () -> void) {
+    let mut i = 0
+    while i < times {
+        body()
+        i += 1
+    }
+}
+
+func measure(base: int, f: () -> int): int {
+    return base + f()
+}
+
+func later(job: own () -> int): own () -> int {
+    return job
+}
+
+func main(): int {
+    // In a condition the `{` belongs to the `if`, so bind the result first.
+    let doubled = twice { 21 }
+    if doubled != 42 { return 1 }
+    let mut count = 0
+    repeat(3) {
+        count += 2
+    }
+    if count != 6 { return 2 }
+    let total = measure(1) {
+        let x = 2
+        x * 3
+    }
+    if total != 7 { return 3 }
+    let seed = 5
+    let mut job = later {
+        seed * 2
+    }
+    if job() != 10 { return 4 }
+    return 0
+}

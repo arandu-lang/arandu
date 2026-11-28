@@ -81,12 +81,14 @@ pub(super) struct ModuleEmitter<'a> {
     /// function. The freestanding gate walks this map to reject an `@Export`
     /// whose reachable code needs the host runtime.
     host_runtime_refs: RefCell<BTreeMap<SymbolId, BTreeSet<String>>>,
+    branch_weights: RefCell<Vec<(u32, u32)>>,
 }
 
 pub(super) struct FuncEmitter<'a, 'm> {
     module: &'m ModuleEmitter<'a>,
     func: &'a AmirFunc,
     writer: IrWriter,
+    entry_allocas: Vec<String>,
     defined: Vec<Option<&'static str>>,
     temp_slots: Vec<Option<String>>,
     /// SSA value bound to a temp that was assigned by aliasing an existing
@@ -118,6 +120,8 @@ pub(super) struct FuncEmitter<'a, 'm> {
     /// C ABI shape of an `@Export` aggregate return, consumed by the return
     /// terminator. `None` for ordinary Arandu functions.
     pub(super) export_return: Option<ExportReturn>,
+    /// Set immediately before lowering a tail-position direct `Call` statement.
+    pub(super) emit_as_tail_call: bool,
 }
 
 /// Boundary return shape of an exported function.
@@ -304,6 +308,7 @@ mod tests {
             extern_funcs: Default::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let symbols = SymbolTable::new(0);
         let info = TypeInfo::default();

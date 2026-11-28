@@ -208,12 +208,15 @@ impl CraneliftObjectBackend {
             type_info.type_interner(),
             type_info,
         );
-        let definitions: Vec<_> = program
+        let mut definitions: Vec<_> = program
             .funcs
             .iter()
             .filter(|function| live.contains(&function.symbol))
             .map(|function| function.symbol)
             .collect();
+        if !program.statics.is_empty() {
+            definitions.push(crate::cgu::STATICS_UNIT);
+        }
         self.compiler
             .compile_filtered_module(program, symbols, type_info, Some(&definitions))?;
         let debug_compilation = self.compiler.debug.take();

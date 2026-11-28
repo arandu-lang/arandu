@@ -40,6 +40,20 @@ impl<'a> Parser<'a> {
             if sealed {
                 self.advance();
             }
+            if self.current().kind == TokenKind::IdentValue
+                && self.current().lexeme(self.source) == "static"
+            {
+                return Ok(vec![TopLevelDecl::Const(
+                    self.parse_const(attrs, visibility)?,
+                )]);
+            }
+            if self.current().kind == TokenKind::IdentValue
+                && self.current().lexeme(self.source) == "union"
+            {
+                return Ok(vec![TopLevelDecl::Struct(
+                    self.parse_struct_decl(attrs, visibility)?,
+                )]);
+            }
             match self.current().kind {
                 TokenKind::KwConst => Ok(vec![TopLevelDecl::Const(
                     self.parse_const(attrs, visibility)?,
@@ -136,6 +150,12 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::IdentValue if self.tokens[i].lexeme(self.source) == "use" => {
                     return SyntaxKind::IMPORT_ITEM;
+                }
+                TokenKind::IdentValue if self.tokens[i].lexeme(self.source) == "static" => {
+                    return SyntaxKind::CONST_ITEM;
+                }
+                TokenKind::IdentValue if self.tokens[i].lexeme(self.source) == "union" => {
+                    return SyntaxKind::STRUCT_ITEM;
                 }
                 TokenKind::KwConst => return SyntaxKind::CONST_ITEM,
                 TokenKind::KwType => return SyntaxKind::TYPE_ALIAS_ITEM,

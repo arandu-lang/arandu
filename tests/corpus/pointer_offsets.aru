@@ -1,0 +1,29 @@
+// `p.offsetFrom(q)`: the distance between two pointers in elements, as
+// C's `p - q`. A pointer reaches the methods of what it points at first,
+// then the inherent methods of `ptr`.
+import std.core.intrinsics as intrinsics
+import std.core.mem as mem
+import std.core.pointer as pointer
+
+struct Cell {
+    a: i64,
+    b: i64,
+}
+
+func Cell.sum(self: ref Cell): i64 {
+    return self.a + self.b
+}
+
+func main(): int {
+    let mut cells = [Cell { a: 1, b: 2 }, Cell { a: 3, b: 4 }, Cell { a: 5, b: 6 }]
+    let start = unsafe { intrinsics.addressOf(mut ref cells) } as ptr[Cell]
+    let end = unsafe { mem.ptrOffset(start, 2) }
+    if end.offsetFrom(start) != 2 || start.offsetFrom(end) != -2 { return 1 }
+    let mut bytes = [0 as u8, 0, 0, 0, 0, 0, 0, 0]
+    let first = unsafe { intrinsics.addressOf(mut ref bytes) } as ptr[u8]
+    let fifth = unsafe { mem.ptrOffset(first, 5) }
+    if fifth.offsetFrom(first) != 5 { return 2 }
+    // The pointee's own method still wins on a pointer.
+    if unsafe { end[0].sum() } != 11 { return 3 }
+    return 0
+}

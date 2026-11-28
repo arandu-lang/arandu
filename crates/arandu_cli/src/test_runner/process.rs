@@ -14,8 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::test_runner::ipc::{
     create_ipc_pipe_pair, drain, empty_capture, join_capture, read_ipc_frame,
 };
-use crate::test_runner::reporters::report;
-use crate::test_runner::types::RunnerOptions;
+use crate::test_runner::reporters::{human, report};
+use crate::test_runner::types::{RunnerOptions, TestOutputFormat};
 
 pub static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -44,9 +44,17 @@ pub fn run_cases(
     options: &RunnerOptions,
 ) -> Result<bool, String> {
     if cases.is_empty() {
+        if options.format == TestOutputFormat::Human {
+            human::report_run_header_human(0);
+        }
         let empty_events: Vec<TestEventV1> = Vec::new();
         report(&empty_events, options)?;
         return Ok(true);
+    }
+
+    let total = cases.len();
+    if options.format == TestOutputFormat::Human {
+        human::report_run_header_human(total);
     }
 
     deterministic_shuffle(&mut cases, options.seed);
@@ -108,7 +116,13 @@ pub fn run_cases(
     }
     drop(sender);
 
-    let mut events: Vec<_> = receiver.into_iter().collect();
+    let mut events = Vec::with_capacity(total);
+    for event in receiver {
+        if options.format == TestOutputFormat::Human {
+            human::report_case_human(&event, events.len() + 1, total);
+        }
+        events.push(event);
+    }
     let mut join_error = false;
     for handle in handles {
         join_error |= handle.join().is_err();

@@ -132,6 +132,24 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         arandu_runtime::gen_runtime_gold::ar_gen_shutdown_raw as *const u8,
     );
 
+    // RFC 0043 Dual-Locus linear TaskArena ABI.
+    builder.symbol(
+        "ar_task_arena_alloc",
+        arandu_runtime::task_arena::ar_task_arena_alloc as *const u8,
+    );
+    builder.symbol(
+        "ar_task_arena_checkpoint",
+        arandu_runtime::task_arena::ar_task_arena_checkpoint as *const u8,
+    );
+    builder.symbol(
+        "ar_task_arena_rewind",
+        arandu_runtime::task_arena::ar_task_arena_rewind as *const u8,
+    );
+    builder.symbol(
+        "ar_task_arena_reset",
+        arandu_runtime::task_arena::ar_task_arena_reset as *const u8,
+    );
+
     // A3.6: coroutine poll / block_on (i64 payload MVP).
     builder.symbol(
         "ar_co_block_on_i64",
@@ -243,6 +261,58 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         "ar_process_exit",
         crate::os_runtime::ar_process_exit as *const u8,
     );
+    // C stdio/varargs compatibility shims (for c2arandu / libc FFI)
+    // The UCRT inlines the `printf` family, so no DLL exports them for the
+    // JIT's symbol lookup; bind the definitions linked into this binary.
+    #[cfg(windows)]
+    for (name, address) in crate::c_compat::stdio_symbols() {
+        builder.symbol(name, address);
+    }
+    builder.symbol("ar_rt_c_stdin", crate::c_compat::ar_rt_c_stdin as *const u8);
+    builder.symbol(
+        "ar_rt_c_stdout",
+        crate::c_compat::ar_rt_c_stdout as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_c_stderr",
+        crate::c_compat::ar_rt_c_stderr as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_0",
+        crate::c_compat::ar_rt_snprintf_0 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_i32",
+        crate::c_compat::ar_rt_snprintf_i32 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_i64",
+        crate::c_compat::ar_rt_snprintf_i64 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_f64",
+        crate::c_compat::ar_rt_snprintf_f64 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_ptr",
+        crate::c_compat::ar_rt_snprintf_ptr as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_fprintf_0",
+        crate::c_compat::ar_rt_fprintf_0 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_fprintf_i64",
+        crate::c_compat::ar_rt_fprintf_i64 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_fprintf_f64",
+        crate::c_compat::ar_rt_fprintf_f64 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_fprintf_ptr",
+        crate::c_compat::ar_rt_fprintf_ptr as *const u8,
+    );
     // Windows abort. Unix keeps the inline trap and must not look this up.
     #[cfg(windows)]
     builder.symbol("ar_rt_trap", crate::os_runtime::ar_rt_trap as *const u8);
@@ -251,6 +321,10 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         crate::os_runtime::ar_time_monotonic_ns as *const u8,
     );
     builder.symbol("ar_env_args_len", args_len);
+    builder.symbol(
+        "ar_env_c_argv",
+        crate::os_runtime::ar_env_c_argv as *const u8,
+    );
     builder.symbol("ar_env_arg", args_arg);
     builder.symbol(
         "ar_env_var_is_set",
@@ -597,7 +671,19 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         crate::socket_runtime::ar_net_dns_resolve as *const u8,
     );
 
+    // libcall math fallback symbols
+    builder.symbol("fma", cranelift_fma as *const u8);
+    builder.symbol("fmaf", cranelift_fmaf as *const u8);
+
     Ok(builder)
+}
+
+extern "C" fn cranelift_fma(a: f64, b: f64, c: f64) -> f64 {
+    a.mul_add(b, c)
+}
+
+extern "C" fn cranelift_fmaf(a: f32, b: f32, c: f32) -> f32 {
+    a.mul_add(b, c)
 }
 
 pub(crate) fn register_block_coverage_symbol(builder: &mut JITBuilder) {

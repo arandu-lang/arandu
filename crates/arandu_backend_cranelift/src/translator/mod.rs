@@ -18,6 +18,7 @@ mod storage;
 mod string;
 mod terminator;
 mod translate;
+mod trap;
 
 use arandu_base::span::Span;
 use arandu_middle::amir::{
@@ -422,13 +423,9 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                     }
                 },
             },
-            AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => {
-                if let AmirOperand::GlobalRef(symbol) = op
-                    && let Some(ty) = self.type_info.decl_type(*symbol)
-                {
-                    return ty;
-                }
-                ArType::Error
+            // A function reference is a value of its function type.
+            AmirOperand::FunctionRef(symbol) | AmirOperand::GlobalRef(symbol) => {
+                self.type_info.decl_type(*symbol).unwrap_or(ArType::Error)
             }
         }
     }

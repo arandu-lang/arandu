@@ -1,11 +1,11 @@
 //! Arandu workspace automation (xtask pattern).
 //!
 //! ```text
-//! cargo run -p xtask -- check-diag-docs
-//! cargo run -p xtask -- check-project-corpus
-//! cargo run -p xtask -- check-project-churn
-//! cargo run -p xtask -- check-project-performance
-//! cargo run -p xtask -- help
+//! cargo run --locked -p xtask -- check-diag-docs
+//! cargo run --locked -p xtask -- check-project-corpus
+//! cargo run --locked -p xtask -- check-project-churn
+//! cargo run --locked -p xtask -- check-project-performance
+//! cargo run --locked -p xtask -- help
 //! ```
 
 mod agents;
@@ -77,7 +77,7 @@ fn main() {
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "\
 xtask — Arandu workspace tasks
 
@@ -91,6 +91,10 @@ Commands:
   check-negative-source  Replay structural rejection mutations on a valid source
   smith                   Run a deterministic AranduSmith seed campaign
   smith-cli               Check real CLI JIT/native/GCC/Clang/core-Wasm paths
+  run-fuzz-seed          Replay one versioned fuzz seed with its timeout (internal)
+  smith-worker           Internal deterministic synthesis worker
+  smith-jit-worker       Internal JIT differential worker
+  verify-fuzz-source     Verify a minimized fuzz artifact source (internal)
   promote-fuzz-artifact  Verify and add a minimized failure to the EMI regression corpus
   promote-fuzz-sequence  Verify and add an incremental/LSP byte sequence to the regression corpus
   check-architecture  Enforce compiler crate and effect boundaries
@@ -107,25 +111,25 @@ Commands:
   help              This message
 
 Examples:
-  cargo run -p xtask -- check-diag-docs
-  cargo run -p xtask -- check-docs-taxonomy
-  cargo run -p xtask -- check-project-corpus
-  cargo run -p xtask -- check-project-churn
-  cargo run -p xtask -- check-project-performance
-  cargo run -p xtask -- check-fuzz-regressions
-  cargo run -p xtask -- check-negative-source /tmp/source.aru [mutation-name]
-  cargo run -p xtask -- smith --iterations 100 --seed 0 --target synthesized-all
-  cargo run -p xtask -- smith-cli --arandu target/debug/arandu_cli --evidence-dir target/smith-cli --seed 0 --iterations 8
-  cargo run -p xtask -- promote-fuzz-artifact /tmp/arandu-smith-artifacts/ARTIFACT c-backend-regression
-  cargo run -p xtask -- promote-fuzz-sequence incremental 01020304 incremental-case incremental-public-edit-invalidation
-  cargo run -p xtask -- check-architecture
-  cargo run -p xtask -- check-agents
-  cargo run -p xtask -- check-line-endings
-  cargo run -p xtask -- bench-incremental [--corpus small|medium|large|all] [--samples N] [--warmup N] [--release]
-  cargo run -p xtask -- check-release-contract [vX.Y.Z[-rc.N]]
-  cargo run -p xtask -- prepare-release X.Y.Z[-rc.N]
-  cargo run -p xtask -- check-slt6-sdk --arandu PATH --work-dir DIR --evidence-dir DIR
-  cargo run -p xtask -- build-wasm [--release]
+  cargo run --locked -p xtask -- check-diag-docs
+  cargo run --locked -p xtask -- check-docs-taxonomy
+  cargo run --locked -p xtask -- check-project-corpus
+  cargo run --locked -p xtask -- check-project-churn
+  cargo run --locked -p xtask -- check-project-performance
+  cargo run --locked -p xtask -- check-fuzz-regressions
+  cargo run --locked -p xtask -- check-negative-source /tmp/source.aru [mutation-name]
+  cargo run --locked -p xtask -- smith --iterations 100 --seed 0 --target synthesized-all
+  cargo run --locked -p xtask -- smith-cli --arandu target/debug/arandu_cli --evidence-dir target/smith-cli --seed 0 --iterations 8
+  cargo run --locked -p xtask -- promote-fuzz-artifact /tmp/arandu-smith-artifacts/ARTIFACT c-backend-regression
+  cargo run --locked -p xtask -- promote-fuzz-sequence incremental 01020304 incremental-case incremental-public-edit-invalidation
+  cargo run --locked -p xtask -- check-architecture
+  cargo run --locked -p xtask -- check-agents
+  cargo run --locked -p xtask -- check-line-endings
+  cargo run --locked -p xtask -- bench-incremental [--corpus small|medium|large|representative|all] [--samples N] [--warmup N] [--release] [--daemon] [--count-work] [--verify-determinism]
+  cargo run --locked -p xtask -- check-release-contract [vX.Y.Z[-rc.N]]
+  cargo run --locked -p xtask -- prepare-release X.Y.Z[-rc.N]
+  cargo run --locked -p xtask -- check-slt6-sdk --arandu PATH --work-dir DIR --evidence-dir DIR
+  cargo run --locked -p xtask -- build-wasm [--release]
   ./scripts/check-diag-docs.sh
 "
     );
@@ -212,7 +216,7 @@ fn cmd_package_archive(mut args: impl Iterator<Item = String>) -> i32 {
     }
 
     let (Some(source), Some(output)) = (source, output) else {
-        eprintln!("usage: cargo run -p xtask -- package-archive --source <dir> --output <archive> [--epoch <secs>] [--root <name>]");
+        eprintln!("usage: cargo run --locked -p xtask -- package-archive --source <dir> --output <archive> [--epoch <secs>] [--root <name>]");
         return 2;
     };
 
@@ -272,7 +276,7 @@ fn cmd_validate_archive(mut args: impl Iterator<Item = String>) -> i32 {
 
     let (Some(archive), Some(root), Some(version), Some(target)) = (archive, root, version, target)
     else {
-        eprintln!("usage: cargo run -p xtask -- validate-archive <path> --root <name> --version <ver> --target <target>");
+        eprintln!("usage: cargo run --locked -p xtask -- validate-archive <path> --root <name> --version <ver> --target <target>");
         return 2;
     };
 
@@ -322,7 +326,7 @@ fn cmd_prepare_release_assets(mut args: impl Iterator<Item = String>) -> i32 {
     let (Some(directory), Some(version), Some(tag), Some(commit)) =
         (directory, version, tag, commit)
     else {
-        eprintln!("usage: cargo run -p xtask -- prepare-release-assets <dir> --version <ver> --tag <tag> --commit <sha1>");
+        eprintln!("usage: cargo run --locked -p xtask -- prepare-release-assets <dir> --version <ver> --tag <tag> --commit <sha1>");
         return 2;
     };
 

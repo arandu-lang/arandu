@@ -244,16 +244,15 @@ public func BitSet.differenceWith(self: mut ref BitSet, other: ref BitSet): void
 
 /// Counts the set bits across the entire allocated word buffer.
 ///
-/// Runs in O(words + set bits) time and does not allocate.
+/// Runs in O(words) time using native hardware POPCNT instructions and does not allocate.
 public func BitSet.countOnes(self: ref BitSet): uint {
     let total = self.words.len()
     let mut count: uint = 0 as uint
     let mut i: usize = 0 as usize
     while i < total {
-        let mut w = wordAt(ref self.words, i)
-        while w != (0 as u64) {
-            w = w & (w - (1 as u64))
-            count = count + (1 as uint)
+        let w = wordAt(ref self.words, i)
+        unsafe {
+            count = count + (intrinsics.bitCountOnes64(w) as uint)
         }
         i = i + (1 as usize)
     }

@@ -138,6 +138,7 @@ fn generates_named_interface_for_public_interface_symbols() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     let type_info = arandu_semantics::TypeInfo::new();
@@ -303,6 +304,7 @@ fn wit_multiple_interfaces_with_scoped_types() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     let mut type_info = arandu_semantics::TypeInfo::new();
@@ -433,6 +435,7 @@ fn wit_receiver_is_exposed_once() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     let type_info = arandu_semantics::TypeInfo::new();

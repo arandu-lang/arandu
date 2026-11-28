@@ -8,12 +8,15 @@
 
 pub mod completion;
 pub mod comptime;
+pub mod organize_imports;
 pub mod presentation;
 pub mod signature_help;
 
 pub use completion::{
-    CompletionItem, CompletionKind, MAX_COMPLETION_ITEMS, completions, import_path_completions,
+    AutoImportCandidate, CompletionItem, CompletionKind, MAX_COMPLETION_ITEMS, TextEdit,
+    auto_import_candidates_for_name, completions, import_insertion_point, import_path_completions,
 };
+pub use organize_imports::organize_imports;
 pub use presentation::{
     ParameterPresentation, SymbolPresentation, display_type, expr_symbol_at, prefix_at, symbol_at,
     symbol_documentation, symbol_kind_name, symbol_presentation, typecheck,

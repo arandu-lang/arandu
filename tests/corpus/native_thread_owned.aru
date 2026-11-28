@@ -7,7 +7,7 @@ struct AppendJob {}
 
 public func AppendJob.run(self: own AppendJob, argument: strings.String): strings.String {
     let mut text = argument
-    text.pushStr(" child")
+    let _, _ = text.pushStr(" child")
     return text
 }
 

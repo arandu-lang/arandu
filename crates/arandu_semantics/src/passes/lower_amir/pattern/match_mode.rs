@@ -29,7 +29,12 @@ impl LowerCtx<'_> {
                     .type_info
                     .decl_type(*symbol)
                     .unwrap_or(ArType::Error);
-                let local_id = self.new_local(ty, *symbol, pattern.span());
+                // A name bound by several alternatives of `p1 | p2` is one
+                // variable, written by whichever alternative matched.
+                let local_id = match self.symbol_map.get(symbol) {
+                    Some(&local) => local,
+                    None => self.new_local(ty, *symbol, pattern.span()),
+                };
                 let binding_value = match scrutinee {
                     AmirOperand::Copy(temp) if !self.temps[temp.as_usize()].is_copy => {
                         AmirOperand::Move(temp)
@@ -323,6 +328,47 @@ impl LowerCtx<'_> {
                 let alt_ids = self.hir.pool.pattern_list(*alts);
                 if alt_ids.is_empty() {
                     return Ok(AmirOperand::Constant(AmirConstant::Bool(false)));
+                }
+                // Alternatives that bind names are tried in order and only
+                // the one that matched binds: reading the payload of another
+                // variant would read bytes that are not there.
+                if bind && self.pattern_has_bindings(pattern) {
+                    let alt_ids = alt_ids.to_vec();
+                    let matched_local = self.new_compiler_local(ArType::Primitive(Primitive::Bool));
+                    let bb_join = self.new_block();
+                    for alternative in alt_ids {
+                        let alternative = self.hir.pool.pattern(alternative);
+                        let matched =
+                            self.lower_pattern_match_mode(scrutinee, alternative, symbols, false)?;
+                        let bb_bind = self.new_block();
+                        let bb_other = self.new_block();
+                        self.set_bool_branch(matched, bb_bind, bb_other);
+                        self.seal_block(bb_bind);
+                        self.seal_block(bb_other);
+                        self.builder.current_block = Some(bb_bind);
+                        self.lower_pattern_match_mode(scrutinee, alternative, symbols, true)?;
+                        let bound = self.require_block()?;
+                        self.write_variable(
+                            bound,
+                            matched_local,
+                            AmirOperand::Constant(AmirConstant::Bool(true)),
+                        );
+                        self.emit_goto(bb_join);
+                        self.builder.current_block = Some(bb_other);
+                    }
+                    let unmatched = self.require_block()?;
+                    self.write_variable(
+                        unmatched,
+                        matched_local,
+                        AmirOperand::Constant(AmirConstant::Bool(false)),
+                    );
+                    self.emit_goto(bb_join);
+                    self.seal_block(bb_join);
+                    self.builder.current_block = Some(bb_join);
+                    let matched = self.read_variable(bb_join, matched_local);
+                    let dest = self.new_temp(ArType::Primitive(Primitive::Bool));
+                    self.emit_assign_temp(dest, AmirRvalue::Use(matched));
+                    return Ok(AmirOperand::Copy(dest));
                 }
                 let mut acc = self.lower_pattern_match_mode(
                     scrutinee,

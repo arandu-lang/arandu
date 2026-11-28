@@ -13,7 +13,7 @@ const ANY_ERROR_MESSAGE: &str =
 
 pub(crate) fn contains_any(pool: &AstPool, ty: TypeExprId) -> Option<Span> {
     match pool.type_expr(ty) {
-        TypeExpr::Const { .. } | TypeExpr::ConstExpression { .. } => None,
+        TypeExpr::Const { .. } | TypeExpr::ConstExpression { .. } | TypeExpr::Never { .. } => None,
         TypeExpr::Primitive { span, name } => {
             if name == "any" {
                 Some(*span)
@@ -36,7 +36,12 @@ pub(crate) fn contains_any(pool: &AstPool, ty: TypeExprId) -> Option<Span> {
         | TypeExpr::Slice { inner, .. }
         | TypeExpr::MutSlice { inner, .. }
         | TypeExpr::Array { elem: inner, .. }
-        | TypeExpr::Group { inner, .. } => contains_any(pool, *inner),
+        | TypeExpr::Group { inner, .. }
+        | TypeExpr::OwnFunc { func: inner, .. } => contains_any(pool, *inner),
+        TypeExpr::Tuple { items, .. } => pool
+            .type_expr_list(*items)
+            .iter()
+            .find_map(|item| contains_any(pool, *item)),
         TypeExpr::Func { params, result, .. } => {
             for param in pool.type_expr_list(*params) {
                 if let Some(span) = contains_any(pool, *param) {
@@ -105,7 +110,7 @@ fn report_unstaged_argument(checker: &mut TypeChecker<'_>, span: Span) {
 pub(crate) fn validate_const_arguments(checker: &mut TypeChecker<'_>, ty: TypeExprId) {
     match checker.pool.type_expr(ty) {
         TypeExpr::ConstExpression { span, .. } => report_unstaged_argument(checker, *span),
-        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
+        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } | TypeExpr::Never { .. } => {}
         TypeExpr::Named { args, .. } => {
             for &arg in checker.pool.type_expr_list(*args) {
                 validate_const_arguments(checker, arg);
@@ -117,7 +122,8 @@ pub(crate) fn validate_const_arguments(checker: &mut TypeChecker<'_>, ty: TypeEx
         | TypeExpr::RefMut { inner, .. }
         | TypeExpr::Slice { inner, .. }
         | TypeExpr::MutSlice { inner, .. }
-        | TypeExpr::Group { inner, .. } => validate_const_arguments(checker, *inner),
+        | TypeExpr::Group { inner, .. }
+        | TypeExpr::OwnFunc { func: inner, .. } => validate_const_arguments(checker, *inner),
         TypeExpr::Array {
             size_expression,
             elem,
@@ -127,6 +133,11 @@ pub(crate) fn validate_const_arguments(checker: &mut TypeChecker<'_>, ty: TypeEx
                 validate_const_arguments(checker, *expression);
             }
             validate_const_arguments(checker, *elem);
+        }
+        TypeExpr::Tuple { items, .. } => {
+            for &item in checker.pool.type_expr_list(*items) {
+                validate_const_arguments(checker, item);
+            }
         }
         TypeExpr::Func { params, result, .. } => {
             for &param in checker.pool.type_expr_list(*params) {
@@ -168,6 +179,11 @@ fn validate_result_type_no_any(checker: &mut TypeChecker<'_>, result: &ResultTyp
 }
 
 fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
+    // Expressions nest as deeply as a program writes them.
+    arandu_base::ensure_sufficient_stack(|| validate_expr_here(checker, expr));
+}
+
+fn validate_expr_here(checker: &mut TypeChecker<'_>, expr: ExprId) {
     match checker.pool.expr(expr) {
         ExprKind::Layout { ty: Some(ty), .. } => validate_type_no_any(checker, *ty),
         ExprKind::Layout { ty: None, .. } => {}
@@ -205,19 +221,11 @@ fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
             validate_expr(checker, *base);
             validate_expr(checker, *index);
         }
-        ExprKind::Call {
-            callee,
-            args,
-            trailing_block,
-            ..
-        } => {
+        ExprKind::Call { callee, args, .. } => {
             validate_expr(checker, *callee);
             let arg_ids = checker.pool.expr_list(*args).to_vec();
             for arg_id in arg_ids {
                 validate_expr(checker, arg_id);
-            }
-            if let Some(block_id) = trailing_block {
-                validate_block(checker, checker.pool, checker.pool.block(*block_id));
             }
         }
         ExprKind::StructLiteral { ty, fields, .. } => {
@@ -227,7 +235,7 @@ fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
                 validate_expr(checker, checker.pool.field_init(field_id).value);
             }
         }
-        ExprKind::Array { items, .. } => {
+        ExprKind::Array { items, .. } | ExprKind::Tuple { items } => {
             let item_ids = checker.pool.expr_list(*items).to_vec();
             for item_id in item_ids {
                 validate_expr(checker, item_id);
@@ -623,7 +631,7 @@ fn validate_type_expr_constraints(
                 );
             }
         }
-        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
+        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } | TypeExpr::Never { .. } => {}
         TypeExpr::ConstExpression { span, .. } => report_unstaged_argument(checker, *span),
         TypeExpr::Nullable { inner, .. }
         | TypeExpr::Pointer { inner, .. }
@@ -634,6 +642,20 @@ fn validate_type_expr_constraints(
         | TypeExpr::Array { elem: inner, .. }
         | TypeExpr::Group { inner, .. } => {
             validate_type_expr_constraints(checker, *inner, scope);
+        }
+        TypeExpr::OwnFunc {
+            span,
+            func,
+            bounds,
+            once,
+        } => {
+            validate_type_expr_constraints(checker, *func, scope);
+            validate_owning_closure_type(checker, *span, *bounds, *once, scope);
+        }
+        TypeExpr::Tuple { items, .. } => {
+            for &item in checker.pool.type_expr_list(*items) {
+                validate_type_expr_constraints(checker, item, scope);
+            }
         }
         TypeExpr::Func { params, result, .. } => {
             for &param in checker.pool.type_expr_list(*params) {
@@ -720,5 +742,78 @@ fn type_contains_named_without_indirection(
             )
         }
         _ => false,
+    }
+}
+
+/// Explains why `own (A) -> R [+ Bounds]` could not be lowered: a bound other
+/// than `Send` (including `Sync`), duplicate `Send`, or missing `std.alloc.closure`.
+fn validate_owning_closure_type(
+    checker: &mut TypeChecker<'_>,
+    span: Span,
+    bounds: arandu_parser::IndexRange,
+    once: bool,
+    scope: crate::ScopeId,
+) {
+    use arandu_middle::symbol_table::LangItem;
+    let ctx = crate::type_checker::types::LowerCtx {
+        pool: checker.pool,
+        symbols: &checker.symbols,
+        scope,
+        resolved: &checker.resolved,
+    };
+    let mut send = false;
+    let bound_list = checker.pool.type_expr_list(bounds).to_vec();
+    for bound in bound_list {
+        let bound_span = checker.pool.type_expr_span(bound);
+        if crate::type_checker::types::lower::owning_closure_bound_is_send(bound, &ctx) {
+            if send {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T011GenericConstraintNotSatisfied,
+                        "duplicate `Send` bound on owning closure type",
+                        bound_span,
+                    )
+                    .with_primary_label("duplicate `Send` bound")
+                    .with_hint("write `own (A) -> R + Send` at most once"),
+                );
+                return;
+            }
+            send = true;
+        } else if crate::type_checker::types::lower::owning_closure_bound_is_sync(bound, &ctx) {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::T011GenericConstraintNotSatisfied,
+                    "owning closure types require exclusive access on call and cannot satisfy `Sync`; use `+ Send`",
+                    bound_span,
+                )
+                .with_primary_label("owning closures cannot be `Sync`")
+                .with_hint("drop `+ Sync` or pass by `own` / `+ Send`"),
+            );
+            return;
+        } else {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::T011GenericConstraintNotSatisfied,
+                    "an owning closure type accepts only the `Send` capability bound",
+                    bound_span,
+                )
+                .with_primary_label("unsupported closure bound")
+                .with_hint("write `own (A) -> R + Send`, or drop the bound"),
+            );
+            return;
+        }
+    }
+    let item =
+        LangItem::for_owning_closure(arandu_middle::symbol_table::OwningClosureKind { send, once });
+    if checker.symbols.lang_item_symbol(item).is_none() {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::M001UnresolvedImport,
+                "owning closures need the standard library module `std.alloc.closure`",
+                span,
+            )
+            .with_primary_label("this type is defined by `std.alloc.closure`")
+            .with_hint("make the standard library available to the compiler"),
+        );
     }
 }

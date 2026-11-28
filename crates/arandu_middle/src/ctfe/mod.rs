@@ -9,11 +9,15 @@ use crate::types::TypeShape;
 use std::sync::Arc;
 
 mod aggregate;
+mod image;
 pub use aggregate::{ConstAggregate, ConstVariant, canonical_type_bytes, validate_ctfe_type_shape};
+pub use image::{StaticImage, StaticObject, StaticRelocation, const_value_bytes};
 mod float;
 pub use float::{ConstFloat, FloatArithmetic, FloatError, FloatType};
 mod string;
 pub use string::{ConstBytes, ConstString, StringError};
+mod type_desc;
+pub use type_desc::{TypeDesc, TypeMemberDesc, TypeMemberKind};
 
 /// An admitted integer type with a resolved, target-dependent bit width.
 ///
@@ -159,9 +163,24 @@ pub enum ConstValue {
     Float(ConstFloat),
     String(ConstString),
     Bytes(ConstBytes),
+    TypeDesc(TypeDesc),
 }
 
 impl ConstValue {
+    /// Whether this value holds a view of elements other than bytes. Such a
+    /// view points at its elements, so at run time a `const` holding one
+    /// lives in static storage, as Rust promotes `&[..]` in a constant.
+    #[must_use]
+    pub fn holds_view(&self) -> bool {
+        match self {
+            Self::Aggregate(aggregate) => {
+                matches!(aggregate.shape(), crate::types::TypeShape::Slice(_))
+                    || aggregate.values().iter().any(Self::holds_view)
+            }
+            _ => false,
+        }
+    }
+
     /// Structural type of a frozen value, independent of any interner.
     #[must_use]
     pub fn type_shape(&self) -> crate::types::TypeShape {
@@ -174,6 +193,7 @@ impl ConstValue {
             Self::String(_) => TypeShape::Primitive(Primitive::Str),
             Self::Bytes(_) => TypeShape::Slice(Box::new(TypeShape::Primitive(Primitive::U8))),
             Self::Aggregate(value) => value.shape().clone(),
+            Self::TypeDesc(desc) => desc.shape.clone(),
         }
     }
 
@@ -203,6 +223,7 @@ impl ConstValue {
             Self::Float(value) => return value.canonical_bytes().to_vec(),
             Self::String(value) => return value.canonical_bytes(),
             Self::Bytes(value) => return value.canonical_bytes(),
+            Self::TypeDesc(desc) => return desc.canonical_bytes(),
         }
         bytes.to_vec()
     }

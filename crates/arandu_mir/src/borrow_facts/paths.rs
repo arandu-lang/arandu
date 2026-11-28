@@ -232,7 +232,7 @@ pub(crate) fn collect_loans(
                     &mut changed,
                 );
             }
-            AmirTerminator::Return | AmirTerminator::Unreachable => {}
+            AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
         }
 
         if changed {
@@ -364,12 +364,15 @@ fn rvalue_holder_paths(rhs: &AmirRvalue, loan: &Loan) -> BTreeSet<HolderPath> {
             &HolderPath(vec![HolderProjection::CoroutinePayload]),
         ),
         AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::Select { .. }
         | AmirRvalue::VectorCompare { .. }
         | AmirRvalue::VectorOp { .. }
         | AmirRvalue::VectorSplat { .. }
         | AmirRvalue::VectorShuffle { .. }
         | AmirRvalue::VectorExtractLane { .. }
         | AmirRvalue::VectorInsertLane { .. }
+        | AmirRvalue::VectorBitmask { .. }
+        | AmirRvalue::VectorLoadUnaligned { .. }
         | AmirRvalue::RelativeBorrow { .. }
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. }
@@ -382,6 +385,9 @@ fn rvalue_holder_paths(rhs: &AmirRvalue, loan: &Loan) -> BTreeSet<HolderPath> {
         | AmirRvalue::GenSet { .. }
         | AmirRvalue::GenUpsert { .. }
         | AmirRvalue::GenRemove { .. }
+        | AmirRvalue::ArenaAlloc { .. }
+        | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::StaticAddr(_)
         | AmirRvalue::StringInterp { .. }
         | AmirRvalue::ToStr { .. } => BTreeSet::new(),
     }

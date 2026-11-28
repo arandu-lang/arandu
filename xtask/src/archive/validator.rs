@@ -214,7 +214,10 @@ pub fn validate_zip(
             .checked_add(entry.size())
             .filter(|size| *size <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
             .ok_or_else(|| "archive exceeds the 4 GiB uncompressed validation limit".to_string())?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| format!("invalid zip entry #{i} name: {e}"))?
+            .into_owned();
 
         validate_path_safety(&name)?;
 

@@ -80,8 +80,20 @@ pub const CORE_MODULES: &[(&str, &str)] = &[
         include_str!("../../../stdlib/core/option.aru"),
     ),
     (
+        "stdlib/core/ops.aru",
+        include_str!("../../../stdlib/core/ops.aru"),
+    ),
+    (
         "stdlib/core/pointer.aru",
         include_str!("../../../stdlib/core/pointer.aru"),
+    ),
+    (
+        "stdlib/core/range.aru",
+        include_str!("../../../stdlib/core/range.aru"),
+    ),
+    (
+        "stdlib/core/types.aru",
+        include_str!("../../../stdlib/core/types.aru"),
     ),
     (
         "stdlib/core/prelude.aru",

@@ -129,7 +129,7 @@ fn intrinsic_abi_rejects_wrong_lane_width_and_struct_literal_construction() {
            extern "arandu-intrinsic" { func simdF32x4Splat(value: f64): F32x4 }
         "#,
         r#"import std.core.simd as simd
-           func main(): int { let invalid = simd.F32x4 {} return 0 }
+           func main(): int { let invalid = simd.F32x4 {}; return 0 }
         "#,
     ] {
         let mut db = database();
@@ -483,5 +483,158 @@ fn comptime_simd_operations_evaluate_and_fold_at_compile_time() {
             .iter_ids()
             .all(|id| !matches!(main_func.stmt(id), AmirStmt::Call { .. })),
         "comptime compute must be folded; call should not exist in main"
+    );
+}
+
+#[test]
+fn u8x16_bitmask_and_load_unaligned_fold_at_comptime_and_require_unsafe() {
+    let mut db = database();
+    let file = db.new_file(
+        "main.aru".into(),
+        r#"
+        import std.core.simd as simd
+        import std.core.str as text
+
+        func compute_comptime(): int {
+            let v = simd.U8x16.new(
+                0x80 as u8, 0x01 as u8, 0xFF as u8, 0x7F as u8,
+                0x00 as u8, 0x80 as u8, 0x10 as u8, 0x90 as u8,
+                0x00 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8,
+                0x00 as u8, 0x00 as u8, 0x00 as u8, 0x81 as u8
+            )
+            // lanes with bit 7 set: 0, 2, 5, 7, 15 -> 1 + 4 + 32 + 128 + 32768 = 32933
+            if v.highBitmask() != (32933 as u32) { return 1 }
+            let mask = v.ge(simd.U8x16.splat(0x80 as u8))
+            if mask.bitmask() != (32933 as u32) || mask.allTrue() || !mask.anyTrue() { return 2 }
+
+            // A byte-string literal is a frozen `[]u8` value; CTFE admits no
+            // references (RFC 0013), so `asBytes(ref s)` is not the source here.
+            let bytes = b"0123456789abcdefXYZ"
+            match simd.U8x16.loadUnaligned(bytes[1..17]) {
+                Some(loaded) => {
+                    if loaded.extractLane(0) != (49 as u8) || loaded.extractLane(15) != (88 as u8) { return 3 }
+                }
+                None => { return 4 }
+            }
+            match simd.U8x16.loadUnaligned(bytes[0..15]) {
+                Some(_) => { return 5 }
+                None => {}
+            }
+            if !text.isAscii("0123456789abcdefXYZ") || text.isAscii("0123456789abcdefá") { return 6 }
+            if !text.eq("0123456789abcdefXYZ", "0123456789abcdefXYZ") || text.eq("0123456789abcdefXYZ", "0123456789abcdefXYz") { return 7 }
+            return 42
+        }
+
+        func main(): int {
+            let res = comptime compute_comptime()
+            return res
+        }
+        "#
+        .into(),
+    );
+    let errors: Vec<_> = file_ide_diagnostics(&db, file)
+        .iter()
+        .filter(|d| d.severity == 0)
+        .cloned()
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    let runtime = runtime_program(&db, file);
+    assert!(
+        !runtime
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == arandu_middle::Severity::Error),
+        "{:?}",
+        runtime.diagnostics
+    );
+    let amir = &runtime.artifacts.amir;
+    let main_func = amir
+        .funcs
+        .iter()
+        .find(|f| runtime.artifacts.type_check.symbols.get(f.symbol).name == "main")
+        .expect("main exists");
+    assert!(
+        main_func
+            .stmts
+            .iter_ids()
+            .all(|id| !matches!(main_func.stmt(id), AmirStmt::Call { .. })),
+        "comptime compute_comptime must fold completely"
+    );
+
+    // Unsafe gate: simdU8x16LoadUnaligned outside unsafe requires unsafe {}, while simdU8x16Bitmask is safe.
+    let mut db2 = database();
+    let gate_file = db2.new_file(
+        "unsafe_gate.aru".into(),
+        r#"
+        import std.core.simd as simd
+        func main(): int {
+            let v = simd.U8x16.splat(0x80 as u8)
+            let _m = simd.simdU8x16Bitmask(v)
+            let raw = b"0123456789abcdef"
+            let _u = simd.simdU8x16LoadUnaligned(raw)
+            return 0
+        }
+        "#
+        .into(),
+    );
+    let gate_diags = file_ide_diagnostics(&db2, gate_file);
+    assert!(
+        gate_diags
+            .iter()
+            .any(|d| d.severity == 0 && d.code == "O013"),
+        "expected O013 on safe call to simdU8x16LoadUnaligned: {:?}",
+        **gate_diags
+    );
+    assert_eq!(
+        gate_diags.iter().filter(|d| d.severity == 0).count(),
+        1,
+        "simdU8x16Bitmask must remain safe without unsafe: {:?}",
+        **gate_diags
+    );
+}
+
+#[test]
+fn arandu_intrinsic_authority_requires_trusted_stdlib_regardless_of_module_name() {
+    let mut db = database();
+    let spoofed = db.new_file(
+        "user_spoof.aru".into(),
+        r#"
+        module std.core.spoof
+        extern "arandu-intrinsic" {
+            func spoofed(): void
+        }
+        func main(): int { return 0 }
+        "#
+        .into(),
+    );
+    let spoof_diags = arandu_query::passes::type_check(&db, spoofed)
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == arandu_diagnostics::DiagCode::U001FeatureNotSupported)
+        .count();
+    assert_eq!(
+        spoof_diags, 1,
+        "user source pretending to be std.core must report exactly one U001"
+    );
+
+    let trusted_non_core = db.new_stdlib_file(
+        "stdlib/alloc/internal_intrinsics.aru".into(),
+        r#"
+        module std.alloc.internal
+        extern "arandu-intrinsic" {
+            func stdAllocHook(): void
+        }
+        func main(): int { return 0 }
+        "#
+        .into(),
+    );
+    let trusted_u001 = arandu_query::passes::type_check(&db, trusted_non_core)
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == arandu_diagnostics::DiagCode::U001FeatureNotSupported)
+        .count();
+    assert_eq!(
+        trusted_u001, 0,
+        "trusted stdlib source outside std.core must be allowed to declare arandu-intrinsic"
     );
 }

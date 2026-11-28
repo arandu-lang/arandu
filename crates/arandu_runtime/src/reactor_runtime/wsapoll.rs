@@ -24,13 +24,29 @@
 //! new socket while the kernel is still waiting on it.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Networking::WinSock::{
     POLLRDNORM, POLLWRNORM, SOCKET, SOCKET_ERROR, WSAPOLLFD, WSAPoll,
 };
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 
 use crate::socket_runtime::{SocketLease, WAIT_READ, WAIT_WRITE, lease_socket};
+
+/// Checks if the host Windows build supports modern `ProcessSocketNotifications`
+/// (Windows 11 / Windows Server 2022+ build 20348+).
+pub(super) fn has_process_socket_notifications() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| unsafe {
+        let module = GetModuleHandleA(b"ws2_32.dll\0".as_ptr());
+        if module.is_null() {
+            return false;
+        }
+        let proc = GetProcAddress(module, b"ProcessSocketNotifications\0".as_ptr());
+        proc.is_some()
+    })
+}
 
 struct Registration {
     raw: SOCKET,

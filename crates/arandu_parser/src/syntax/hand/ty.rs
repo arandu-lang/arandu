@@ -20,6 +20,7 @@ pub fn can_start_type_kind(kind: TokenKind) -> bool {
             | TokenKind::LBracket
             | TokenKind::LParen
             | TokenKind::KwFunc
+            | TokenKind::Bang
             | TokenKind::Amp // `&T` / `&mut T`
     ) || primitive_type_token_name(kind).is_some()
 }
@@ -86,9 +87,8 @@ fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeE
     let start_tok = cur.peek()?;
     let start = start_tok.start;
 
-    // Canonical ownership spelling: `own T`, `ref T`, `mut ref T`.
     if cur.eat(TokenKind::KwOwn) {
-        return parse_type(ctx, cur);
+        return parse_own_type(ctx, cur, start);
     }
     if cur.eat(TokenKind::KwRef) {
         let inner = parse_type(ctx, cur)?;
@@ -99,27 +99,8 @@ fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeE
         }));
     }
     if cur.eat(TokenKind::KwMut) {
-        if cur.eat(TokenKind::KwRef) {
-            let inner = parse_type(ctx, cur)?;
-            let end = ctx.pool.type_expr_span(inner).end;
-            return Some(ctx.pool.alloc_type_expr(TypeExpr::RefMut {
-                span: ctx.span(start, end),
-                inner,
-            }));
-        }
-        if cur.eat(TokenKind::LBracket) {
-            cur.expect(TokenKind::RBracket)?;
-            let inner = parse_type(ctx, cur)?;
-            let end = ctx.pool.type_expr_span(inner).end;
-            return Some(ctx.pool.alloc_type_expr(TypeExpr::MutSlice {
-                span: ctx.span(start, end),
-                inner,
-            }));
-        }
-        return None;
+        return parse_mut_type(ctx, cur, start);
     }
-
-    // `&mut T` / `&T` — safe reference types (F2.0). Not raw `ptr[T]`.
     if cur.eat(TokenKind::Amp) {
         let is_mut = cur.eat(TokenKind::KwMut);
         let inner = parse_type(ctx, cur)?;
@@ -131,19 +112,166 @@ fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeE
             TypeExpr::Ref { span, inner }
         }));
     }
-
-    // `ptr[T]` (RD requires brackets after KwPtr)
+    if cur.eat(TokenKind::KwFunc) {
+        return parse_bare_func_type(ctx, cur, start);
+    }
     if cur.eat(TokenKind::KwPtr) {
-        cur.expect(TokenKind::LBracket)?;
-        let inner = parse_type(ctx, cur)?;
-        let close = cur.expect(TokenKind::RBracket)?;
-        return Some(ctx.pool.alloc_type_expr(TypeExpr::Pointer {
-            span: ctx.span(start, close.start + close.len),
-            inner,
-        }));
+        return parse_ptr_type(ctx, cur, start);
+    }
+    if cur.eat(TokenKind::Bang) {
+        let mut ty = ctx.pool.alloc_type_expr(TypeExpr::Never {
+            span: ctx.span(start, start + 1),
+        });
+        if cur.eat(TokenKind::Question) {
+            ty = ctx.pool.alloc_type_expr(TypeExpr::Nullable {
+                span: ctx.span(start, start + 2),
+                inner: ty,
+            });
+        }
+        return Some(ty);
     }
 
     parse_type_dispatch(ctx, cur, start)
+}
+
+#[inline(never)]
+fn parse_own_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<TypeExprId> {
+    let once = if cur
+        .peek()
+        .is_some_and(|t| t.kind == TokenKind::IdentValue && ctx.text(t) == Some("once"))
+    {
+        cur.bump();
+        true
+    } else {
+        false
+    };
+    let inner = parse_type(ctx, cur)?;
+    if !matches!(
+        ctx.pool.type_expr(inner),
+        TypeExpr::Func {
+            is_bare_func: false,
+            ..
+        }
+    ) {
+        if once {
+            return None;
+        }
+        return Some(inner);
+    }
+    let mut bounds = Vec::new();
+    let mut end = ctx.pool.type_expr_span(inner).end;
+    while cur.eat(TokenKind::Plus) {
+        let bound = parse_bound_type(ctx, cur)?;
+        end = ctx.pool.type_expr_span(bound).end;
+        bounds.push(bound);
+    }
+    let bounds = ctx.pool.alloc_type_expr_list(&bounds);
+    Some(ctx.pool.alloc_type_expr(TypeExpr::OwnFunc {
+        span: ctx.span(start, end),
+        func: inner,
+        bounds,
+        once,
+    }))
+}
+
+#[inline(never)]
+fn parse_mut_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<TypeExprId> {
+    if cur.eat(TokenKind::KwRef) {
+        let inner = parse_type(ctx, cur)?;
+        let end = ctx.pool.type_expr_span(inner).end;
+        return Some(ctx.pool.alloc_type_expr(TypeExpr::RefMut {
+            span: ctx.span(start, end),
+            inner,
+        }));
+    }
+    if cur.eat(TokenKind::LBracket) {
+        cur.expect(TokenKind::RBracket)?;
+        let inner = parse_type(ctx, cur)?;
+        let end = ctx.pool.type_expr_span(inner).end;
+        return Some(ctx.pool.alloc_type_expr(TypeExpr::MutSlice {
+            span: ctx.span(start, end),
+            inner,
+        }));
+    }
+    None
+}
+
+#[inline(never)]
+fn parse_ptr_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<TypeExprId> {
+    cur.expect(TokenKind::LBracket)?;
+    let inner = parse_type(ctx, cur)?;
+    let close = cur.expect(TokenKind::RBracket)?;
+    let mut ty = ctx.pool.alloc_type_expr(TypeExpr::Pointer {
+        span: ctx.span(start, close.start + close.len),
+        inner,
+    });
+    if cur.eat(TokenKind::Question) {
+        let q_end = ctx.pool.type_expr_span(ty).end + 1;
+        ty = ctx.pool.alloc_type_expr(TypeExpr::Nullable {
+            span: ctx.span(start, q_end),
+            inner: ty,
+        });
+    }
+    Some(ty)
+}
+
+#[inline(never)]
+fn parse_bare_func_type(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    start: u32,
+) -> Option<TypeExprId> {
+    cur.expect(TokenKind::LParen)?;
+    let mut params = Vec::new();
+    if cur.peek_kind() != Some(TokenKind::RParen) {
+        loop {
+            params.push(parse_type(ctx, cur)?);
+            if !cur.eat(TokenKind::Comma) {
+                break;
+            }
+            if cur.peek_kind() == Some(TokenKind::RParen) {
+                break;
+            }
+        }
+    }
+    let close = cur.expect(TokenKind::RParen)?;
+    let mut end = close.end();
+    let result = if cur.eat(TokenKind::Arrow) {
+        let res_start = cur.peek()?.start;
+        let res_ty = parse_type(ctx, cur)?;
+        end = ctx.pool.type_expr_span(res_ty).end;
+        Some(ResultType::Single {
+            span: ctx.span(res_start, end),
+            ty: res_ty,
+        })
+    } else if cur
+        .peek_kind()
+        .is_some_and(|k| can_start_type_kind(k) || k == TokenKind::LParen)
+    {
+        let res = parse_result_type(ctx, cur)?;
+        end = match &res {
+            ResultType::Single { span, .. } | ResultType::Multi { span, .. } => span.end,
+        };
+        Some(res)
+    } else {
+        None
+    };
+    let params = ctx.pool.alloc_type_expr_list(&params);
+    Some(ctx.pool.alloc_type_expr(TypeExpr::Func {
+        span: ctx.span(start, end),
+        params,
+        result,
+        is_bare_func: true,
+    }))
+}
+
+fn parse_bound_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeExprId> {
+    let tok = cur.peek()?;
+    if matches!(tok.kind, TokenKind::IdentValue | TokenKind::IdentType) {
+        parse_named_or_primitive_no_question(ctx, cur, tok.start)
+    } else {
+        None
+    }
 }
 
 // Do not retain aggregate/function-type locals across recursive references.
@@ -193,9 +321,7 @@ fn parse_type_dispatch(
         }));
     }
 
-    // `(T)` grouped type or `(T, U) -> R` function type. A comma without an
-    // arrow is not silently accepted as a tuple because tuple types do not yet
-    // have an AST representation.
+    // `(T)` grouped type, `(T, U) -> R` function type, or `(T, U)` tuple.
     if cur.eat(TokenKind::LParen) {
         let mut params = Vec::new();
         let mut saw_comma = false;
@@ -225,16 +351,33 @@ fn parse_type_dispatch(
                 span: ctx.span(start, end),
                 params,
                 result: Some(result),
+                is_bare_func: false,
             }));
         }
-        if saw_comma || params.len() != 1 {
-            return None;
+        let mut ty = if params.len() >= 2 {
+            let items = ctx.pool.alloc_type_expr_list(&params);
+            ctx.pool.alloc_type_expr(TypeExpr::Tuple {
+                span: ctx.span(start, close.start + close.len),
+                items,
+            })
+        } else {
+            if saw_comma || params.len() != 1 {
+                return None;
+            }
+            let inner = params[0];
+            ctx.pool.alloc_type_expr(TypeExpr::Group {
+                span: ctx.span(start, close.start + close.len),
+                inner,
+            })
+        };
+        if cur.eat(TokenKind::Question) {
+            let q_end = ctx.pool.type_expr_span(ty).end + 1;
+            ty = ctx.pool.alloc_type_expr(TypeExpr::Nullable {
+                span: ctx.span(start, q_end),
+                inner: ty,
+            });
         }
-        let inner = params[0];
-        Some(ctx.pool.alloc_type_expr(TypeExpr::Group {
-            span: ctx.span(start, close.start + close.len),
-            inner,
-        }))
+        Some(ty)
     } else {
         parse_named_or_primitive_type(ctx, cur, start)
     }
@@ -245,9 +388,26 @@ fn parse_named_or_primitive_type(
     cur: &mut Cursor<'_>,
     start: u32,
 ) -> Option<TypeExprId> {
+    let mut ty = parse_named_or_primitive_no_question(ctx, cur, start)?;
+    // postfix ?
+    if cur.eat(TokenKind::Question) {
+        let end = ctx.pool.type_expr_span(ty).end + 1;
+        ty = ctx.pool.alloc_type_expr(TypeExpr::Nullable {
+            span: ctx.span(start, end),
+            inner: ty,
+        });
+    }
+    Some(ty)
+}
+
+fn parse_named_or_primitive_no_question(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    start: u32,
+) -> Option<TypeExprId> {
     let t = cur.bump()?;
     let span = ctx.token_span(t);
-    let mut ty = if let Some(name) = primitive_type_token_name(t.kind) {
+    let ty = if let Some(name) = primitive_type_token_name(t.kind) {
         ctx.pool.alloc_type_expr(TypeExpr::Primitive {
             span,
             name: SmolStr::new_static(name),
@@ -317,15 +477,6 @@ fn parse_named_or_primitive_type(
             _ => return None,
         }
     };
-
-    // postfix ?
-    if cur.eat(TokenKind::Question) {
-        let end = ctx.pool.type_expr_span(ty).end + 1;
-        ty = ctx.pool.alloc_type_expr(TypeExpr::Nullable {
-            span: ctx.span(start, end),
-            inner: ty,
-        });
-    }
 
     Some(ty)
 }

@@ -3,12 +3,20 @@
 
 use std::fs;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn temp_path(name: &str, ext: &str) -> std::path::PathBuf {
+    let id = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "arandu_ownership_{name}_{}_{id}.{ext}",
+        std::process::id()
+    ))
+}
 
 fn check(source: &str, name: &str) -> String {
-    let file = std::env::temp_dir().join(format!(
-        "arandu_ownership_{name}_{}.aru",
-        std::process::id()
-    ));
+    let file = temp_path(name, "aru");
     fs::write(&file, source).expect("write regression source");
     let output = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(["check", file.to_str().expect("UTF-8 temp path")])
@@ -23,10 +31,7 @@ fn check(source: &str, name: &str) -> String {
 }
 
 fn check_passes(source: &str, name: &str) {
-    let file = std::env::temp_dir().join(format!(
-        "arandu_ownership_{name}_{}.aru",
-        std::process::id()
-    ));
+    let file = temp_path(name, "aru");
     fs::write(&file, source).expect("write regression source");
     let output = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(["check", file.to_str().expect("UTF-8 temp path")])
@@ -41,10 +46,7 @@ fn check_passes(source: &str, name: &str) {
 }
 
 fn run(source: &str, name: &str) -> String {
-    let file = std::env::temp_dir().join(format!(
-        "arandu_ownership_{name}_{}.aru",
-        std::process::id()
-    ));
+    let file = temp_path(name, "aru");
     fs::write(&file, source).expect("write regression source");
     let output = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(["run", file.to_str().expect("UTF-8 temp path")])
@@ -62,10 +64,7 @@ fn run(source: &str, name: &str) -> String {
 }
 
 fn emit_c(source: &str, name: &str) -> String {
-    let file = std::env::temp_dir().join(format!(
-        "arandu_ownership_{name}_{}.aru",
-        std::process::id()
-    ));
+    let file = temp_path(name, "aru");
     fs::write(&file, source).expect("write regression source");
     let output = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(["emit-c", file.to_str().expect("UTF-8 temp path")])
@@ -88,10 +87,11 @@ fn run_emitted_c_with_asan(c_source: &str, name: &str) {
     {
         return;
     }
-    let c_file =
-        std::env::temp_dir().join(format!("arandu_ownership_{name}_{}.c", std::process::id()));
-    let binary =
-        std::env::temp_dir().join(format!("arandu_ownership_{name}_{}", std::process::id()));
+    let c_file = temp_path(name, "c");
+    let binary = temp_path(
+        &format!("{name}_bin"),
+        if cfg!(windows) { "exe" } else { "out" },
+    );
     fs::write(&c_file, c_source).expect("write emitted C");
     let output = Command::new("clang")
         .args(["-fsanitize=address", "-fno-omit-frame-pointer"])
@@ -245,7 +245,7 @@ func main(): int {
     let mut owner = strings.String.from("before")
     let view: str = owner.asStr()
     io.println(view)
-    owner.pushStr("-after-last-use")
+    let _, _ = owner.pushStr("-after-last-use")
     return 0
 }
 "#,
@@ -507,6 +507,7 @@ func classify(value: Result<strings.String, strings.String>): int {
     match value {
         Result.Ok(payload) if false => { return 0 }
         Result.Ok(payload) if payload.len() > 0 => { return 1 }
+        Result.Ok(_) => { return 3 }
         Result.Err(_) => { return 2 }
     }
 }
@@ -1164,16 +1165,33 @@ func main(): int {
     run_emitted_c_with_asan(&c_source, "hash_string_asan");
 }
 
-/// AGG.1: a promoted handle stored in memory typed as a reference was read
-/// back as a raw pointer, so every backend returned the handle bits. The
-/// escape is rejected instead of compiled.
+/// RFC 0043 Dual-Locus: a borrow stored in memory typed as a reference promotes
+/// the borrowed local's Storage Locus (`lambda_store`) to `TaskArena` while
+/// keeping its Reference Locus (`lambda_ref`) as a native pointer (`DirectPtr`),
+/// unless `@NoFallback` rejects it.
 #[test]
 fn promotable_borrows_stored_in_memory_are_rejected_not_miscompiled() {
-    for (name, source) in [
+    for (name, source, no_fallback_source) in [
         (
             "through_reference",
             r#"
 struct Holder { value: &int }
+func store(holder: mut ref Holder, seed: int): int {
+    let value = seed
+    set holder.value = &value
+    return *holder.value
+}
+func main(): int {
+    let start = 0
+    let mut holder = Holder { value: &start }
+    if store(mut ref holder, 5) != 5 { return 1 }
+    if *holder.value != 5 { return 2 }
+    return 0
+}
+"#,
+            r#"
+struct Holder { value: &int }
+@NoFallback
 func store(holder: mut ref Holder, seed: int): int {
     let value = seed
     set holder.value = &value
@@ -1193,15 +1211,522 @@ struct Holder { value: &int }
 func main(): int {
     let start = 5
     let holder = Holder { value: &start }
+    if *holder.value != 5 { return 1 }
+    return 0
+}
+"#,
+            r#"
+struct Holder { value: &int }
+@NoFallback
+func main(): int {
+    let start = 5
+    let holder = Holder { value: &start }
     return *holder.value
 }
 "#,
         ),
     ] {
-        let stderr = check(source, name);
+        let stdout = run(source, name);
+        assert!(stdout.is_empty());
+        let c_source = emit_c(source, &format!("{name}_c"));
+        run_emitted_c_with_asan(&c_source, &format!("{name}_asan"));
+
+        let stderr = check(no_fallback_source, &format!("{name}_no_fallback"));
         assert!(
-            stderr.contains("O004") && stderr.contains("cannot be safely re-read"),
-            "{name}: expected the O004 rejection, got: {stderr}"
+            stderr.contains("O004"),
+            "{name}: expected O004 rejection under @NoFallback, got: {stderr}"
         );
     }
+}
+
+#[test]
+fn dual_locus_returned_aggregate_carrier_and_projected_field_borrow_work_end_to_end() {
+    let source = r#"
+struct Par {
+    x: &int
+    y: &int
+}
+
+struct Holder {
+    value: &int
+}
+
+struct Pair {
+    left: int
+    right: int
+}
+
+func criar_par(base: int): Par {
+    let a = base + 10
+    let b = base + 20
+    return Par { x: &a, y: &b }
+}
+
+func store_projected(holder: mut ref Holder, base: int): int {
+    let pair = Pair { left: base + 40, right: base + 7 }
+    set holder.value = &pair.left
+    return *holder.value
+}
+
+func loop_arena_rewind(): int {
+    let mut acc = 0
+    let mut i = 0
+    while i < 5000 {
+        let val = i + 1
+        let holder = Holder { value: &val }
+        set acc = acc + *holder.value
+        set i = i + 1
+    }
+    return acc
+}
+
+func main(): int {
+    let p = criar_par(5)
+    if *p.x != 15 { return 1 }
+    if *p.y != 25 { return 2 }
+
+    let seed = 0
+    let mut holder = Holder { value: &seed }
+    if store_projected(mut ref holder, 2) != 42 { return 3 }
+    if *holder.value != 42 { return 4 }
+
+    if loop_arena_rewind() != 12502500 { return 5 }
+    return 0
+}
+"#;
+    let stdout = run(source, "dual_locus_e2e");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "dual_locus_e2e_c");
+    run_emitted_c_with_asan(&c_source, "dual_locus_e2e_asan");
+}
+
+#[test]
+fn dual_locus_branched_loop_and_export_aggregate_indirect_work_end_to_end() {
+    let source = r#"
+struct Holder {
+    value: &int
+}
+
+@Repr("C")
+struct Pair {
+    a: int
+    b: int
+}
+
+@Export("export_pair_fn")
+public func addPair(p: Pair): Pair {
+    return Pair { a: p.a + 1, b: p.b + 2 }
+}
+
+func loop_branched_rewind(): int {
+    let mut acc = 0
+    let mut i = 0
+    while i < 100000 {
+        let mut cur = 0
+        if i % 2 == 0 {
+            let v = i + 1
+            let h = Holder { value: &v }
+            set cur = *h.value
+        } else {
+            let v = i + 2
+            let h = Holder { value: &v }
+            set cur = *h.value
+        }
+        set acc = acc + (cur % 7)
+        set i = i + 1
+    }
+    return acc
+}
+
+func main(): int {
+    let f = addPair
+    let res = f(Pair { a: 10, b: 20 })
+    if res.a != 11 || res.b != 22 { return 1 }
+    if loop_branched_rewind() != 299999 { return 2 }
+    return 0
+}
+"#;
+    let stdout = run(source, "dual_locus_branch_export_e2e");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "dual_locus_branch_export_e2e_c");
+    run_emitted_c_with_asan(&c_source, "dual_locus_branch_export_e2e_asan");
+}
+
+#[test]
+fn untagged_union_pointer_indexing_and_null_optimization_work_end_to_end() {
+    let source = r#"
+@Repr("C")
+public union Value {
+    public i: i64
+    public f: f64
+    public p: ptr[u8]?
+}
+
+@Export
+public func maybe_offset(p: ptr[i64]?, idx: usize): ptr[i64]? {
+    if let raw = p {
+        unsafe {
+            let mut cursor: ptr[i64] = raw
+            cursor += 1
+            cursor[idx] = 42
+            let read_back: i64 = cursor[idx]
+            let next: ptr[i64] = cursor + 2
+            let diff: isize = next - cursor
+            if diff == 2 && read_back == 42 {
+                return next
+            }
+        }
+    }
+    return nil
+}
+
+public func test_union(): i64 {
+    let mut v = Value { i: 0 }
+    unsafe {
+        v.f = 1.0
+        return v.i
+    }
+}
+
+public func main(): int {
+    let mut arr: [4]i64 = [10, 20, 30, 40]
+    unsafe {
+        let base: ptr[i64] = (&mut arr[0]) as ptr[i64]
+        let res = maybe_offset(base, 1)
+        let bits = test_union()
+        if res != nil && arr[2] == 42 && bits == 4607182418800017408 {
+            return 0
+        }
+    }
+    return 1
+}
+"#;
+    let stdout = run(source, "union_pointer_npo_e2e");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "union_pointer_npo_e2e_c");
+    run_emitted_c_with_asan(&c_source, "union_pointer_npo_e2e_asan");
+}
+
+#[test]
+fn indexed_array_in_struct_reference_does_not_copy_container() {
+    let source = r#"
+public struct BtreePage {
+    keys: [256]i64,
+}
+
+public func binsearch(page: ref BtreePage, target: i64): int {
+    let mut low = 0
+    let mut high = 255
+    while low <= high {
+        let mid = (low + high) >> 1
+        let k = page.keys[mid]
+        if k == target { return mid }
+        if k < target { low = mid + 1 } else { high = mid - 1 }
+    }
+    return -1
+}
+
+public func main(): int {
+    let mut page = BtreePage { keys: [0; 256] }
+    let mut i = 0
+    while i < 256 {
+        page.keys[i] = (i as i64) * 10
+        i = i + 1
+    }
+    let idx = binsearch(&page, 420)
+    if idx == 42 {
+        return 0
+    }
+    return 1
+}
+"#;
+    let stdout = run(source, "indexed_array_in_struct_no_copy");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "indexed_array_in_struct_no_copy_c");
+    assert!(
+        !c_source.contains("= *((ArType_Array_256_int64_t*)"),
+        "AMIR não deve gerar rvalue copy do array de 2KB!"
+    );
+    run_emitted_c_with_asan(&c_source, "indexed_array_in_struct_no_copy_asan");
+}
+
+/// Moving a value into a `let` and then using the binding across a branch is
+/// one move: the binding's value reaches the join as the binding's own, not
+/// as a second move of where it came from. Using the source after the move is
+/// still rejected.
+#[test]
+fn a_value_moved_into_a_let_crosses_branches_as_that_binding() {
+    let prelude = "struct Res { v: int }\n@Destructor\nfunc Res.destroy(self: own Res): void {}\nfunc look(r: ref Res): int { return r.v }\n";
+    check_passes(
+        &format!(
+            "{prelude}func f(name: Res, c: bool): Res {{\n    let mut owned = name\n    if c {{ let k = look(ref owned) }} else {{ owned.v = 2 }}\n    return owned\n}}\nfunc g(c: bool): Res {{\n    let first = Res {{ v: 1 }}\n    let second = first\n    while c {{ let k = look(ref second) }}\n    return second\n}}\nfunc main(): int {{ return f(Res {{ v: 1 }}, true).v + g(false).v }}\n"
+        ),
+        "let_across_branch",
+    );
+    let stderr = check(
+        &format!(
+            "{prelude}func f(name: Res, c: bool): Res {{\n    let mut owned = name\n    if c {{ let k = look(ref owned) }}\n    let again = name\n    return owned\n}}\nfunc main(): int {{ return 0 }}\n"
+        ),
+        "let_then_source_reuse",
+    );
+    assert!(stderr.contains("use of moved value `name`"), "{stderr}");
+}
+
+/// Moving a non-Copy value out of a reference is O016 wherever the value
+/// goes: the return register, a block's value, or a closure body that
+/// consumes a capture it only borrows or that may run again. Only an
+/// `own once` closure owns its captures for its single call.
+#[test]
+fn moving_out_of_a_reference_is_rejected_in_every_position() {
+    let pair = "import std.alloc.string as strings\nstruct Pair { a: strings.String, b: strings.String }\n";
+    for (name, body) in [
+        (
+            "return_field",
+            "func take(p: mut ref Pair): strings.String { return p.a }\n",
+        ),
+        (
+            "return_deref",
+            "func take(p: ref strings.String): strings.String { return *p }\n",
+        ),
+        (
+            "block_value",
+            "func pick(p: mut ref Pair, c: bool): strings.String {\n    let x = if c { p.a } else { p.b }\n    return x\n}\n",
+        ),
+        (
+            "owning_closure",
+            "func make(text: strings.String): own () -> strings.String { return () => text }\n",
+        ),
+        (
+            "callback",
+            "func apply(f: () -> strings.String): strings.String { return f() }\nfunc cb(text: strings.String): strings.String { return apply(() => text) }\n",
+        ),
+    ] {
+        let stderr = check(
+            &format!("{pair}{body}func main(): int {{ return 0 }}\n"),
+            name,
+        );
+        assert!(stderr.contains("O016"), "{name}: {stderr}");
+    }
+    check_passes(
+        &format!(
+            "{pair}func make(text: strings.String): own once () -> strings.String {{ return () => text }}\nfunc main(): int {{ return 0 }}\n"
+        ),
+        "once_closure_consumes",
+    );
+}
+
+/// `+` on local `str` values frees every intermediate string exactly once.
+/// A concatenation that is reassigned or escapes its function leaks like
+/// the same interpolation does: `str` is a view without a destructor
+/// (recorded in the campaign as an open memory-model decision).
+#[test]
+fn local_string_concatenation_frees_each_string_once() {
+    let source = "func main(): int {\n    let n = 7\n    let a = \"n=\" + \"${n}\" + \"!\"\n    let b = a + \"y\"\n    return b.len() as int - 5\n}\n";
+    let c_source = emit_c(source, "string_concat_local");
+    run_emitted_c_with_asan(&c_source, "string_concat_local");
+}
+
+/// A part moved out of a value with a `@Destructor` is O018 wherever it
+/// goes; reading, borrowing, moving the whole value and `mem.replace` pass.
+#[test]
+fn moving_a_part_out_of_a_destructor_type_is_rejected_in_every_position() {
+    let guard = "import std.alloc.string as strings\nstruct Guard { name: strings.String, id: int }\n@Destructor\nfunc Guard.destroy(self: own Guard) { }\nstruct Outer { g: Guard, n: int }\nfunc eat(s: strings.String) { }\n";
+    for (name, body) in [
+        (
+            "return_field",
+            "func take(g: Guard): strings.String { return g.name }\n",
+        ),
+        ("let_field", "func take(g: Guard) { let n = g.name }\n"),
+        ("argument", "func take(g: Guard) { eat(g.name) }\n"),
+        (
+            "pattern",
+            "func take(g: Guard): int { return match g { Guard { name, id } => id } }\n",
+        ),
+        (
+            "nested",
+            "func take(o: Outer): strings.String { return o.g.name }\n",
+        ),
+    ] {
+        let stderr = check(
+            &format!("{guard}{body}func main(): int {{ return 0 }}\n"),
+            name,
+        );
+        assert!(stderr.contains("O018"), "{name}: {stderr}");
+    }
+    check_passes(
+        &format!(
+            "{guard}func read(g: Guard): int {{ return g.id + g.name.len() as int }}\nfunc whole(o: Outer): Guard {{ return o.g }}\nfunc main(): int {{ return 0 }}\n"
+        ),
+        "destructor_parts_read",
+    );
+}
+
+/// `mem.replace`, `mem.swap` and `mem.take` move values with destructors
+/// through references without destroying any of them twice.
+#[test]
+fn mem_replace_moves_owned_values_once() {
+    let source = include_str!("../../../../tests/corpus/mem_replace_owned.aru");
+    let c_source = emit_c(source, "mem_replace_owned");
+    run_emitted_c_with_asan(&c_source, "mem_replace_owned");
+}
+
+/// Owned text that is appended in a loop, reassigned, returned or viewed as a
+/// `str` is freed exactly once, with nothing left behind.
+#[test]
+fn owned_text_is_freed_on_every_path() {
+    let source = include_str!("../../../../tests/corpus/string_concat.aru");
+    let c_source = emit_c(source, "string_concat_owned");
+    run_emitted_c_with_asan(&c_source, "string_concat_owned");
+}
+
+/// A `const` view read from static storage and returned from a function
+/// stays in bounds: its elements outlive every frame.
+#[test]
+fn const_views_read_in_bounds() {
+    let source = include_str!("../../../../tests/corpus/const_views.aru");
+    let c_source = emit_c(source, "const_views");
+    run_emitted_c_with_asan(&c_source, "const_views");
+}
+
+/// A static data image with pointers reads in bounds: every pointer word
+/// holds the address of its object.
+#[test]
+fn static_text_images_read_in_bounds() {
+    let source = include_str!("../../../../tests/corpus/static_text.aru");
+    let c_source = emit_c(source, "static_text");
+    run_emitted_c_with_asan(&c_source, "static_text");
+}
+
+/// A value moved on one path and not on another is destroyed exactly once
+/// on every path: `if c { consume(s) }` used to leak `s` when `c` was false.
+#[test]
+fn conditionally_moved_values_are_destroyed_once() {
+    let source = include_str!("../../../../tests/corpus/conditional_moves.aru");
+    let c_source = emit_c(source, "conditional_moves");
+    run_emitted_c_with_asan(&c_source, "conditional_moves");
+}
+
+/// The alternatives of `p1 | p2` bind one variable; only the alternative
+/// that matched reads its payload, and an owned payload is destroyed once.
+#[test]
+fn or_pattern_bindings_are_destroyed_once() {
+    let source = include_str!("../../../../tests/corpus/guarded_or_patterns.aru");
+    let c_source = emit_c(source, "guarded_or_patterns");
+    run_emitted_c_with_asan(&c_source, "guarded_or_patterns");
+}
+
+/// A range value is a plain struct: storing one allocates nothing.
+#[test]
+fn range_values_allocate_nothing() {
+    let source = include_str!("../../../../tests/corpus/range_values.aru");
+    let c_source = emit_c(source, "range_values");
+    run_emitted_c_with_asan(&c_source, "range_values");
+}
+
+/// A tuple owns its elements: each is destroyed once, whether the tuple is
+/// read in place, destructured or returned.
+#[test]
+fn tuple_elements_are_destroyed_once() {
+    let source = include_str!("../../../../tests/corpus/tuples.aru");
+    let c_source = emit_c(source, "tuples");
+    run_emitted_c_with_asan(&c_source, "tuples");
+}
+
+/// An owned closure passed as a trailing block is freed exactly once.
+#[test]
+fn trailing_block_closures_are_freed_once() {
+    let source = include_str!("../../../../tests/corpus/trailing_blocks.aru");
+    let c_source = emit_c(source, "trailing_blocks");
+    run_emitted_c_with_asan(&c_source, "trailing_blocks");
+}
+
+/// A borrowed temporary (`ref String.from(..)`) is destroyed exactly once.
+#[test]
+fn borrowed_temporaries_are_destroyed_once() {
+    let source = include_str!("../../../../tests/corpus/rvalue_borrows.aru");
+    let c_source = emit_c(source, "rvalue_borrows");
+    run_emitted_c_with_asan(&c_source, "rvalue_borrows");
+}
+
+#[test]
+fn swisstable_tombstone_churn_utf8_and_checked_i32_i64() {
+    let source = r#"
+module tests.cli.ownership.swisstable_churn
+import std.alloc.hash_map as maps
+import std.core.hash as hash
+import std.core.simd as simd
+import std.core.str as text
+
+struct ChurnKey {
+    id: int
+}
+
+public func ChurnKey.eq(self: ref ChurnKey, other: ref ChurnKey): bool {
+    return self.id == other.id
+}
+
+public func ChurnKey.hash<H: hash.Hasher>(self: ref ChurnKey, state: mut ref H): void {
+    state.writeInt(self.id)
+}
+
+func main(): int {
+    // 1) SwissTable tombstone churn at capacity == 16 must clean tombstones in-place without doubling.
+    let mut map = maps.HashMap<ChurnKey, int>.withCapacity(16 as usize)
+    if map.capacity() != (16 as usize) { return 1 }
+    let mut i: int = 0
+    while i < 80 {
+        let k = ChurnKey { id: i }
+        let _old = map.put(k, i * 10)
+        if i >= 10 {
+            let dead = ChurnKey { id: i - 10 }
+            let _rem = map.remove(ref dead)
+        }
+        i = i + 1
+    }
+    if map.capacity() != (16 as usize) || map.len() != (10 as usize) { return 2 }
+    let mut j: int = 70
+    while j < 80 {
+        let query = ChurnKey { id: j }
+        match map.get(ref query) {
+            Some(v) => { if v != j * 10 { return 3 } }
+            None => { return 4 }
+        }
+        j = j + 1
+    }
+
+    // 2) str SIMD + isValidUtf8 RFC 3629 matrix.
+    if !text.isAscii("0123456789abcdef_0123456789abcdef") { return 5 }
+    if text.isAscii("0123456789abcdefá") { return 6 }
+    if !text.eq("0123456789abcdef_0123456789abcdef", "0123456789abcdef_0123456789abcdef") { return 7 }
+    if text.eq("0123456789abcdef_0123456789abcdef", "0123456789abcdef_0123456789abcdeX") { return 8 }
+    if !text.isValidUtf8(text.asBytes(ref "0123456789abcdef_olá_€_🚀")) { return 9 }
+    if text.isValidUtf8(b"0123456789abcdef\x80") { return 10 }
+    if text.isValidUtf8(b"\xC0\xAF") { return 11 }
+    if text.isValidUtf8(b"\xE0\x80\xAF") { return 12 }
+    if text.isValidUtf8(b"\xED\xA0\x80") { return 13 }
+    if text.isValidUtf8(b"\xF4\x90\x80\x80") { return 14 }
+
+    // 3) Inherent i32 / i64 checked arithmetic smoke test.
+    let s32: i32 = (10 as i32)
+    match s32.checkedAdd(20 as i32) {
+        Some(v) => { if v != (30 as i32) { return 15 } }
+        None => { return 16 }
+    }
+    let s64: i64 = (9223372036854775807 as i64)
+    match s64.checkedAdd(1 as i64) {
+        Some(_) => { return 17 }
+        None => {}
+    }
+
+    // 4) Mask8x16 bitmask methods.
+    let a = simd.U8x16.splat(42 as u8)
+    let m = a.eq(simd.U8x16.splat(42 as u8))
+    if m.bitmask() != (65535 as u32) || !m.allTrue() { return 18 }
+    return 0
+}
+"#;
+    let stdout = run(source, "swisstable_churn_utf8_checked");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "swisstable_churn_utf8_checked_c");
+    run_emitted_c_with_asan(&c_source, "swisstable_churn_utf8_checked_asan");
 }

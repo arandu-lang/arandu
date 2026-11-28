@@ -9,8 +9,8 @@ use arandu_parser::ast_pool::ExprId;
 use super::super::types;
 use super::translate::{reintern_type, translate_type};
 use super::{
-    ConcreteHeader, EnumPayloadShape, InterfaceConstraint, ThreadCaptureField, ThreadCaptureRecipe,
-    TypeInfo,
+    Adjustment, ClosureCaptureField, ClosureParam, ClosureRecipe, ConcreteHeader, EnumPayloadShape,
+    InterfaceConstraint, OwningCode, TypeInfo,
 };
 
 /// Where an item-local typing shard sits in its file (RFC 0042): its
@@ -140,6 +140,22 @@ impl TypeInfo {
             .into_iter()
             .filter_map(|(key, expr)| Some((key, ExprId::new(at.slot(expr.as_usize())?))))
             .collect();
+        self.func_param_defaults = std::mem::take(&mut self.func_param_defaults)
+            .into_iter()
+            .filter_map(|(key, default)| {
+                let updated = match default {
+                    super::ParamDefault::LocalExpr { expr, ty } => super::ParamDefault::LocalExpr {
+                        expr: ExprId::new(at.slot(expr.as_usize())?),
+                        ty,
+                    },
+                    other => other,
+                };
+                Some((key, updated))
+            })
+            .collect();
+        for recipe in self.derived_methods.values_mut() {
+            recipe.span = at.span(recipe.span);
+        }
     }
 
     /// Merge an item shard recorded in item-local coordinates, placing its
@@ -184,7 +200,37 @@ impl TypeInfo {
     ) {
         self.merge_symbol_contracts(other, &remap, at);
         self.merge_concrete_headers(other, &remap, shared_headers);
-        self.merge_thread_captures(other, &remap);
+        self.merge_closures(other, &remap);
+        for (span, adjustment) in &other.adjustments {
+            let kind = match &adjustment.kind {
+                super::AdjustmentKind::Call {
+                    function,
+                    type_args,
+                } => super::AdjustmentKind::Call {
+                    function: remap(*function),
+                    type_args: type_args
+                        .iter()
+                        .map(|&ty| reintern_type(self, other, ty))
+                        .collect(),
+                },
+                super::AdjustmentKind::Unsize => super::AdjustmentKind::Unsize,
+                super::AdjustmentKind::TextView => super::AdjustmentKind::TextView,
+                super::AdjustmentKind::VecView => super::AdjustmentKind::VecView,
+            };
+            let adjusted = Adjustment {
+                kind,
+                from: reintern_type(self, other, adjustment.from),
+                to: reintern_type(self, other, adjustment.to),
+            };
+            self.adjustments.insert(*span, adjusted);
+        }
+        for (span, temporary) in &other.closure_temporaries {
+            let temporary = super::ClosureTemporary {
+                local: remap(temporary.local),
+                ty: reintern_type(self, other, temporary.ty),
+            };
+            self.closure_temporaries.insert(*span, temporary);
+        }
         // Fast path: empty body shards / empty import stubs.
         if context_shard_is_empty(other) {
             return;
@@ -200,6 +246,12 @@ impl TypeInfo {
         // Symbol safety contracts are independent of expression-type shards.
         self.unsafe_functions
             .extend(other.unsafe_functions.iter().copied().map(&remap));
+        self.exported_functions
+            .extend(other.exported_functions.iter().copied().map(&remap));
+        self.cold_functions
+            .extend(other.cold_functions.iter().copied().map(&remap));
+        self.variadic_functions
+            .extend(other.variadic_functions.iter().copied().map(&remap));
         for (&symbol, &effects) in &other.function_effects {
             self.function_effects.insert(remap(symbol), effects);
         }
@@ -268,47 +320,57 @@ impl TypeInfo {
         }
     }
 
-    fn merge_thread_captures<F>(&mut self, other: &TypeInfo, remap: &F)
+    pub(super) fn merge_closures<F>(&mut self, other: &TypeInfo, remap: &F)
     where
         F: Fn(SymbolId) -> SymbolId,
     {
-        if !other.thread_captures.is_empty() {
-            for (span, recipe) in &other.thread_captures {
-                let fields = recipe
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let ty = reintern_type(self, other, field.ty);
-                        ThreadCaptureField {
-                            name: field.name.clone(),
-                            symbol: remap(field.symbol),
-                            source: remap(field.source),
-                            ty,
-                            span: field.span,
-                        }
-                    })
-                    .collect();
-                let return_type = reintern_type(self, other, recipe.return_type);
-                let struct_symbol = remap(recipe.struct_symbol);
-                let run_symbol = remap(recipe.run_symbol);
-                let self_param = remap(recipe.self_param);
-                let arg_param = remap(recipe.arg_param);
-                let host_name = recipe.host_name.clone();
-                let lambda_span = recipe.lambda_span;
-                self.thread_captures.insert(
-                    *span,
-                    ThreadCaptureRecipe {
-                        lambda_span,
-                        struct_symbol,
-                        run_symbol,
-                        self_param,
-                        arg_param,
-                        fields,
-                        return_type,
-                        host_name,
-                    },
-                );
-            }
+        for (span, recipe) in &other.closures {
+            let fields = recipe
+                .fields
+                .iter()
+                .map(|field| ClosureCaptureField {
+                    name: field.name.clone(),
+                    symbol: remap(field.symbol),
+                    source: remap(field.source),
+                    ty: reintern_type(self, other, field.ty),
+                    field_ty: reintern_type(self, other, field.field_ty),
+                    span: field.span,
+                    mode: field.mode,
+                })
+                .collect();
+            let params = recipe
+                .params
+                .iter()
+                .map(|param| ClosureParam {
+                    symbol: remap(param.symbol),
+                    ty: reintern_type(self, other, param.ty),
+                })
+                .collect();
+            let return_type = reintern_type(self, other, recipe.return_type);
+            let owning = recipe.owning.as_ref().map(|code| OwningCode {
+                symbol: remap(code.symbol),
+                env_param: remap(code.env_param),
+                params: code.params.iter().copied().map(remap).collect(),
+                host_name: code.host_name.clone(),
+                closure_ty: reintern_type(self, other, code.closure_ty),
+            });
+            self.closures.insert(
+                *span,
+                ClosureRecipe {
+                    lambda_span: recipe.lambda_span,
+                    struct_symbol: remap(recipe.struct_symbol),
+                    struct_name: recipe.struct_name.clone(),
+                    method_symbol: remap(recipe.method_symbol),
+                    method_name: recipe.method_name.clone(),
+                    self_param: remap(recipe.self_param),
+                    params,
+                    fields,
+                    return_type,
+                    host_name: recipe.host_name.clone(),
+                    adapts: recipe.adapts.map(remap),
+                    owning,
+                },
+            );
         }
     }
 
@@ -403,6 +465,15 @@ impl TypeInfo {
             self.generic_defaults
                 .insert(*symbol, self.type_interner.intern(translated));
         }
+        for (symbol, &bound) in &other.callback_bounds {
+            if shared_headers && self.callback_bounds.contains_key(symbol) {
+                continue;
+            }
+            let ty = other.type_interner.resolve(bound);
+            let translated = translate_type(&ty, &other.type_interner, &mut self.type_interner);
+            self.callback_bounds
+                .insert(*symbol, self.type_interner.intern(translated));
+        }
         for (symbol, constraints) in &other.param_constraints {
             if shared_headers && self.param_constraints.contains_key(symbol) {
                 continue;
@@ -448,6 +519,7 @@ impl TypeInfo {
             );
         }
         self.struct_repr_c.extend(&other.struct_repr_c);
+        self.struct_unions.extend(&other.struct_unions);
         for ((sym, name), &expr_id) in &other.struct_field_defaults {
             // A default of another file has no slot in this one.
             if let Some(slot) = at.slot(expr_id.as_usize()) {
@@ -455,8 +527,73 @@ impl TypeInfo {
                     .insert((remap(*sym), name.clone()), ExprId::new(slot));
             }
         }
+        for ((sym, index), default) in &other.func_param_defaults {
+            let translated = match default {
+                super::ParamDefault::LocalExpr { expr, ty } => {
+                    let Some(slot) = at.slot(expr.as_usize()) else {
+                        continue;
+                    };
+                    super::ParamDefault::LocalExpr {
+                        expr: ExprId::new(slot),
+                        ty: reintern_type(self, other, *ty),
+                    }
+                }
+                super::ParamDefault::Int { raw, ty } => super::ParamDefault::Int {
+                    raw: raw.clone(),
+                    ty: reintern_type(self, other, *ty),
+                },
+                super::ParamDefault::Float { raw, ty } => super::ParamDefault::Float {
+                    raw: raw.clone(),
+                    ty: reintern_type(self, other, *ty),
+                },
+                super::ParamDefault::Bool(b) => super::ParamDefault::Bool(*b),
+                super::ParamDefault::Str(s) => super::ParamDefault::Str(s.clone()),
+                super::ParamDefault::Char(c) => super::ParamDefault::Char(c.clone()),
+                super::ParamDefault::Nil { ty } => super::ParamDefault::Nil {
+                    ty: reintern_type(self, other, *ty),
+                },
+            };
+            self.func_param_defaults
+                .insert((remap(*sym), *index), translated);
+        }
+        for (&sym, recipe) in &other.derived_methods {
+            let mapped = remap(sym);
+            let self_param_ty = reintern_type(self, other, recipe.self_param_ty);
+            let explicit_param_tys = recipe
+                .explicit_param_tys
+                .iter()
+                .map(|&ty| reintern_type(self, other, ty))
+                .collect();
+            let return_ty = reintern_type(self, other, recipe.return_ty);
+            self.derived_methods.insert(
+                mapped,
+                super::DeriveRecipe {
+                    type_symbol: remap(recipe.type_symbol),
+                    method_symbol: remap(recipe.method_symbol),
+                    kind: recipe.kind,
+                    self_param_ty,
+                    explicit_param_tys,
+                    return_ty,
+                    param_symbols: recipe.param_symbols.iter().map(|&p| remap(p)).collect(),
+                    is_copy: recipe.is_copy,
+                    span: at.span(recipe.span),
+                },
+            );
+        }
         self.interior_mutable_types
             .extend(other.interior_mutable_types.iter().copied().map(&remap));
+        self.non_copy_types
+            .extend(other.non_copy_types.iter().copied().map(&remap));
+        self.non_send_types
+            .extend(other.non_send_types.iter().copied().map(&remap));
+        self.non_sync_types
+            .extend(other.non_sync_types.iter().copied().map(&remap));
+        self.unsafe_send_types
+            .extend(other.unsafe_send_types.iter().copied().map(&remap));
+        self.unsafe_sync_types
+            .extend(other.unsafe_sync_types.iter().copied().map(&remap));
+        self.non_null_types
+            .extend(other.non_null_types.iter().copied().map(&remap));
     }
 
     fn merge_expression_tables(
@@ -530,9 +667,20 @@ fn context_shard_is_empty(other: &TypeInfo) -> bool {
         && other.destructor_instances.is_empty()
         && other.generic_params.is_empty()
         && other.unsafe_functions.is_empty()
+        && other.exported_functions.is_empty()
+        && other.cold_functions.is_empty()
+        && other.variadic_functions.is_empty()
         && other.generic_defaults.is_empty()
+        && other.callback_bounds.is_empty()
         && other.param_constraints.is_empty()
         && other.interfaces.is_empty()
         && other.struct_repr_c.is_empty()
+        && other.struct_unions.is_empty()
+        && other.non_copy_types.is_empty()
+        && other.non_send_types.is_empty()
+        && other.non_sync_types.is_empty()
+        && other.unsafe_send_types.is_empty()
+        && other.unsafe_sync_types.is_empty()
+        && other.non_null_types.is_empty()
         && other.expr_types.iter().all(|s| s.is_none())
 }

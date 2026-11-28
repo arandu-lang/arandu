@@ -9,7 +9,7 @@ use arandu_parser::ast_pool::{ExprId, ExprKind};
 use super::super::TypeChecker;
 use super::super::types::{ArType, TypeId};
 
-pub(crate) use call::synth_method_call;
+pub(crate) use call::{Receiver, synth_method_call};
 
 /// Reject an implicit exclusive borrow of an immutable value receiver.
 ///
@@ -27,6 +27,53 @@ pub(crate) fn validate_exclusive_receiver_autoref(
     };
     if !checker.unify_ids(inner, bare_actual) {
         return;
+    }
+
+    if let ExprKind::Index {
+        base: container,
+        index,
+    } = checker.pool.expr(base)
+        && let Some(raw_container_ty_id) = checker.type_info.expr_type_id(*container)
+    {
+        let mut peeled_id = raw_container_ty_id;
+        for _ in 0..8 {
+            match checker.resolve(peeled_id) {
+                ArType::Ref(i) | ArType::RefMut(i) => peeled_id = i,
+                _ => break,
+            }
+        }
+        let peeled_ty = checker.resolve(peeled_id);
+        if !super::field::is_builtin_index_base(&peeled_ty, &checker.symbols) {
+            let idx_ty_id = checker
+                .type_info
+                .expr_type_id(*index)
+                .unwrap_or_else(|| checker.intern(ArType::Error));
+            if super::field::resolve_trait_index(
+                checker,
+                &peeled_ty,
+                Some(*index),
+                idx_ty_id,
+                true,
+                checker.pool.expr_span(*container),
+                checker.pool.expr_span(*index),
+            )
+            .is_none()
+            {
+                let ty_disp = peeled_ty.display(&checker.symbols, &checker.type_info.type_interner);
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T026CannotAssignImmutable,
+                        format!("cannot mutably index `{ty_disp}`: missing `IndexMut` (`indexMut`) implementation"),
+                        checker.pool.expr_span(base),
+                    )
+                    .with_label(
+                        checker.pool.expr_span(base),
+                        "exclusive access to indexed element requires `IndexMut`",
+                    ),
+                );
+                return;
+            }
+        }
     }
 
     let Some(symbol_id) = receiver_root_symbol(checker, base) else {
@@ -97,10 +144,6 @@ fn instantiate_method_sig_for_result_option(
         ArType::Option(inner) => vec![checker.resolve(inner)],
         ArType::Slice(elem) | ArType::MutSlice(elem) => vec![checker.resolve(elem)],
         ArType::Ptr(inner) => vec![checker.resolve(inner)],
-        ArType::Nullable(inner) => match checker.resolve(inner) {
-            ArType::Ptr(elem) => vec![checker.resolve(elem)],
-            _ => return (params, ret),
-        },
         _ => return (params, ret),
     };
 
@@ -145,7 +188,7 @@ fn instantiate_method_sig_for_result_option(
     (new_params, new_ret)
 }
 
-fn bind_receiver_type_arg(
+pub(super) fn bind_receiver_type_arg(
     checker: &TypeChecker<'_>,
     formal_id: TypeId,
     actual_id: TypeId,
@@ -173,8 +216,7 @@ fn bind_receiver_type_arg(
         | (ArType::MutSlice(f_inner), ArType::MutSlice(a_inner))
         | (ArType::Ref(f_inner), ArType::Ref(a_inner))
         | (ArType::RefMut(f_inner), ArType::RefMut(a_inner))
-        | (ArType::Ptr(f_inner), ArType::Ptr(a_inner))
-        | (ArType::Nullable(f_inner), ArType::Nullable(a_inner)) => {
+        | (ArType::Ptr(f_inner), ArType::Ptr(a_inner)) => {
             bind_receiver_type_arg(
                 checker,
                 *f_inner,
@@ -221,7 +263,7 @@ fn is_receiver_type_formal(checker: &TypeChecker<'_>, tid: TypeId, base_id: Type
     }
 }
 
-pub(super) fn contains_generic_params(
+pub(crate) fn contains_generic_params(
     ty: &arandu_middle::types::ArType,
     gp: &[arandu_middle::SymbolId],
     interner: &arandu_middle::types::TypeInterner,
@@ -245,8 +287,7 @@ pub(super) fn contains_generic_params(
                 .any(|&p| contains_generic_params(&interner.resolve(p), gp, interner))
                 || contains_generic_params(&interner.resolve(*ret), gp, interner)
         }
-        ArType::Nullable(inner)
-        | ArType::Slice(inner)
+        ArType::Slice(inner)
         | ArType::MutSlice(inner)
         | ArType::Ptr(inner)
         | ArType::Ref(inner)

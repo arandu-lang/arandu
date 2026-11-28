@@ -4,9 +4,10 @@
 //!
 //! `readToString` reads a whole file into an owned buffer; `readDir` returns a
 //! directory snapshot whose names borrow its storage. `fileExists` performs a
-//! boolean existence check. `OpenOptions`, `File`, and `Metadata` describe
-//! handles and file properties, but this module does not yet expose public
-//! functions to open, write, create, remove, or query metadata.
+//! boolean existence check. `OpenOptions` and `File` describe handles, while
+//! `Dir` exposes `openFile`, `openDir`, `createDir`, `removeFile`, `removeDir`,
+//! and `writeFile`. `Metadata` defines property accessors, but there is no
+//! public operation that queries metadata for an arbitrary path.
 //!
 //! Reading operations report host errors as `Result<T, io.IoError>`. The
 //! boolean `fileExists` does not distinguish a missing path from other host
@@ -143,14 +144,38 @@ public func File.write(self: ref File, buf: ptr[u8], count: usize): int {
     }
 }
 
-/// Closes this file descriptor.
-public func File.close(self: mut ref File): void {
-    if self.fd >= 0 {
+/// Writes all bytes of `bytes` to this file.
+///
+/// Returns the number of bytes written, or the first `io.IoError` reported by
+/// the host write bridge. A short write is retried until the slice is drained.
+public func File.writeAll(self: ref File, bytes: []u8): Result<usize, io.IoError> {
+    let total = bytes.len
+    let mut written: usize = 0
+    while written < total {
         unsafe {
+            let p = mem.ptrOffset<u8>(bytes.asPtr(), written as isize)
+            let n = self.write(p, total - written)
+            if n <= 0 {
+                return Result.Err(io.IoError.fromPlatform(n))
+            }
+            written = written + (n as usize)
+        }
+    }
+    return Result.Ok(written)
+}
+
+/// Closes this file descriptor.
+public func File.close(self: mut ref File): Result<void, io.IoError> {
+    if self.fd >= 0 {
+        let code = unsafe {
             ar_fs_close(self.fd)
         }
         self.fd = -1
+        if code != 0 {
+            return Result.Err(io.IoError.fromPlatform(code))
+        }
     }
+    return nil
 }
 
 /// Destroys the file descriptor on scope exit if not already closed.
@@ -320,13 +345,8 @@ func readU32At(base: ptr[u8], byteOff: usize): u32 {
 
 /// Returns the number of entries in the listing.
 ///
-/// The count reflects the snapshot taken by `readDir`, not later changes to
-/// the directory. This operation takes O(1) time and does not allocate.
-public func DirListing.count(self: ref DirListing): usize {
-    return self.count
-}
-
-/// Returns the number of entries in the listing.
+/// Returns the number of entries in the snapshot taken by `readDir`, not later
+/// changes to the directory. This operation takes O(1) time and does not allocate.
 public func DirListing.len(self: ref DirListing): usize {
     return self.count
 }
@@ -351,6 +371,8 @@ public func DirListing.isDir(self: ref DirListing, index: usize): bool {
 ///
 /// The view borrows `self`; the bytes remain valid while the listing owns its
 /// blob. This method does not allocate or decode the name as text.
+/// Unix hosts preserve the exact filename bytes. Windows hosts return the
+/// UTF-8 bytes of the lossy conversion of the native filename.
 public func DirListing.name(self: ref DirListing, index: usize): []u8 {
     if index >= self.count {
         unsafe {
@@ -372,7 +394,9 @@ public func DirListing.name(self: ref DirListing, index: usize): []u8 {
 ///
 /// Each entry has its own stable descriptor in the listing blob. Multiple
 /// name views may coexist; all become invalid when the listing is closed or dropped.
-/// This method does not allocate or mutate the listing.
+/// Invalid Unix filename bytes are replaced with U+FFFD in this text view;
+/// use `name` when the exact native bytes are needed. This method does not
+/// allocate or mutate the listing.
 public func DirListing.nameStr(self: ref DirListing, index: usize): ref str {
     if index >= self.count {
         unsafe {
@@ -382,13 +406,14 @@ public func DirListing.nameStr(self: ref DirListing, index: usize): ref str {
     unsafe {
         let descriptors = mem.ptrOffset<u8>(self.data, (8 + self.count * 16) as isize) as ptr[DirNameDescriptor]
         let views = intrinsics.sliceFromRaw<DirListing, DirNameDescriptor>(self, descriptors, self.count)
-        return intrinsics.strView<DirNameDescriptor>(&views[index])
+        return intrinsics.strView<DirNameDescriptor>(ref views[index])
     }
 }
 
 /// Idempotently closes and releases the directory listing snapshot.
-public func DirListing.close(self: mut ref DirListing): void {
+public func DirListing.close(self: mut ref DirListing): Result<void, io.IoError> {
     destroyListing(self)
+    return nil
 }
 
 /// Automatic destructor invoked when an owned `DirListing` leaves scope.
@@ -592,21 +617,9 @@ public func Dir.writeBytes(self: ref Dir, subpath: str, bytes: []u8): Result<usi
     let .Ok(mut file) = self.openFile(subpath, OpenOptions.writeOnly()) else {
         return Result.Err(io.IoError.new(io.IoErrorKind.PermissionDenied, -1))
     }
-    let total = bytes.len
-    let mut written: usize = 0
-    while written < total {
-        unsafe {
-            let p = mem.ptrOffset<u8>(bytes.asPtr(), written as isize)
-            let n = file.write(p, total - written)
-            if n <= 0 {
-                file.close()
-                return Result.Err(io.IoError.new(io.IoErrorKind.Other, n))
-            }
-            written = written + (n as usize)
-        }
-    }
-    file.close()
-    return Result.Ok(written)
+    let result = file.writeAll(bytes)
+    let _, _ = file.close()
+    return result
 }
 
 /// Writes all bytes of `content` to `subpath` relative to this directory descriptor,
@@ -615,31 +628,40 @@ public func Dir.writeFile(self: ref Dir, subpath: str, content: str): Result<usi
     return self.writeBytes(subpath, intrinsics.strBytes(content))
 }
 
-/// Writes `bytes` to `path` (relative to the current directory or absolute), creating or truncating the file.
+/// Writes `bytes` to a normal relative path under the current directory,
+/// creating or truncating the file. Absolute paths and `.`/`..` components
+/// are rejected by the directory capability. On macOS, BSD, and Windows, use
+/// one path component per call; open each child directory explicitly for
+/// nested paths. Use `Dir.open` to write beneath another directory.
 @Effects(FileWrite, Foreign)
 public func writeBytes(path: str, bytes: []u8): Result<usize, io.IoError> {
     let .Ok(mut dir) = Dir.open(".") else {
         return Result.Err(io.IoError.new(io.IoErrorKind.PermissionDenied, -1))
     }
     let res = dir.writeBytes(path, bytes)
-    dir.close()
+    let _, _ = dir.close()
     return res
 }
 
-/// Writes `content` to `path` (relative to the current directory or absolute), creating or truncating the file.
+/// Writes `content` to a normal relative path under the current directory,
+/// creating or truncating the file. See `writeBytes` for path restrictions.
 @Effects(FileWrite, Foreign)
 public func write(path: str, content: str): Result<usize, io.IoError> {
     return writeBytes(path, intrinsics.strBytes(content))
 }
 
 /// Closes this directory capability handle.
-public func Dir.close(self: mut ref Dir): void {
+public func Dir.close(self: mut ref Dir): Result<void, io.IoError> {
     if self.fd >= 0 {
-        unsafe {
+        let code = unsafe {
             ar_fs_close(self.fd)
         }
         self.fd = -1
+        if code != 0 {
+            return Result.Err(io.IoError.fromPlatform(code))
+        }
     }
+    return nil
 }
 
 /// Automatic destructor ensuring the directory descriptor is closed on scope exit.

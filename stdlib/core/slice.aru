@@ -14,11 +14,11 @@
 //! ## Example
 //!
 //! ```arandu
-//! import std.core.slice as slice
+//! import std.core.slice
 //!
 //! let arr = [10, 20, 30, 40, 50]
-//! let n = slice.len<i32>(arr)               // 5
-//! let sub = slice.subslice<i32>(arr, 1, 2)  // Some([20, 30])
+//! let n = arr.len()               // 5
+//! let sub = arr.subslice(1, 2)    // Some([20, 30])
 //! ```
 //!
 //! ## Platform
@@ -219,48 +219,7 @@ public func splitAt<T>(s: []T, mid: usize): Option<Split<T>> {
     }
 }
 
-/// An exclusive borrowed view. Unlike []T, this value cannot be copied: its
-/// owner is mutably borrowed until the view and all element borrows expire.
-/// This representation does not allocate and does not own/drop the elements.
-public struct MutableSlice<Owner, T> {
-    private owner: mut ref Owner,
-    private data: ptr[T],
-    private count: usize,
-}
-
-/// Builds an exclusive view tied to an owner borrow.
-/// Safety: data points to count initialized, scalar-aligned T elements wholly
-/// owned by owner. No other accesses may alias these elements for the view's
-/// lifetime. The full byte range and every element offset must fit isize.
-/// A zero-length view may use null; no element access is then permitted.
-@Unsafe
-public func MutableSlice.fromRaw<Owner, T>(owner: mut ref Owner, data: ptr[T], count: usize): MutableSlice<Owner, T> {
-    return MutableSlice<Owner, T> { owner: owner, data: data, count: count }
-}
-
-/// Returns the initialized element count without accessing the buffer.
-public func MutableSlice.len<Owner, T>(self: ref MutableSlice<Owner, T>): usize {
-    return self.count
-}
-
-/// Borrows one element while keeping its exclusive view borrowed.
-public func MutableSlice.get<Owner, T>(self: ref MutableSlice<Owner, T>, index: usize): Option<ref T> {
-    if index >= self.count { return Option.None }
-    unsafe {
-        let sharedView = intrinsics.sliceFromRaw<MutableSlice<Owner, T>, T>(self, self.data, self.count)
-        return get<T>(sharedView, index)
-    }
-}
-
-/// Replaces a Copy element. A rejected index performs no memory access.
-public func MutableSlice.set<Owner, T: marker.Copy>(self: mut ref MutableSlice<Owner, T>, index: usize, value: T): bool {
-    if index >= self.count { return false }
-    unsafe {
-        let element = mem.ptrOffset<T>(self.data, index as isize)
-        mem.ptrWrite<T>(element, value)
-    }
-    return true
-}
+// (MutableSlice retired in 0.3.1: use `mut []T` directly with slice methods.)
 
 // =========================================================================
 // Inherent methods on `[]T` (`slice.*`)
@@ -299,6 +258,105 @@ public func slice.last<T>(self: []T): Option<ref T> {
 /// Returns a checked subview starting at `start` with length `count`, or `Option.None` if out of bounds (`s.subslice(start, count)`).
 public func slice.subslice<T>(self: []T, start: usize, count: usize): Option<[]T> {
     return subslice<T>(self, start, count)
+}
+
+/// Returns a mutable reference to the element at `index`, or `Option.None` if out of bounds.
+public func getMut<T>(s: mut ref mut []T, index: usize): Option<mut ref T> {
+    if index >= intrinsics.mutSliceLen<T>(*s) {
+        return Option.None
+    }
+    return Option.Some(mut ref (*s)[index])
+}
+
+/// Returns a mutable reference to the first element, or `Option.None` if the slice is empty.
+public func firstMut<T>(s: mut ref mut []T): Option<mut ref T> {
+    return getMut<T>(s, 0 as usize)
+}
+
+/// Returns a mutable reference to the last element, or `Option.None` if the slice is empty.
+public func lastMut<T>(s: mut ref mut []T): Option<mut ref T> {
+    let n = intrinsics.mutSliceLen<T>(*s)
+    if n == (0 as usize) {
+        return Option.None
+    }
+    return getMut<T>(s, n - (1 as usize))
+}
+
+/// Swaps the elements at indices `i` and `j`, returning `false` if either index is out of bounds.
+public func swap<T>(s: mut ref mut []T, i: usize, j: usize): bool {
+    let n = intrinsics.mutSliceLen<T>(*s)
+    if i >= n || j >= n {
+        return false
+    }
+    if i != j {
+        unsafe {
+            let base = intrinsics.sliceData<T>(*s)
+            let p1 = mem.ptrOffset<T>(base, i as isize)
+            let p2 = mem.ptrOffset<T>(base, j as isize)
+            let tmp = mem.ptrRead<T>(p1)
+            mem.ptrWrite<T>(p1, mem.ptrRead<T>(p2))
+            mem.ptrWrite<T>(p2, tmp)
+        }
+    }
+    return true
+}
+
+/// Reverses the elements of the mutable slice in place.
+public func reverse<T>(s: mut ref mut []T): void {
+    let n = intrinsics.mutSliceLen<T>(*s)
+    if n <= (1 as usize) {
+        return
+    }
+    let mut lo: usize = 0 as usize
+    let mut hi: usize = n - (1 as usize)
+    while lo < hi {
+        swap<T>(s, lo, hi)
+        lo += 1 as usize
+        hi -= 1 as usize
+    }
+}
+
+/// Fills every element in the mutable slice with `value`.
+public func fill<T: marker.Copy>(s: mut ref mut []T, value: T): void {
+    let n = intrinsics.mutSliceLen<T>(*s)
+    let mut i: usize = 0 as usize
+    while i < n {
+        unsafe {
+            let p = mem.ptrOffset<T>(intrinsics.sliceData<T>(*s), i as isize)
+            mem.ptrWrite<T>(p, value)
+        }
+        i += 1 as usize
+    }
+}
+
+/// Returns a mutable reference to the element at `index`, or `Option.None` if out of bounds (`s.getMut(index)`).
+public func slice.getMut<T>(self: mut ref mut []T, index: usize): Option<mut ref T> {
+    return getMut<T>(self, index)
+}
+
+/// Returns a mutable reference to the first element, or `Option.None` if empty (`s.firstMut()`).
+public func slice.firstMut<T>(self: mut ref mut []T): Option<mut ref T> {
+    return firstMut<T>(self)
+}
+
+/// Returns a mutable reference to the last element, or `Option.None` if empty (`s.lastMut()`).
+public func slice.lastMut<T>(self: mut ref mut []T): Option<mut ref T> {
+    return lastMut<T>(self)
+}
+
+/// Swaps two elements in place (`s.swap(i, j)`).
+public func slice.swap<T>(self: mut ref mut []T, i: usize, j: usize): bool {
+    return swap<T>(self, i, j)
+}
+
+/// Reverses all elements in place (`s.reverse()`).
+public func slice.reverse<T>(self: mut ref mut []T): void {
+    reverse<T>(self)
+}
+
+/// Fills all elements in the mutable slice with `value` (`s.fill(value)`).
+public func slice.fill<T: marker.Copy>(self: mut ref mut []T, value: T): void {
+    fill<T>(self, value)
 }
 
 /// Reads a little-endian `u16` at byte offset `offset`, or returns `Option.None` if out of bounds.
@@ -352,4 +410,80 @@ public func slice.readU32Le(self: []u8, offset: usize): Option<u32> {
 /// Reads a little-endian `u64` at byte offset `offset` (`bytes.readU64Le(offset)`).
 public func slice.readU64Le(self: []u8, offset: usize): Option<u64> {
     return readU64Le(self, offset)
+}
+
+/// Calls `f` on each element in order.
+public func forEach<T>(s: []T, f: (ref T) -> void): void {
+    let mut i: usize = 0
+    let len = intrinsics.sliceLen<T>(s)
+    while i < len {
+        if let Some(item) = get<T>(s, i) {
+            f(item)
+        }
+        i += 1
+    }
+}
+
+/// Accumulates values by calling `f` on each element and the running accumulator.
+public func fold<T, R>(s: []T, initial: R, f: (R, ref T) -> R): R {
+    let mut acc = initial
+    let len = intrinsics.sliceLen<T>(s)
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = get<T>(s, i) {
+            acc = f(acc, item)
+        }
+        i += 1
+    }
+    return acc
+}
+
+/// Returns `true` if any element in the slice satisfies `f`.
+public func anyMatch<T>(s: []T, f: (ref T) -> bool): bool {
+    let len = intrinsics.sliceLen<T>(s)
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = get<T>(s, i) {
+            if f(item) {
+                return true
+            }
+        }
+        i += 1
+    }
+    return false
+}
+
+/// Returns `true` if all elements in the slice satisfy `f`.
+public func allMatch<T>(s: []T, f: (ref T) -> bool): bool {
+    let len = intrinsics.sliceLen<T>(s)
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = get<T>(s, i) {
+            if !f(item) {
+                return false
+            }
+        }
+        i += 1
+    }
+    return true
+}
+
+/// Calls `f` on each element in order.
+public func slice.forEach<T>(self: []T, f: (ref T) -> void): void {
+    forEach<T>(self, f)
+}
+
+/// Accumulates values by calling `f` on each element and the running accumulator.
+public func slice.fold<T, R>(self: []T, initial: R, f: (R, ref T) -> R): R {
+    return fold<T, R>(self, initial, f)
+}
+
+/// Returns `true` if any element in the slice satisfies `f`.
+public func slice.anyMatch<T>(self: []T, f: (ref T) -> bool): bool {
+    return anyMatch<T>(self, f)
+}
+
+/// Returns `true` if all elements in the slice satisfy `f`.
+public func slice.allMatch<T>(self: []T, f: (ref T) -> bool): bool {
+    return allMatch<T>(self, f)
 }

@@ -31,6 +31,7 @@ pub fn format_source(source: &str) -> String {
         return source.to_owned();
     }
     let tree = parse_syntax(source);
+    let has_sensitive_string = has_sensitive_string_token(&tree, 0, u32::MAX);
     if tree.lex_diagnostics().is_empty() {
         if let Ok(_prog) = lower_syntax_to_program(&tree, 0) {
             let pretty = format_from_tree(&tree);
@@ -38,6 +39,9 @@ pub fn format_source(source: &str) -> String {
                 return pretty;
             }
         }
+    }
+    if has_sensitive_string {
+        return source.to_owned();
     }
     normalize_whitespace(source)
 }
@@ -92,6 +96,9 @@ pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit
         let s = e - source[s..e].trim_start_matches(is_arandu_ws).len();
         let item_start = s as u32;
         let item_src = &source[s..e];
+        if has_sensitive_string_token(&tree, item_start, item_end) {
+            continue;
+        }
         let mut formatted = format_item_snippet(item_src);
         if !item_src.ends_with('\n') {
             formatted = formatted
@@ -189,6 +196,22 @@ fn parses_clean(source: &str) -> bool {
     lower_syntax_to_program(&tree, 0).is_ok() && tree.lex_diagnostics().is_empty()
 }
 
+/// The line formatter cannot safely rewrite literal contents: raw strings
+/// preserve every byte, and multiline strings can span lines. Keep any item
+/// containing one of these tokens verbatim until formatting is token-aware.
+fn has_sensitive_string_token(tree: &SyntaxTree, start: u32, end: u32) -> bool {
+    tree.tokens().iter().any(|token| {
+        token.start >= start
+            && token.start < end
+            && matches!(
+                token.kind,
+                arandu_lexer::TokenKind::RawString
+                    | arandu_lexer::TokenKind::MultilineStringStart
+                    | arandu_lexer::TokenKind::MultilineStringEnd
+            )
+    })
+}
+
 /// Pretty-print from green top-level items.
 fn format_from_tree(tree: &SyntaxTree) -> String {
     let source = tree.text();
@@ -213,7 +236,15 @@ fn format_from_tree(tree: &SyntaxTree) -> String {
             out.push_str(&normalize_whitespace(trivia));
         }
         let item_src = &source[s..e];
-        out.push_str(&reindent_item(item_src));
+        if has_sensitive_string_token(
+            tree,
+            u32::try_from(s).unwrap_or(u32::MAX),
+            u32::try_from(e).unwrap_or(u32::MAX),
+        ) {
+            out.push_str(item_src);
+        } else {
+            out.push_str(&reindent_item(item_src));
+        }
         // An explicit `;` terminating the item on the same line is not an
         // item node; keep it on the item's line instead of emitting it as a
         // standalone trivia line (which inserts an extra empty statement).
@@ -310,6 +341,9 @@ fn reindent_item(item_src: &str) -> String {
                         in_string = !in_string;
                     }
                 }
+                '\'' if !in_string && !in_char && starts_label(chars.clone()) => {
+                    skip_label(&mut chars);
+                }
                 '\'' => {
                     if !in_string {
                         in_char = !in_char;
@@ -383,6 +417,16 @@ fn format_colons(line: &str, block_comment: &mut bool) -> String {
                 in_string = true;
                 out.push(ch);
             }
+            '\'' if starts_label(chars.clone()) => {
+                out.push(ch);
+                while let Some(&next) = chars.peek() {
+                    if !(next.is_ascii_alphanumeric() || next == '_') {
+                        break;
+                    }
+                    out.push(next);
+                    chars.next();
+                }
+            }
             '\'' => {
                 in_char = true;
                 out.push(ch);
@@ -423,6 +467,26 @@ fn format_colons(line: &str, block_comment: &mut bool) -> String {
 
     *block_comment = in_block;
     out
+}
+
+/// After a `'`: a loop label (`'outer`) rather than a char literal, by the
+/// lexer's rule: an identifier start not followed by the closing `'`.
+fn starts_label(mut rest: impl Iterator<Item = char>) -> bool {
+    match (rest.next(), rest.next()) {
+        (Some(first), second) => {
+            (first.is_ascii_alphabetic() || first == '_') && second != Some('\'')
+        }
+        (None, _) => false,
+    }
+}
+
+fn skip_label(chars: &mut std::iter::Peekable<impl Iterator<Item = char>>) {
+    while chars
+        .peek()
+        .is_some_and(|next| next.is_ascii_alphanumeric() || *next == '_')
+    {
+        chars.next();
+    }
 }
 
 fn trim_trailing_horizontal_ws(out: &mut String) {
@@ -588,6 +652,17 @@ mod tests {
     }
 
     #[test]
+    fn typed_holes_keep_their_reason_and_format_idempotently() {
+        let source = "func area(w:int):int{let unknown=todo\nreturn todo(\"multiply ✓\")+todo()}\n";
+        let formatted = format_source(source);
+        assert!(parses_clean(&formatted), "{formatted}");
+        assert_eq!(format_source(&formatted), formatted);
+        for hole in ["unknown", "todo(\"multiply ✓\")", "todo()"] {
+            assert!(formatted.contains(hole), "{hole} in {formatted}");
+        }
+    }
+
+    #[test]
     fn computed_generic_arguments_format_without_changing_the_ast() {
         let source = "func count<comptime N:uint>():uint{return N}\nfunc main():uint{return count<comptime(20+22)>()}\n";
         let formatted = format_source(source);
@@ -647,6 +722,17 @@ mod tests {
         assert_eq!(format_source(&source), source);
         assert!(format_edits(&source).is_empty());
         assert!(format_edits_in_range(&source, 0, 1).is_empty());
+    }
+
+    #[test]
+    fn labeled_loops_keep_their_block_depth() {
+        let source = "func main(): int {\n'outer: while true {\nlet c = 'x'\nif c == 'y' {\ncontinue 'outer\n}\nbreak 'outer\n}\nreturn 0\n}\n";
+        let out = format_source(source);
+        assert_eq!(
+            out,
+            "func main(): int {\n    'outer: while true {\n        let c = 'x'\n        if c == 'y' {\n            continue 'outer\n        }\n        break 'outer\n    }\n    return 0\n}\n"
+        );
+        assert_eq!(format_source(&out), out);
     }
 
     #[test]
@@ -927,6 +1013,18 @@ mod tests {
         assert!(out.contains("func f(): int{"), "{out}");
     }
 
+    #[test]
+    fn formatting_preserves_raw_and_multiline_string_items_verbatim() {
+        for source in [
+            "func raw(): str {\nlet value = r\"a:  b\"\nreturn value\n}\n",
+            "func multi(): str {\nlet value = \"\"\"\n  first\n    second:  value\n\"\"\"\nreturn value\n}\n",
+            "func broken(){ let value = r\"a:  b\" let tail = }\n",
+        ] {
+            assert_eq!(format_source(source), source);
+            assert!(format_edits_in_range(source, 0, source.len() as u32).is_empty());
+        }
+    }
+
     fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
         let mut out = source.to_string();
         for edit in edits.iter().rev() {
@@ -946,5 +1044,24 @@ mod tests {
     fn semicolon_action() {
         let a = actions_for_expected_semicolon(10, 11, "expected SEMICOLON").unwrap();
         assert_eq!(a.edits[0].new_text, ";");
+    }
+
+    #[test]
+    fn onda_b_type_forms_round_trip_cleanly() {
+        let src = concat!(
+            "func keep(f: func(int) -> int, g: own (int) -> int + Send, h: own once (int) -> int + Send): func(int) -> int {\n",
+            "    return f\n",
+            "}\n",
+            "func nullableTypes(a: []int?, b: [4]int?, c: ref int?, d: ([]int)?, e: (ref int)?, p: ptr[u8]?): void {\n",
+            "    let _ = a\n",
+            "}\n",
+        );
+        let out = format_source(src);
+        assert!(parses_clean(&out), "{out}");
+        assert_eq!(format_source(&out), out);
+        assert!(out.contains("func(int) -> int"));
+        assert!(out.contains("own once (int) -> int + Send"));
+        assert!(out.contains("([]int)?"));
+        assert!(out.contains("(ref int)?"));
     }
 }

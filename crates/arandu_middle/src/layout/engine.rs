@@ -70,6 +70,9 @@ impl super::LayoutEngine {
         Ok(match ty {
             ArType::Ref(_) | ArType::RefMut(_) | ArType::Func(_, _) | ArType::Err => true,
             ArType::Named(sym, args) => {
+                if provider.is_non_null_type(*sym) {
+                    return Ok(true);
+                }
                 if let Some(fields_def) = provider.get_struct_fields_for_type(ty, interner)
                     && let Ok(layout) =
                         self.layout_of_type_inner(ty, interner, provider, walk, depth + 1)

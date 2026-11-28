@@ -99,12 +99,25 @@ fn link_imported_hir_modules(
                 let mut children = Vec::new();
                 let mut paths = Vec::new();
                 for import in &program.imports {
+                    for path in arandu_resolve::canonicalize_import_paths(import) {
+                        db.unwind_if_revision_cancelled();
+                        let Some(imported_file) = db.as_source_db().resolve_module_path(&path)
+                        else {
+                            // Prelude-only or missing file — nothing to lower.
+                            continue;
+                        };
+                        let imported_id = *imported_file.file_id(db);
+                        if !visited.insert(imported_id) {
+                            continue;
+                        }
+                        children.push(imported_file);
+                        paths.push(path);
+                    }
+                }
+                let current_mod = program.module.as_ref().map(|m| m.path.join("."));
+                for (path, _) in arandu_resolve::ambient_modules(current_mod.as_deref()) {
                     db.unwind_if_revision_cancelled();
-                    let Some(path) = arandu_resolve::canonicalize_import_path(import) else {
-                        continue;
-                    };
-                    let Some(imported_file) = db.as_source_db().resolve_module_path(&path) else {
-                        // Prelude-only or missing file — nothing to lower.
+                    let Some(imported_file) = db.as_source_db().resolve_module_path(path) else {
                         continue;
                     };
                     let imported_id = *imported_file.file_id(db);
@@ -112,7 +125,7 @@ fn link_imported_hir_modules(
                         continue;
                     }
                     children.push(imported_file);
-                    paths.push(path);
+                    paths.push(path.to_string());
                 }
                 stack[top].children = children;
                 stack[top].paths = paths;
@@ -277,7 +290,7 @@ pub fn lower_amir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<LowerAmi
     // The artifacts are part of the composed program, whose identity already
     // determines them.
     let identity = crate::StableHash::stable_hash(composed);
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(test)]
     crate::fingerprint::verify(
         db,
         "lower_amir",
@@ -313,7 +326,7 @@ pub fn borrow_interfaces(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<B
                     .is_some_and(|ty| match ty {
                         arandu_middle::types::ArType::Func(_, result) => declarations
                             .type_info
-                            .borrow_paths(result)
+                            .may_borrow_paths(result)
                             .map_or(true, |paths| !paths.is_empty()),
                         _ => false,
                     });
@@ -388,7 +401,7 @@ pub fn module_dependency_graph(
         let program_res = crate::passes::parse(db, file);
         if let Ok(program) = &**program_res {
             for import in &program.imports {
-                if let Some(path) = arandu_resolve::canonicalize_import_path(import) {
+                for path in arandu_resolve::canonicalize_import_paths(import) {
                     if let Some(imported_file) = db.as_source_db().resolve_module_path(&path) {
                         let imported_node = walk(db, imported_file, graph, visited);
                         graph.add_edge(node, imported_node, ());

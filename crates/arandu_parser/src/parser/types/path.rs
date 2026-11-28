@@ -98,7 +98,7 @@ impl<'a> Parser<'a> {
             if !self.eat_name("COMMA") {
                 break;
             }
-            if self.at_kind_name(end_name) {
+            if self.at_kind_name(end_name) || (end_name == "LBRACE" && self.at_kind_name("EQUAL")) {
                 break;
             }
         }
@@ -160,7 +160,11 @@ impl<'a> Parser<'a> {
     pub(in crate::parser) fn can_start_type(&self) -> bool {
         matches!(
             self.current().kind,
-            TokenKind::KwPtr | TokenKind::LBracket | TokenKind::KwFunc | TokenKind::LParen
+            TokenKind::KwPtr
+                | TokenKind::LBracket
+                | TokenKind::KwFunc
+                | TokenKind::LParen
+                | TokenKind::Bang
         ) || is_type_token(&self.current().kind)
     }
 

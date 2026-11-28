@@ -40,7 +40,7 @@ module std.alloc.arena
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 
-const MAX_ARENA_CAPACITY = 2147483647 as usize
+// Arena allocation ceiling uses `mem.maxAllocBytes()`.
 
 extern "C" {
     /// Host allocator for a raw byte buffer.
@@ -64,7 +64,8 @@ public struct Arena {
 func new(capacity: usize): Arena {
     let mut actualCapacity = capacity
     let mut data: ptr[u8] = nil
-    if capacity > MAX_ARENA_CAPACITY {
+    let maxBytes = mem.maxAllocBytes()
+    if capacity > maxBytes {
         actualCapacity = 0 as usize
     } else {
         unsafe {
@@ -100,12 +101,17 @@ public func Arena.withCapacity(capacity: usize): Arena {
 public func Arena.alloc(self: mut ref Arena, size: usize, align: usize): Option<ptr[u8]> {
     let nullp: ptr[u8] = nil
     let data = self.data
-    if data == nullp || self.capacity > MAX_ARENA_CAPACITY || self.offset > self.capacity {
+    let maxBytes = mem.maxAllocBytes()
+    if data == nullp || self.capacity > maxBytes || self.offset > self.capacity {
         return Option.None
     }
     let mut padding: usize = 0 as usize
     if align > (1 as usize) {
-        let rem = self.offset % align
+        let rem = if (align & (align - (1 as usize))) == (0 as usize) {
+            self.offset & (align - (1 as usize))
+        } else {
+            self.offset % align
+        }
         if rem != (0 as usize) {
             padding = align - rem
         }
@@ -131,7 +137,7 @@ public func Arena.alloc(self: mut ref Arena, size: usize, align: usize): Option<
 public func Arena.allocTyped<T>(self: mut ref Arena, count: usize): Option<ptr[T]> {
     let elemSize = mem.sizeOf<T>()
     let elemAlign = mem.alignOf<T>()
-    if elemSize > (0 as usize) && count > MAX_ARENA_CAPACITY / elemSize {
+    if elemSize > (0 as usize) && count > mem.maxAllocElements<T>() {
         return Option.None
     }
     let totalSize = elemSize * count
@@ -229,7 +235,8 @@ public struct ScratchArena {
 public func ScratchArena.new(capacity: usize): ScratchArena {
     let mut actualCapacity = capacity
     let mut data: ptr[u8] = nil
-    if capacity > MAX_ARENA_CAPACITY {
+    let maxBytes = mem.maxAllocBytes()
+    if capacity > maxBytes {
         actualCapacity = 0 as usize
     } else {
         unsafe {
@@ -258,12 +265,17 @@ public func ScratchArena.withCapacity(capacity: usize): ScratchArena {
 public func ScratchArena.alloc(self: mut ref ScratchArena, size: usize, align: usize): Option<ptr[u8]> {
     let nullp: ptr[u8] = nil
     let data = self.data
-    if data == nullp || self.capacity > MAX_ARENA_CAPACITY || self.offset > self.capacity {
+    let maxBytes = mem.maxAllocBytes()
+    if data == nullp || self.capacity > maxBytes || self.offset > self.capacity {
         return Option.None
     }
     let mut padding: usize = 0 as usize
     if align > (1 as usize) {
-        let rem = self.offset % align
+        let rem = if (align & (align - (1 as usize))) == (0 as usize) {
+            self.offset & (align - (1 as usize))
+        } else {
+            self.offset % align
+        }
         if rem != (0 as usize) {
             padding = align - rem
         }
@@ -290,7 +302,7 @@ public func ScratchArena.alloc(self: mut ref ScratchArena, size: usize, align: u
 public func ScratchArena.allocTyped<T>(self: mut ref ScratchArena, count: usize): Option<ptr[T]> {
     let elemSize = mem.sizeOf<T>()
     let elemAlign = mem.alignOf<T>()
-    if elemSize > (0 as usize) && count > MAX_ARENA_CAPACITY / elemSize {
+    if elemSize > (0 as usize) && count > mem.maxAllocElements<T>() {
         return Option.None
     }
     let totalSize = elemSize * count

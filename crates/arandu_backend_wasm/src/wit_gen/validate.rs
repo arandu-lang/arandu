@@ -137,8 +137,7 @@ pub(crate) fn validate_vector_boundaries(
                     .into_iter()
                     .map(|ty| (ty, origin)),
             ),
-            ArType::Nullable(inner)
-            | ArType::Slice(inner)
+            ArType::Slice(inner)
             | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
@@ -157,9 +156,11 @@ pub(crate) fn validate_vector_boundaries(
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::IntLiteral
             | ArType::FloatLiteral
-            | ArType::Error => {}
+            | ArType::Error
+            | ArType::Infer(_) => {}
         }
     }
     Ok(())

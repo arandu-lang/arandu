@@ -89,22 +89,54 @@ pub(crate) fn type_satisfies_interface(
             return false;
         }
     }
-    if let Some(
-        capability @ (arandu_middle::symbol_table::LangItem::Send
-        | arandu_middle::symbol_table::LangItem::Sync
-        | arandu_middle::symbol_table::LangItem::Copy),
-    ) = checker
+    if let Some(lang_item) = checker
         .symbols
         .try_get(iface_sym)
         .and_then(|symbol| symbol.lang_item)
+        && bound_type_args.is_empty()
     {
-        return bound_type_args.is_empty()
-            && super::super::transfer::satisfies(checker, concrete, capability);
+        match lang_item {
+            capability @ (arandu_middle::symbol_table::LangItem::Send
+            | arandu_middle::symbol_table::LangItem::Sync
+            | arandu_middle::symbol_table::LangItem::Copy) => {
+                return super::super::transfer::satisfies(checker, concrete, capability);
+            }
+            arandu_middle::symbol_table::LangItem::Clone
+                if super::super::transfer::satisfies(
+                    checker,
+                    concrete,
+                    arandu_middle::symbol_table::LangItem::Copy,
+                ) =>
+            {
+                return true;
+            }
+            arandu_middle::symbol_table::LangItem::Ord if concrete.is_orderable() => {
+                return true;
+            }
+            arandu_middle::symbol_table::LangItem::Eq
+            | arandu_middle::symbol_table::LangItem::PartialEq => {
+                let copy_eq = matches!(
+                    concrete,
+                    ArType::Primitive(_)
+                        | ArType::IntLiteral
+                        | ArType::FloatLiteral
+                        | ArType::Ptr(_)
+                        | ArType::Ref(_)
+                        | ArType::RefMut(_)
+                        | ArType::GenRef
+                );
+                if copy_eq {
+                    return true;
+                }
+            }
+            _ => {}
+        }
     }
     let Some(type_id) = concrete_type_id(concrete) else {
         return false;
     };
 
+    let self_param = iface.self_param;
     let method_specs: Vec<_> = iface.methods.clone();
     for m in method_specs {
         let method = m.name;
@@ -117,13 +149,56 @@ pub(crate) fn type_satisfies_interface(
         };
         // Interface may list `self: Self`; impl methods always have a receiver.
         // Compare payloads only (TYP.2).
-        let self_param = iface.self_param;
         let required_stripped =
             strip_interface_receiver(required_inst, checker, Some(concrete), self_param);
         let provided_inst = instantiate_impl_method(checker, type_id, concrete, &method, provided);
         let provided_stripped = strip_impl_receiver(provided_inst, checker);
         if !method_types_compatible(&required_stripped, &provided_stripped, checker) {
             return false;
+        }
+        if let ArType::Named(cid, args) = concrete
+            && *cid == type_id
+            && args.len > 0
+            && let Some(method_sym) = checker.symbols.lookup_associated_member(type_id, &method)
+            && let Some(gp) = checker.type_info.generic_params.get(&method_sym).cloned()
+        {
+            let arg_vec = checker.type_info.type_interner.type_args(*args);
+            let n = gp.len().min(arg_vec.len());
+            let resolved_args: Vec<ArType> = arg_vec
+                .iter()
+                .take(n)
+                .map(|&tid| checker.resolve(tid))
+                .collect();
+            let subst = build_subst(&gp[..n], &resolved_args);
+            for (&param_sym, &arg_tid) in gp.iter().take(n).zip(arg_vec.iter().take(n)) {
+                if let Some(bounds) = checker.type_info.param_constraints.get(&param_sym).cloned() {
+                    let concrete_arg = checker.resolve(arg_tid);
+                    for bound in bounds.iter() {
+                        let subst_bound_args: Vec<TypeId> = bound
+                            .type_args
+                            .iter()
+                            .map(|&tid| {
+                                let resolved = checker.resolve(tid);
+                                let sub = substitute_type(
+                                    &resolved,
+                                    &subst,
+                                    &checker.type_info.type_interner,
+                                );
+                                checker.intern(sub)
+                            })
+                            .collect();
+                        if !type_satisfies_interface(
+                            checker,
+                            &concrete_arg,
+                            bound.iface_sym,
+                            &subst_bound_args,
+                            _span,
+                        ) {
+                            return false;
+                        }
+                    }
+                }
+            }
         }
     }
     true

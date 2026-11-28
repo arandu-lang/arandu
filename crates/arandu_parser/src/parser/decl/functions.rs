@@ -28,7 +28,38 @@ impl<'a> Parser<'a> {
             None
         };
         let where_clause = self.parse_where_clause("LBRACE")?;
-        let body = self.parse_block()?;
+        let body = if self.eat_name("EQUAL") {
+            let expr = self.parse_expr(0)?;
+            self.skip_semicolons();
+            let expr_span = self.pool.expr_span(expr);
+            let is_void = result.as_ref().is_none_or(|r| match r {
+                crate::ResultType::Single { ty, .. } => matches!(
+                    self.pool.type_expr(*ty),
+                    crate::TypeExpr::Primitive { name, .. } if name == "void"
+                ),
+                _ => false,
+            });
+            let stmt_kind = if is_void {
+                crate::Stmt::Expr {
+                    span: expr_span,
+                    expr,
+                    has_semi: false,
+                }
+            } else {
+                crate::Stmt::Return {
+                    span: expr_span,
+                    values: vec![expr],
+                }
+            };
+            let stmt_id = self.pool.alloc_stmt(stmt_kind);
+            let stmts = self.pool.alloc_stmt_list(&[stmt_id]);
+            crate::Block {
+                span: expr_span,
+                statements: stmts,
+            }
+        } else {
+            self.parse_block()?
+        };
         Ok(FuncDecl {
             span: self.span_from_mark(start),
             attrs: attrs.into(),

@@ -66,7 +66,7 @@ mod typing;
 pub(crate) use items::item_text;
 pub use items::{item_ast, item_ast_ids, item_positions, AstIdMap};
 pub(crate) use local_context::without_positions;
-pub use local_context::{item_context, signature_context};
+pub use local_context::{item_context, item_reach, signature_context};
 pub(crate) use local_typing::{for_each_span, item_typing_input};
 pub use local_typing::{item_local_typing, LocalTyping};
 pub use lower::{
@@ -74,10 +74,10 @@ pub use lower::{
     LowerAmirArtifacts, PreparedHir,
 };
 pub(crate) use programs::defaults_program;
-pub(crate) use resolution::signatures_from_program;
 pub use resolution::{
     cycle_recover, parse, parse_diagnostics, resolve, resolved_headers, symbol_span, syntax_tree,
 };
+pub(crate) use resolution::{importable_symbols, importable_type_info, signatures_from_program};
 pub(crate) use signatures::module_import_edges;
 pub use signatures::{
     cycle_recover_module_signatures, declaration_signatures, header_signatures, module_signatures,
@@ -87,6 +87,7 @@ pub use symbols::{
     cycle_recover_exported_symbols, cycle_recover_internal_symbols, exported_symbols,
     internal_symbols, local_symbols,
 };
+pub(crate) use typing::item_source_spans;
 pub use typing::{
     file_typeck_view, file_typing, ide_type_check, item_body_typeck, item_source_input,
     item_typing, type_check, FuncBodyInput, ItemSourceInput,

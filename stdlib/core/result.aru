@@ -63,6 +63,30 @@ public enum Result<T, E> {
     Err(E),
 }
 
+/// Borrows the `Ok` or `Err` payload without copying or consuming `self`.
+public func Result.asRef<T, E>(self: ref Result<T, E>): Result<ref T, ref E> {
+    match self {
+        Ok(v) => {
+            return Result.Ok(v)
+        }
+        Err(e) => {
+            return Result.Err(e)
+        }
+    }
+}
+
+/// Mutably borrows the `Ok` or `Err` payload without consuming `self`.
+public func Result.asMut<T, E>(self: mut ref Result<T, E>): Result<mut ref T, mut ref E> {
+    match self {
+        Ok(v) => {
+            return Result.Ok(v)
+        }
+        Err(e) => {
+            return Result.Err(e)
+        }
+    }
+}
+
 /// Returns `true` if the result is the `Ok` variant.
 ///
 /// # Examples
@@ -193,8 +217,76 @@ public func Result.expectOrAbort<T, E>(self: own Result<T, E>, reason: str): T {
         }
         Err(_) => {
             unsafe {
-                intrinsics.abort()
+                intrinsics.abortWithMessage(reason)
             }
+        }
+    }
+}
+
+/// Maps a `Result<T, E>` to `Result<R, E>` by applying a function to a contained `Ok` value.
+public func Result.map<T, E, R>(self: own Result<T, E>, f: (T) -> R): Result<R, E> {
+    match self {
+        Ok(v) => {
+            return Result.Ok(f(v))
+        }
+        Err(e) => {
+            return Result.Err(e)
+        }
+    }
+}
+
+/// Maps a `Result<T, E>` to `Result<T, F>` by applying a function to a contained `Err` value.
+public func Result.mapErr<T, E, F>(self: own Result<T, E>, f: (E) -> F): Result<T, F> {
+    match self {
+        Ok(v) => {
+            return Result.Ok(v)
+        }
+        Err(e) => {
+            return Result.Err(f(e))
+        }
+    }
+}
+
+/// Calls `op` if the result is `Ok`, otherwise returns the `Err` value of `self`.
+public func Result.andThen<T, E, R>(self: own Result<T, E>, op: (T) -> Result<R, E>): Result<R, E> {
+    match self {
+        Ok(v) => {
+            return op(v)
+        }
+        Err(e) => {
+            return Result.Err(e)
+        }
+    }
+}
+
+/// Unwraps a result, yielding the content of an `Ok`. Else, computes it from a closure.
+public func Result.unwrapOrElse<T, E>(self: own Result<T, E>, fallback: (E) -> T): T {
+    match self {
+        Ok(v) => {
+            return v
+        }
+        Err(e) => {
+            return fallback(e)
+        }
+    }
+}
+
+/// Calls the provided closure with a reference to the contained value (if `Ok`).
+public func Result.inspect<T, E>(self: ref Result<T, E>, f: (ref T) -> void): void {
+    match self {
+        Ok(v) => {
+            f(v)
+        }
+        Err(_) => {}
+    }
+}
+
+/// Calls the provided closure with a reference to the contained error value (if `Err`).
+public func Result.inspectErr<T, E>(self: ref Result<T, E>, f: (ref E) -> void): void {
+    match self {
+        Ok(_) => {}
+        Err(e) => {
+            f(e)
         }
     }
 }

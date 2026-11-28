@@ -431,10 +431,10 @@ fn disambiguates_grouped_and_function_types() {
     assert!(stripped.contains("GroupType"), "{stripped}");
     assert!(stripped.contains("FuncType"), "{stripped}");
 
-    assert!(
-        parse_to_string("module test\ntype NotATuple = (int, str)\n").is_err(),
-        "comma-separated parenthesized types require a function arrow"
-    );
+    // Two or more types without an arrow are a tuple; `()` is not a type.
+    let tuple = parse_to_string("module test\ntype Pair = (int, str)\n").unwrap();
+    assert!(strip_spans(&tuple).contains("TupleType"), "{tuple}");
+    assert!(parse_to_string("module test\ntype Unit = ()\n").is_err());
 }
 
 #[test]
@@ -450,6 +450,35 @@ fn parse_match_int() {
     let source = "module test\nfunc main() {\n    match x {\n        1 => \"one\"\n        _ => \"other\"\n    }\n}\n";
     let result = parse_to_string(source).unwrap();
     assert!(result.contains("Match") || result.contains("Arm"));
+}
+
+#[test]
+fn match_arms_may_be_separated_by_commas_on_one_line() {
+    for source in [
+        "func f(x: int): int { return match x { 1 => 10, 2 => 20, _ => 0 } }\n",
+        "func f(x: int): int { return match x { 1 => 10, _ => 0, } }\n",
+        "func f(x: int): int {\n    return match x {\n        1 => { 10 },\n        _ => 0,\n    }\n}\n",
+    ] {
+        let rd = parse_to_string(source).expect("recursive descent");
+        assert!(
+            rd.matches("MatchArm")
+                .count()
+                .max(rd.matches("Arm").count())
+                >= 2,
+            "{rd}"
+        );
+        let program = crate::parse(source).expect("canonical parse");
+        let arms = program
+            .pool
+            .exprs
+            .iter()
+            .find_map(|kind| match kind {
+                crate::ExprKind::Match { arms, .. } => Some(arms.len),
+                _ => None,
+            })
+            .expect("match");
+        assert!(arms >= 2, "{source}");
+    }
 }
 
 #[test]
@@ -488,6 +517,20 @@ fn parse_generic_func() {
     let source = "module test\nfunc identity<T>(x: T): T {\n    return x\n}\n";
     let result = parse_to_string(source).unwrap();
     assert!(result.contains("identity") || result.contains("T"));
+}
+
+#[test]
+fn parse_const_with_colon_type() {
+    let source = "module test\npublic const MAX: int = 100\nconst MIN = 0\n";
+    let result = parse_to_string(source).unwrap();
+    assert!(result.contains("MAX") && result.contains("MIN"));
+}
+
+#[test]
+fn parse_static_mut_global() {
+    let source = "module test\npublic static mut COUNTER: int = 0\nstatic mut FLAG = false\n";
+    let result = parse_to_string(source).unwrap();
+    assert!(result.contains("StaticMut") && result.contains("COUNTER") && result.contains("FLAG"));
 }
 
 #[test]
@@ -664,13 +707,13 @@ fn ast_pool_alloc_stmt_increments_id_and_vectors() {
     };
 
     // First allocation: id index == 0
-    let id0 = pool.alloc_stmt(Stmt::Break { span });
+    let id0 = pool.alloc_stmt(Stmt::Break { span, label: None });
     assert_eq!(id0.as_usize(), 0);
     assert_eq!(pool.stmts.len(), 1);
     assert_eq!(pool.stmt_spans.len(), 1);
 
     // Second allocation: id index == 1
-    let id1 = pool.alloc_stmt(Stmt::Continue { span });
+    let id1 = pool.alloc_stmt(Stmt::Continue { span, label: None });
     assert_eq!(id1.as_usize(), 1);
     assert_eq!(pool.stmts.len(), 2);
     assert_eq!(pool.stmt_spans.len(), 2);
@@ -936,6 +979,37 @@ fn move_lambda_parses_with_is_move_flag() {
 }
 
 #[test]
+fn lambda_parameters_take_a_colon_like_every_declaration() {
+    for (source, typed) in [
+        ("func main(): void { let f = (x: int) => x + 1; }", 1),
+        (
+            "func main(): void { let f = (x: int, y: int) => { return x + y; }; }",
+            2,
+        ),
+        ("func main(): void { let f = (x int) => x; }", 1),
+        ("func main(): void { let f = (x) => x; }", 0),
+    ] {
+        let program = parse(source).expect("lambda parse");
+        let params = program
+            .pool
+            .exprs
+            .iter()
+            .find_map(|e| match e {
+                crate::ExprKind::Lambda { params, .. } => Some(*params),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no lambda in {source}"));
+        let annotated = program
+            .pool
+            .lambda_param_list(params)
+            .iter()
+            .filter(|param| program.pool.lambda_param(**param).ty.is_some())
+            .count();
+        assert_eq!(annotated, typed, "{source}");
+    }
+}
+
+#[test]
 fn call_label_shorthand_parses() {
     let source =
         "func main(): void { let port = 8080; let host = \"0.0.0.0\"; connect(port:, host:); }";
@@ -1002,5 +1076,251 @@ fn guard_statement_parses() {
             .iter()
             .any(|s| matches!(s, crate::Stmt::If { .. })),
         "expected guard to lower into Stmt::If"
+    );
+}
+
+#[test]
+fn labeled_loops_and_breaks_parse() {
+    let source = r#"
+    func test_loops(): void {
+        'outer: while true {
+            'inner: for let mut i = 0; i < 10; i = i + 1 {
+                if i == 5 {
+                    break 'outer;
+                }
+                if i == 2 {
+                    continue 'inner;
+                }
+            }
+        }
+    }
+    "#;
+    let program = parse(source).expect("labeled loop should parse");
+    let has_outer_while = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::While { label: Some(l), .. } if l == "outer"));
+    let has_inner_for = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::For { label: Some(l), .. } if l == "inner"));
+    let has_break_outer = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::Break { label: Some(l), .. } if l == "outer"));
+    let has_continue_inner = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::Continue { label: Some(l), .. } if l == "inner"));
+    assert!(has_outer_while, "expected while with label 'outer'");
+    assert!(has_inner_for, "expected for with label 'inner'");
+    assert!(has_break_outer, "expected break with label 'outer'");
+    assert!(has_continue_inner, "expected continue with label 'inner'");
+}
+
+#[test]
+fn zig_style_labeled_loops_and_breaks_parse() {
+    let source = r#"
+    func test_loops(): void {
+        outer: while true {
+            inner: for let mut i = 0; i < 10; i = i + 1 {
+                if i == 5 {
+                    break :outer;
+                }
+                if i == 2 {
+                    continue :inner;
+                }
+            }
+        }
+    }
+    "#;
+    let program = parse(source).expect("zig-style labeled loop should parse");
+    let has_outer_while = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::While { label: Some(l), .. } if l == "outer"));
+    let has_inner_for = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::For { label: Some(l), .. } if l == "inner"));
+    let has_break_outer = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::Break { label: Some(l), .. } if l == "outer"));
+    let has_continue_inner = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::Continue { label: Some(l), .. } if l == "inner"));
+    assert!(has_outer_while, "expected while with label outer");
+    assert!(has_inner_for, "expected for with label inner");
+    assert!(has_break_outer, "expected break with label :outer");
+    assert!(has_continue_inner, "expected continue with label :inner");
+}
+
+#[test]
+fn an_uppercase_static_mut_is_an_assignment_target() {
+    let program = parse(
+        "static mut COUNTER: int = 0\nfunc bump(): void {\n    unsafe {\n        COUNTER = COUNTER + 1\n        COUNTER += 2\n    }\n}\n",
+    )
+    .expect("static mut assignment parses");
+    let roots = program
+        .pool
+        .stmts
+        .iter()
+        .filter_map(|stmt| match stmt {
+            crate::Stmt::Set { places, .. } => places.first().map(|place| place.root.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(roots, ["COUNTER", "COUNTER"]);
+}
+
+#[test]
+fn a_leading_star_writes_through_the_place() {
+    let program = parse(
+        "func f(r: mut ref mut ref int, n: int): void {\n    let a = n\n    *r.x = a\n    **r = 1\n    let b = a\n        * 2\n}\n",
+    )
+    .expect("deref assignment parses");
+    let derefs = program
+        .pool
+        .stmts
+        .iter()
+        .filter_map(|stmt| match stmt {
+            crate::Stmt::Set { places, .. } => places.first().map(|place| {
+                place
+                    .suffixes
+                    .iter()
+                    .filter(|suffix| matches!(suffix, crate::PlaceSuffix::Deref { .. }))
+                    .count()
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // `*r.x` derefs after the field; `**r` derefs twice; `* 2` with a space
+    // continues the multiplication on the previous line.
+    assert_eq!(derefs, [1, 2]);
+}
+
+#[test]
+fn a_function_type_is_a_result_type_in_both_parser_paths() {
+    for source in [
+        "func pick(flag: bool): (int) -> int { return double }",
+        "func pair(): (int, bool) { return 1, true }",
+        "func nested(): ((int) -> int, bool) { return double, true }",
+        "func none(): () -> void { return idle }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+}
+
+#[test]
+fn an_owning_closure_type_parses_the_same_in_both_parser_paths() {
+    for source in [
+        "func make(): own () -> int { return counter }",
+        "func keep(job: own (int) -> void + Send) { }",
+        "func many(jobs: Vec<own () -> void + marker.Send>) { }",
+        "func legacy(job: own func(int) int) { }",
+        "func plain(value: own Vec<int>) { }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+    let owned =
+        crate::parse_to_string("func keep(job: own (int) -> void + Send) { }").expect("parse");
+    assert!(owned.contains("OwnFuncType"), "{owned}");
+    let plain = crate::parse_to_string("func plain(value: own Vec<int>) { }").expect("parse");
+    assert!(!plain.contains("OwnFuncType"), "{plain}");
+}
+
+#[test]
+fn a_generic_function_value_ends_at_an_expression_boundary_in_both_paths() {
+    for source in [
+        "func f() { let d = Pair { drop: release<int>, size: 1 } }",
+        "func f() { keep(release<int>) }",
+        "func f() { let d: (int) -> int = id<int>; }",
+        "func f() { let c = a < b }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+    let dump = crate::parse_to_string("func f() { keep(release<int>) }").expect("parse");
+    assert!(dump.contains("Generic"), "{dump}");
+}
+
+#[test]
+fn a_statement_may_end_with_self() {
+    let source = "func Box.take(self: own Box): Box {\n    let moved = self\n    let again = moved\n    return again\n}\n";
+    let direct = parse(source).expect("direct parse");
+    let canonical =
+        crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+    assert_eq!(direct, canonical);
+}
+
+#[test]
+fn parameterized_trailing_lambdas_parse_the_same_in_both_paths() {
+    for source in [
+        "func f() { let a = v.map { x => *x * 3 } }",
+        "func f() { let b = v.filter { (x) => *x > 1 } }",
+        "func f() { let c = v.fold(0) { (acc, x) => acc + *x } }",
+        "func f() { let d = v.map { x: int => *x + 1 } }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+}
+
+#[test]
+fn bare_func_types_and_nullable_precedence_match_in_both_parser_paths() {
+    for source in [
+        "func keep(f: func(int, str) -> bool): func(int) -> int { return f }",
+        "func multi(f: own (int) -> int + Send + Sync) { }",
+        "func slices(a: []int?, b: [4]int?, c: mut []int?, d: ref int?, e: ([]int)?, f: (ref int)?, g: ptr[u8]?, h: (func(int) -> int)?, i: (int) -> int?) { }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+
+    let bare_dump = crate::parse_to_string("func keep(f: func(int) -> bool) { }").expect("parse");
+    assert!(bare_dump.contains("BareFuncType"), "{bare_dump}");
+    let cb_dump = crate::parse_to_string("func keep(f: (int) -> bool) { }").expect("parse");
+    assert!(
+        cb_dump.contains("FuncType") && !cb_dump.contains("BareFuncType"),
+        "{cb_dump}"
+    );
+
+    let slice_elem_opt = crate::parse_to_string("func f(a: []int?) { }").expect("parse");
+    assert!(
+        slice_elem_opt.contains("Slice @1:11-1:17 Nullable @1:13-1:17 Type @1:13-1:16 int"),
+        "expected []int? to mean [](int?), got: {slice_elem_opt}"
+    );
+
+    let slice_opt = crate::parse_to_string("func f(a: ([]int)?) { }").expect("parse");
+    assert!(
+        slice_opt.contains("Nullable @1:11-1:19 GroupType @1:11-1:18 (Slice @1:12-1:17"),
+        "expected ([]int)? to wrap GroupType in Nullable, got: {slice_opt}"
+    );
+
+    assert!(
+        parse("func bad(x: own once int) { }").is_err(),
+        "`own once` on non-function type must fail to parse"
     );
 }

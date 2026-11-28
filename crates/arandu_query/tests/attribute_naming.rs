@@ -98,3 +98,257 @@ fn annotation_validation_early_cuts_off_unchanged_sibling() {
         "only the edited item's annotation validation may execute"
     );
 }
+
+#[test]
+fn no_copy_rejects_invalid_target_and_arguments() {
+    let _guard = COUNTER_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut db = DatabaseImpl::new();
+
+    let bad_target = db.new_file(
+        "nocopy-bad-target.aru".into(),
+        "@NoCopy\nfunc nope() {}\n".into(),
+    );
+    let checked = type_check(&db, bad_target);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == arandu_middle::DiagCode::N013InvalidAnnotationTarget),
+        "@NoCopy on function must emit N013, got: {:?}",
+        checked.diagnostics
+    );
+
+    let bad_args = db.new_file(
+        "nocopy-bad-args.aru".into(),
+        "@NoCopy(\"reason\")\nstruct Token { id: int }\n".into(),
+    );
+    let checked = type_check(&db, bad_args);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == arandu_middle::DiagCode::N014InvalidAnnotationArguments),
+        "@NoCopy with arguments must emit N014, got: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn no_copy_struct_and_enum_are_move_only_and_compositional() {
+    let _guard = COUNTER_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "nocopy-semantics.aru".into(),
+        r#"
+@NoCopy
+struct Token { id: int }
+
+@NoCopy
+struct Unlocked {}
+
+@NoCopy
+enum State {
+    Ready,
+    Done(int),
+}
+
+struct Wrapper {
+    tok: Token,
+}
+
+struct Plain {
+    id: int,
+}
+
+func use_token(t: Token): int {
+    return t.id
+}
+
+func use_wrapper(w: Wrapper): int {
+    return w.tok.id
+}
+
+func main(): int {
+    let t = Token { id: 1 }
+    let a = use_token(t)
+    let b = use_token(t)
+    return a + b
+}
+"#
+        .into(),
+    );
+
+    let checked = type_check(&db, file);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != arandu_diagnostics::Severity::Error),
+        "unexpected typeck errors: {:?}",
+        checked.diagnostics
+    );
+
+    let find_type = |name: &str| {
+        let sym = checked
+            .symbols
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("missing symbol {name}"));
+        checked
+            .type_info
+            .type_interner
+            .intern(arandu_middle::types::ArType::named(
+                sym.id,
+                &[],
+                &checked.type_info.type_interner,
+            ))
+    };
+
+    assert!(!checked.type_info.is_copy(find_type("Token")));
+    assert!(!checked.type_info.is_copy(find_type("Unlocked")));
+    assert!(!checked.type_info.is_copy(find_type("State")));
+    assert!(!checked.type_info.is_copy(find_type("Wrapper")));
+    assert!(checked.type_info.is_copy(find_type("Plain")));
+
+    // Move checker must reject use-after-move of scalar-only `@NoCopy` struct.
+    let diags = file_ide_diagnostics(&db, file);
+    assert!(
+        diags.iter().any(|d| d.code == "O001"),
+        "expected O001 use-after-move for @NoCopy struct, got: {:?}",
+        diags.as_slice()
+    );
+}
+
+#[test]
+fn no_copy_repeat_array_is_rejected() {
+    let _guard = COUNTER_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "nocopy-repeat.aru".into(),
+        r#"
+@NoCopy
+struct Token { id: int }
+
+func main(): int {
+    let arr = [Token { id: 1 }; 4]
+    return arr[0].id
+}
+"#
+        .into(),
+    );
+
+    let diags = file_ide_diagnostics(&db, file);
+    assert!(
+        diags.iter().any(|d| d.code == "T048"),
+        "expected T048 error repeating @NoCopy value in [val; 4], got: {:?}",
+        diags.as_slice()
+    );
+}
+
+#[test]
+fn no_copy_invalidates_module_signature_hash() {
+    let _guard = COUNTER_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "nocopy-cutoff.aru".into(),
+        "public struct Config { timeout: int }\n".into(),
+    );
+    let sig_before = module_signatures(&db, file).clone();
+    let sym = sig_before
+        .symbols
+        .iter()
+        .find(|s| s.name == "Config")
+        .expect("Config symbol")
+        .id;
+    assert!(!sig_before.type_info.non_copy_types.contains(&sym));
+
+    file.set_text(&mut db).to(Arc::from(
+        "@NoCopy\npublic struct Config { timeout: int }\n",
+    ));
+    let sig_after = module_signatures(&db, file).clone();
+    let sym_after = sig_after
+        .symbols
+        .iter()
+        .find(|s| s.name == "Config")
+        .expect("Config symbol after")
+        .id;
+    assert!(sig_after.type_info.non_copy_types.contains(&sym_after));
+    assert!(
+        sig_before != sig_after,
+        "adding @NoCopy must invalidate module_signatures"
+    );
+}
+
+#[test]
+fn concurrency_attributes_validate_targets_arguments_conflicts_and_hashes() {
+    let _guard = COUNTER_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut db = DatabaseImpl::new();
+
+    for attr in ["NoSend", "NoSync", "UnsafeSend", "UnsafeSync"] {
+        let bad_target = db.new_file(
+            format!("bad-target-{attr}.aru"),
+            format!("@{attr}\nfunc f() {{}}\n"),
+        );
+        let checked = type_check(&db, bad_target);
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code == arandu_middle::DiagCode::N013InvalidAnnotationTarget),
+            "@{attr} on function must emit N013: {:?}",
+            checked.diagnostics
+        );
+
+        let bad_args = db.new_file(
+            format!("bad-args-{attr}.aru"),
+            format!("@{attr}(\"x\")\nstruct S {{ x: int }}\n"),
+        );
+        let checked = type_check(&db, bad_args);
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code == arandu_middle::DiagCode::N014InvalidAnnotationArguments),
+            "@{attr} with args must emit N014: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    let conflict = db.new_file(
+        "conflict-send.aru".into(),
+        "@NoSend\n@UnsafeSend\nstruct S { x: int }\n".into(),
+    );
+    let checked = type_check(&db, conflict);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == arandu_middle::DiagCode::N015DuplicateAnnotation),
+        "@NoSend + @UnsafeSend must conflict: {:?}",
+        checked.diagnostics
+    );
+
+    let file = db.new_file(
+        "nosend-cutoff.aru".into(),
+        "public struct Handle { id: int }\n".into(),
+    );
+    let sig_before = module_signatures(&db, file).clone();
+    file.set_text(&mut db).to(Arc::from(
+        "@NoSend\n@NoSync\npublic struct Handle { id: int }\n",
+    ));
+    let sig_after = module_signatures(&db, file).clone();
+    assert!(
+        sig_before != sig_after,
+        "adding @NoSend/@NoSync must invalidate module_signatures"
+    );
+}

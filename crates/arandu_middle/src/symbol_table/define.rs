@@ -108,6 +108,8 @@ impl super::SymbolTable {
         }
         self.exported_functions
             .extend(other.exported_functions.into_iter().map(map_symbol));
+        self.cold_functions
+            .extend(other.cold_functions.into_iter().map(map_symbol));
         self.tooling_entrypoints
             .extend(other.tooling_entrypoints.into_iter().map(map_symbol));
 
@@ -172,6 +174,12 @@ impl super::SymbolTable {
         if self.builtins.usize_type.is_none() {
             self.builtins.usize_type = other.builtins.usize_type.map(map_symbol);
         }
+        if self.builtins.i32_type.is_none() {
+            self.builtins.i32_type = other.builtins.i32_type.map(map_symbol);
+        }
+        if self.builtins.i64_type.is_none() {
+            self.builtins.i64_type = other.builtins.i64_type.map(map_symbol);
+        }
         if self.builtins.ptr_type.is_none() {
             self.builtins.ptr_type = other.builtins.ptr_type.map(map_symbol);
         }
@@ -208,6 +216,8 @@ impl super::SymbolTable {
         self.builtins.u32_type = valid(self.builtins.u32_type);
         self.builtins.u64_type = valid(self.builtins.u64_type);
         self.builtins.usize_type = valid(self.builtins.usize_type);
+        self.builtins.i32_type = valid(self.builtins.i32_type);
+        self.builtins.i64_type = valid(self.builtins.i64_type);
         self.builtin_alloc = valid(self.builtin_alloc);
         self.builtin_free = valid(self.builtin_free);
     }
@@ -241,6 +251,8 @@ impl super::SymbolTable {
             LangItem::U32 => self.builtins.u32_type = Some(sym),
             LangItem::U64 => self.builtins.u64_type = Some(sym),
             LangItem::Usize => self.builtins.usize_type = Some(sym),
+            LangItem::I32 => self.builtins.i32_type = Some(sym),
+            LangItem::I64 => self.builtins.i64_type = Some(sym),
             LangItem::Alloc => self.builtin_alloc = Some(sym),
             LangItem::Free => self.builtin_free = Some(sym),
             _ => {}
@@ -333,7 +345,9 @@ impl super::SymbolTable {
         span: Span,
         visibility: crate::Visibility,
     ) -> Result<SymbolId, SymbolId> {
-        if let Some(existing) = self.find_in_scope(scope, name) {
+        if name != "_"
+            && let Some(existing) = self.find_in_scope(scope, name)
+        {
             return Err(existing);
         }
 
@@ -353,7 +367,9 @@ impl super::SymbolTable {
             visibility,
             lang_item: None,
         });
-        self.scope_mut(scope).symbols.push(id);
+        if name != "_" {
+            self.scope_mut(scope).symbols.push(id);
+        }
         Ok(id)
     }
 
@@ -389,6 +405,30 @@ impl super::SymbolTable {
     /// but DOES NOT put it into the global scope.
     pub fn register_imported_symbol(&mut self, symbol: Symbol) {
         self.imported_symbols_mut().insert(symbol.id, symbol);
+    }
+
+    /// Registers an imported symbol into the prelude scope (`ScopeId(0)`),
+    /// so it is visible throughout the file without an explicit `import` and
+    /// can be freely shadowed by any local declaration or import in the file's
+    /// global scope without triggering `N006ImportConflict`.
+    pub fn insert_prelude_imported(&mut self, mut symbol: Symbol) {
+        let prelude_scope = ScopeId(0);
+        let id = symbol.id;
+        let name = symbol.name.clone();
+        match self.imported_symbols.get(&id) {
+            // An explicit named import already registered this symbol under an
+            // alias. Both name lookup and typeck read `imported_symbols[id].name`,
+            // so overwriting it here would make the alias undeclared.
+            Some(existing) if existing.name != name => return,
+            Some(_) => {}
+            None => {
+                symbol.scope = prelude_scope;
+                self.imported_symbols_mut().insert(id, symbol);
+            }
+        }
+        if self.find_in_scope(prelude_scope, &name).is_none() {
+            self.scope_mut(prelude_scope).symbols.push(id);
+        }
     }
 
     /// The imported symbols, copied first when another table shares them.

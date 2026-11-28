@@ -192,3 +192,68 @@ fn boxed_raw_reconstruction_requires_explicit_unsafe() {
         "{diagnostics}"
     );
 }
+
+#[test]
+fn option_box_uses_one_word_null_niche_and_mem_forget_suppresses_drop() {
+    let source = r#"module box_niche_forget
+import std.alloc.boxed as boxed
+import std.core.io as io
+import std.core.mem as mem
+import std.core.option as option
+
+struct Tracked { id: int }
+@Destructor
+func Tracked.destroy(self: own Tracked): void {
+    io.println(self.id)
+}
+
+func makeSome(v: int): Option<boxed.Box<Tracked>> {
+    return Option.Some(boxed.Box<Tracked>.new(Tracked { id: v }))
+}
+
+func makeNone(): Option<boxed.Box<Tracked>> {
+    return Option.None
+}
+
+func main(): int {
+    if mem.sizeOf<Option<boxed.Box<Tracked>>>() != mem.sizeOf<boxed.Box<Tracked>>() {
+        return 1
+    }
+    if mem.sizeOf<boxed.Box<Tracked>?>() != mem.sizeOf<ptr[Tracked]>() {
+        return 2
+    }
+    let someBox = makeSome(77)
+    let noneBox = makeNone()
+    match someBox {
+        Some(b) => {
+            if b.get().id != 77 { return 3 }
+        }
+        None => { return 4 }
+    }
+    if noneBox.isSome() { return 5 }
+
+    let leaked = Tracked { id: 999 }
+    mem.forget<Tracked>(leaked)
+    return 0
+}
+"#;
+    let output = execute(source, "run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines, ["77"], "mem.forget must suppress id 999 destructor");
+
+    let emitted = execute(source, "emit-wasm");
+    assert!(
+        emitted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let wasm_run = wasm_host::run_main(&emitted.stdout);
+    wasm_run.assert_returns(0, "Option<Box<T>> niche + mem.forget in Wasmtime");
+    assert_eq!(wasm_run.stdout.lines().collect::<Vec<_>>(), ["77"]);
+}

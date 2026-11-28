@@ -78,6 +78,9 @@ PartialProgram?
 ```
 
 v0.1 parser may stop at first fatal error. It should still structure diagnostics so later versions can recover and continue.
+The CST remains lossless on failed parses too: when recursive-descent parsing
+fails or produces invalid event text, tree construction falls back to the
+token-based item builder while AST lowering returns the parse diagnostic.
 
 ### Parser Architecture
 
@@ -986,6 +989,10 @@ VarDecl(compare)
 Os pontos de pressão gramatical registrados acima não autorizam sintaxe nova.
 O principal risco é criar um segundo caminho AST-first que duplique parsing e
 enfraqueça a recuperação incremental.
+
+O lowering CST-first exige terminador explícito ou inserido por ASI entre
+statements de bloco. Inserções na fronteira do item também fazem full reparse
+quando podem alterar o token de um doc comment anexado.
 
 ## Futuro e Próximos Passos
 

@@ -144,11 +144,20 @@ Every non-unit exit must have a result.
 
 The admitted result types are `bool`, `int`, `uint`, `isize`, `usize`, `i8`,
 `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `byte`, `float`, `f32`, `f64`,
-`str`, immutable literal-backed byte views, and `void`. Tuples, fixed arrays
-and closed Copy structs/enums may contain admitted values when their types have
-no runtime destructor or unsupported resource. This includes `Option<T>` and
-`Result<T, E>` with admitted payloads. Arbitrary references and mutable/owned
-heap resources remain outside the value model. Contextual
+`str`, immutable byte views, views (`[]T`) of admitted elements, and `void`.
+Tuples, fixed arrays and closed Copy structs/enums may contain admitted values
+when their types have no runtime destructor or unsupported resource. This
+includes `Option<T>` and `Result<T, E>` with admitted payloads. A frozen view
+holds a copy of the elements it covers: inside an evaluation, `arr[a..b]` and
+an array adjusted to `[]T` produce it. A `const` whose value holds a view of
+elements other than bytes lives in static storage at run time, as Rust
+promotes `&[..]` in a constant: every use reads the same elements, a function
+may return it, and its borrow origin is the program's static storage.
+
+As in Rust's `const fn`, a shared borrow (`ref x`) is evaluated: it reads a
+copy of its owner, which cannot change while it is borrowed, and only a local
+holds one, never a frozen result. Mutable borrows (`mut ref`) and owned heap
+resources remain outside the value model (T044). Contextual
 typing chooses the numeric type before evaluation. Without a contextual type,
 an integer result defaults to `int` and cannot silently narrow at a later use.
 Pointer-sized types use the selected target layout; ordinary `int`/`uint` remain
@@ -280,20 +289,35 @@ supported declaration headers. Concrete generic instances can use layout
 queries in dimensions and dependent pre-body selection without requesting
 final runtime AMIR.
 
-### Proposed expression APIs
+### Type descriptions
 
-`embed.bytes(path)`, `embed.str(path)` and `types.info<T>()` are design directions,
-not implemented standard-library APIs. They do not introduce `std.embed`,
-`std.types`, expression forms `@EmbedBytes`/`@TypeInfo`, or an array type
-`[comptime]u8`. Fixed arrays still require a concrete, checked length.
+`types.info<T>()` (`std.core.types`, RFC 0013 §10.1, C2) describes a concrete
+type on the selected target as an ordinary `TypeInfo` value: canonical name,
+`TypeKind`, size, alignment, `isComplete`, `fields: []FieldInfo` (name, type
+name, offset, size) and `variants: []VariantInfo` (name, tag, payload).
 
-Asset inclusion needs explicit path/root, result ownership/type, UTF-8, size
-budget and error contracts. Files must be registered as compiler inputs by the
-input-owning layer; neither tracked queries nor the CTFE VM may read them.
-Dependency changes, missing files and equal-content edits need incremental
-invalidation/cutoff tests. Reflection needs bounded frozen descriptors with
-defined type identity, visibility and target dependence before it can be
-exposed through a module API. See the
+- **Identity.** The name is the declaring module's canonical path with
+  canonical arguments (`app.shapes.Point`, `[]app.shapes.Point`,
+  `Option<int>`), never a `SymbolId` or file offset. The export table carries
+  each exported type's path (`ExportedSymbolTable::type_paths`), so an
+  importer, compile-time evaluation and the composed program spell it alike.
+- **Visibility.** The one of the call: private fields appear only when the
+  call is written in the module that declares the type. A left-out field
+  sets `isComplete` to `false`; the layout still counts it.
+- **Evaluation.** The intrinsic is lowered after monomorphization, so a
+  generic `T` is described per instance. The same AMIR builds the value in
+  compile-time evaluation and at run time; each member is an aggregate the
+  evaluator charges for, so the cost grows with the number of members.
+- **Storage.** A description holds views of its members. In a `const` it lives
+  in read-only static storage (constant views); at run time outside a `const`
+  it is a value of the enclosing frame, like any array viewed as a slice.
+
+`embed.bytes(path)` and `embed.str(path)` remain design directions, not
+implemented APIs. Asset inclusion needs explicit path/root, result
+ownership/type, UTF-8, size budget and error contracts. Files must be
+registered as compiler inputs by the input-owning layer; neither tracked
+queries nor the CTFE VM may read them. Dependency changes, missing files and
+equal-content edits need incremental invalidation/cutoff tests. See the
 [naming contract](arandu-attribute-naming-v0.1.md#operações-em-expressões).
 
 ## Architecture
@@ -508,7 +532,8 @@ Target identity is an explicit `TargetConfig` input alongside `DataLayout`.
 `@targetOS()`, `@targetArch()` and `@targetPointerWidth()`; semantic queries do
 not inspect the host. Native and Wasm CLI drivers select identity before typing.
 
-Arbitrary references and unsupported heap resources remain outside CTFE. Supported
+Mutable references, references inside frozen results and unsupported heap
+resources remain outside CTFE. Supported
 aggregate/string/float values and concrete staging do not authorize general
 metaprogramming, heap allocation, reflection or generated declarations.
 Finite static expansion accepts integer half-open ranges and fixed Copy arrays.

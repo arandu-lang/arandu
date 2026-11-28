@@ -144,6 +144,8 @@ impl TokenKind {
             TokenKind::KwComptime => 138,
             TokenKind::ByteString => 139,
             TokenKind::PipeGt => 140,
+            TokenKind::CString => 141,
+            TokenKind::Label => 142,
             TokenKind::Error(_) => 132,
         }
     }
@@ -291,6 +293,8 @@ impl TokenKind {
             138 => TokenKind::KwComptime,
             139 => TokenKind::ByteString,
             140 => TokenKind::PipeGt,
+            141 => TokenKind::CString,
+            142 => TokenKind::Label,
             _ => TokenKind::Error(crate::LexErrorCode::InvalidChar),
         }
     }

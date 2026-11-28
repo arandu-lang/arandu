@@ -1,0 +1,295 @@
+module ownClosures
+
+import std.alloc.string as strings
+import std.alloc.vec as vec
+
+// `own (A) -> R` closures own their captures and outlive the scope that made
+// them (RFC 0032, L3). Calls keep changing the same environment, and the
+// environment is destroyed exactly once, with the closure.
+
+static mut DROPS: int = 0
+
+struct Token {
+    id: int,
+}
+
+@Destructor
+func Token.destroy(self: own Token): void {
+    unsafe {
+        DROPS += 1
+    }
+}
+
+func drops(): int {
+    return unsafe { DROPS }
+}
+
+// A mutable capture lives in the environment between calls.
+func counter(start: int): own () -> int {
+    let mut n = start
+    return own () => {
+        n += 1
+        return n
+    }
+}
+
+// A copied capture, and a lambda that needs no `own` spelling.
+func adder(by: int): own (int) -> int {
+    return (x) => x + by
+}
+
+// Without captures the closure allocates nothing.
+func doubler(): own (int) -> int {
+    return (x) => x * 2
+}
+
+// An owned resource moves into the environment.
+func greeter(name: strings.String): own (int) -> int {
+    return (extra) => name.asStr().len() as int + extra
+}
+
+func tokenHolder(id: int): own () -> int {
+    let token = Token { id: id }
+    return () => token.id
+}
+
+func callThrough(f: mut ref own (int) -> int, value: int): int {
+    return f(value)
+}
+
+func consume(f: own (int) -> int): int {
+    return f(1) + f(1)
+}
+
+struct Job {
+    run: own (int) -> int,
+    base: int,
+}
+
+// A field holding a closure is called like a method.
+func runJob(job: Job): int {
+    return job.run(job.base)
+}
+
+struct Op {
+    apply: (int) -> int,
+}
+
+func Op.twice(self: ref Op, x: int): int {
+    return self.apply(self.apply(x))
+}
+
+func counting(): int {
+    let mut next = counter(10)
+    if next() != 11 { return 1 }
+    if next() != 12 { return 2 }
+    let mut other = counter(0)
+    if other() != 1 { return 3 }
+    if next() != 13 { return 4 }
+    return 0
+}
+
+func calling(): int {
+    let mut add = adder(5)
+    if add(1) != 6 { return 1 }
+    let mut double = doubler()
+    if double(21) != 42 { return 2 }
+    if callThrough(mut ref add, 10) != 15 { return 3 }
+    if consume(adder(2)) != 6 { return 4 }
+    if runJob(Job { run: adder(40), base: 2 }) != 42 { return 5 }
+    let mut greet = greeter(strings.String.from("arandu"))
+    if greet(1) != 7 { return 6 }
+    return 0
+}
+
+func holdAndRelease(): int {
+    let before = drops()
+    let mut held = tokenHolder(7)
+    if held() != 7 { return 1 }
+    if drops() != before { return 2 }
+    return 0
+}
+
+func dropping(): int {
+    let before = drops()
+    let held = holdAndRelease()
+    if held != 0 { return held }
+    if drops() != before + 1 { return 3 }
+    let moved = tokenHolder(8)
+    let mut owner = moved
+    if owner() != 8 { return 4 }
+    return 0
+}
+
+func triple(x: int): int {
+    return x * 3
+}
+
+func identity<T>(x: T): T {
+    return x
+}
+
+// Named and generic functions convert without an environment, and a lambda
+// argument converts where the parameter is owning.
+func functions(): int {
+    let mut t: own (int) -> int = triple
+    if t(2) != 6 { return 1 }
+    let mut i: own (int) -> int = identity
+    if i(9) != 9 { return 2 }
+    if consume((x) => x + 1) != 4 { return 3 }
+    let k = 10
+    if consume((x) => x + k) != 22 { return 4 }
+    return 0
+}
+
+// Closures live in a container and are destroyed with it.
+func collecting(): int {
+    let before = drops()
+    let mut jobs: vec.Vec<own () -> int> = vec.Vec.new()
+    jobs.push(tokenHolder(1))
+    jobs.push(tokenHolder(2))
+    jobs.push(counter(40))
+    match jobs.pop() {
+        Option.Some(job) => {
+            let mut last = job
+            if last() != 41 { return 1 }
+        }
+        Option.None => { return 2 }
+    }
+    match jobs.getMut(1 as usize) {
+        Option.Some(job) => {
+            if job() != 2 { return 3 }
+        }
+        Option.None => { return 4 }
+    }
+    if drops() != before { return 5 }
+    return 0
+}
+
+func sendable(by: int): own (int) -> int + Send {
+    return (x) => x + by
+}
+
+func widen(f: own (int) -> int + Send): own (int) -> int {
+    return f
+}
+
+// A `Send` closure is a closure wherever one is expected.
+func forgetting(): int {
+    let local: own (int) -> int = sendable(1)
+    if local(1) != 2 { return 1 }
+    if consume(sendable(2)) != 6 { return 2 }
+    let mut widened = widen(sendable(3))
+    if widened(3) != 6 { return 3 }
+    let label = strings.String.from("abc")
+    let kept: own () -> int + Send = () => label.asStr().len() as int
+    let plain: own () -> int = kept
+    if plain() != 3 { return 4 }
+    return 0
+}
+
+func applyTwice(x: int, f: (int) -> int): int {
+    return f(x) + f(x)
+}
+
+// An owning closure is lent to a callback parameter and keeps its state;
+// a function value converts to an owning closure.
+func interop(): int {
+    let mut n = 0
+    let running: own (int) -> int = (x) => {
+        n += x
+        return n
+    }
+    if applyTwice(1, running) != 3 { return 1 }
+    if running(10) != 12 { return 2 }
+    let thin: (int) -> int = triple
+    let owned: own (int) -> int = thin
+    if owned(5) != 15 { return 3 }
+    return 0
+}
+
+static mut ORDER: int = 0
+
+func mark(tag: int): int {
+    unsafe {
+        ORDER = ORDER * 10 + tag
+    }
+    return tag
+}
+
+func tokenAdder(id: int): own (int) -> int {
+    let token = Token { id: id }
+    return (x) => token.id + x
+}
+
+func markedAdder(id: int): own (int) -> int {
+    mark(2)
+    return tokenAdder(id)
+}
+
+func taking(first: int, f: (int) -> int, last: int): int {
+    return f(first) + last
+}
+
+// A temporary closure lives until its call ends: it is called directly or
+// lent to a callback, then destroyed, and the arguments around it are still
+// evaluated left to right.
+func temporaries(): int {
+    let before = drops()
+    if tokenAdder(5)(1) != 6 { return 1 }
+    if drops() != before + 1 { return 2 }
+    if applyTwice(1, tokenAdder(10)) != 22 { return 3 }
+    if drops() != before + 2 { return 4 }
+    if taking(mark(1), markedAdder(0), mark(3)) != 4 { return 5 }
+    let order = unsafe { ORDER }
+    if order != 123 { return 6 }
+    if drops() != before + 3 { return 7 }
+    return 0
+}
+
+// A lambda with annotated parameters needs no expected type: without
+// captures it is a function value, with captures an owning closure.
+func inferred(): int {
+    let double = (x: int) => x * 2
+    let k = 10
+    let add = (x: int) => x + k
+    let larger = (a: int, b: int) => {
+        if a > b { return a }
+        return b
+    }
+    if double(21) != 42 { return 1 }
+    if add(1) != 11 { return 2 }
+    if larger(3, 9) != 9 { return 3 }
+    if applyTwice(4, double) != 16 { return 4 }
+    if applyTwice(1, add) != 22 { return 5 }
+    let op = Op { apply: double }
+    if op.apply(3) != 6 { return 6 }
+    if op.twice(3) != 12 { return 7 }
+    return 0
+}
+
+func main(): int {
+    let c = counting()
+    if c != 0 { return 10 + c }
+    let k = calling()
+    if k != 0 { return 20 + k }
+    let d = dropping()
+    if d != 0 { return 30 + d }
+    // `owner` above is destroyed when `dropping` returns.
+    if drops() != 2 { return 40 }
+    let f = functions()
+    if f != 0 { return 50 + f }
+    let v = collecting()
+    if v != 0 { return 60 + v }
+    // Both tokens left with the vector.
+    if drops() != 4 { return 70 }
+    let g = forgetting()
+    if g != 0 { return 80 + g }
+    let i = interop()
+    if i != 0 { return 90 + i }
+    let t = temporaries()
+    if t != 0 { return 100 + t }
+    let n = inferred()
+    if n != 0 { return 110 + n }
+    return 0
+}

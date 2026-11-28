@@ -185,6 +185,7 @@ fn empty_program() -> arandu_middle::amir::AmirProgram {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     }
 }
 

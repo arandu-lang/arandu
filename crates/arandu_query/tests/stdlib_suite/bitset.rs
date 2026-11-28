@@ -7,7 +7,9 @@ use arandu_query::passes::{exported_symbols, parse};
 
 const BITSET_ARU: &str = include_str!("../../../../stdlib/alloc/bitset.aru");
 const VEC_ARU: &str = include_str!("../../../../stdlib/alloc/vec.aru");
+const ALLOCATOR_API_ARU: &str = include_str!("../../../../stdlib/alloc/allocator_api.aru");
 const MEM_ARU: &str = include_str!("../../../../stdlib/core/mem.aru");
+const RESULT_ARU: &str = include_str!("../../../../stdlib/core/result.aru");
 const OPTION_ARU: &str = include_str!("../../../../stdlib/core/option.aru");
 const INTRINSICS_ARU: &str = include_str!("../../../../stdlib/core/intrinsics.aru");
 const MARKER_ARU: &str = include_str!("../../../../stdlib/core/marker.aru");
@@ -59,6 +61,11 @@ fn stdlib_bitset_usage_in_program() {
     // Executable callees are checked independently, including their imports.
     db.new_stdlib_file("stdlib/core/marker.aru".to_string(), MARKER_ARU.to_string());
     db.new_stdlib_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
+    db.new_stdlib_file(
+        "stdlib/alloc/allocator_api.aru".to_string(),
+        ALLOCATOR_API_ARU.to_string(),
+    );
+    db.new_stdlib_file("stdlib/core/result.aru".to_string(), RESULT_ARU.to_string());
     db.new_stdlib_file("stdlib/alloc/vec.aru".to_string(), VEC_ARU.to_string());
     let bitset_file = db.new_stdlib_file(
         "stdlib/alloc/bitset.aru".to_string(),

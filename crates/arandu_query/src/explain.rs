@@ -35,6 +35,24 @@ pub struct RebuildLog {
     events: Mutex<Vec<RebuildEvent>>,
 }
 
+/// Extracts only the query name from a Salsa `Debug` key.
+fn query_name(debug_key: &str) -> &str {
+    let head = debug_key
+        .split(['(', '{', '<', ' '])
+        .next()
+        .unwrap_or(debug_key);
+    head.rsplit("::").next().unwrap_or(head)
+}
+
+fn write_entries(out: &mut String, marker: &str, entries: &[(String, usize)], limit: usize) {
+    for (name, count) in entries.iter().take(limit) {
+        let _ = writeln!(out, "  {marker} {name} (×{count})");
+    }
+    if entries.len() > limit {
+        let _ = writeln!(out, "  {marker} … {} more", entries.len() - limit);
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RebuildCounts {
     pub executed: usize,
@@ -123,6 +141,51 @@ impl RebuildLog {
         header
     }
 
+    /// Aggregated, bounded view of the rebuild chain for `-Zexplain-rebuild`.
+    ///
+    /// Salsa `Debug` keys embed internal IDs and the full argument tuple. Those
+    /// details are implementation noise for users; group by query name in
+    /// first-seen order and cap the number of displayed queries. Validation
+    /// entries are opt-in via `verbose`.
+    #[must_use]
+    pub fn format_summary(&self, verbose: bool, limit: usize) -> String {
+        let events = self.snapshot();
+        let mut executed: Vec<(String, usize)> = Vec::new();
+        let mut validated: Vec<(String, usize)> = Vec::new();
+        let mut n_exec = 0usize;
+        let mut n_val = 0usize;
+
+        let record = |entries: &mut Vec<(String, usize)>, key: &str| {
+            let name = query_name(key);
+            if let Some(entry) = entries.iter_mut().find(|(existing, _)| existing == name) {
+                entry.1 += 1;
+            } else {
+                entries.push((name.to_string(), 1));
+            }
+        };
+
+        for event in &events {
+            match event {
+                RebuildEvent::Execute { key } => {
+                    n_exec += 1;
+                    record(&mut executed, key);
+                }
+                RebuildEvent::Validate { key } => {
+                    n_val += 1;
+                    record(&mut validated, key);
+                }
+            }
+        }
+
+        let mut out = String::new();
+        let _ = writeln!(out, "rebuild chain: {n_exec} execute, {n_val} validate");
+        write_entries(&mut out, "→", &executed, limit);
+        if verbose {
+            write_entries(&mut out, "·", &validated, limit);
+        }
+        out
+    }
+
     /// Salsa event callback: maps runtime events into [`RebuildEvent`] and updates `-Zprofile-queries`.
     pub fn salsa_callback(this: Arc<Self>) -> Box<dyn Fn(Event) + Send + Sync + 'static> {
         Box::new(move |event| match event.kind {
@@ -168,19 +231,19 @@ pub fn any_execute(log: &RebuildLog) -> bool {
 impl RebuildLog {
     /// One-line status for `arandu run` / `build` (DX.5 surface).
     ///
-    /// - `[cached]` — no query bodies ran (full memo hit window)
-    /// - `[rebuilt: N queries]` — N `WillExecute` events in this window
+    /// - `[cached] (V verified)` — no query bodies ran; V memos were validated
+    /// - `[rebuilt: N queries, V verified]` — N `WillExecute` and V
+    ///   `DidValidateMemoizedValue` events in this window
     #[must_use]
     pub fn status_line(&self) -> String {
-        let events = self.snapshot();
-        let n_exec = events
-            .iter()
-            .filter(|e| matches!(e, RebuildEvent::Execute { .. }))
-            .count();
-        if n_exec == 0 {
-            "[cached]".to_string()
+        let counts = self.counts();
+        if counts.executed == 0 {
+            format!("[cached] ({} verified)", counts.validated)
         } else {
-            format!("[rebuilt: {n_exec} queries]")
+            format!(
+                "[rebuilt: {} queries, {} verified]",
+                counts.executed, counts.validated
+            )
         }
     }
 }
@@ -243,6 +306,33 @@ mod tests {
         assert!(chain_verbose.contains("→ execute query_a"));
         assert!(chain_verbose.contains("· validate query_b"));
         assert!(chain_verbose.contains("→ execute query_c"));
+    }
+
+    #[test]
+    fn format_summary_aggregates_bounds_and_hides_internal_keys() {
+        let log = RebuildLog::new();
+        for _ in 0..2 {
+            log.push(RebuildEvent::Execute {
+                key: "crate::queries::parse(SourceFile { id: FileId(1) })".to_string(),
+            });
+        }
+        log.push(RebuildEvent::Execute {
+            key: "type_check(file)".to_string(),
+        });
+        log.push(RebuildEvent::Validate {
+            key: "syntax_tree(file)".to_string(),
+        });
+
+        let summary = log.format_summary(true, 1);
+        assert!(summary.contains("rebuild chain: 3 execute, 1 validate"));
+        assert!(summary.contains("→ parse (×2)"));
+        assert!(summary.contains("→ … 1 more"));
+        assert!(summary.contains("· syntax_tree (×1)"));
+        assert!(!summary.contains("FileId"));
+        assert!(!summary.contains("type_check (×1)"));
+
+        let quiet = log.format_summary(false, 12);
+        assert!(!quiet.contains("· syntax_tree"));
     }
 
     #[test]

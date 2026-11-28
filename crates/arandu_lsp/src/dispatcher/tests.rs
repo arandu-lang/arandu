@@ -30,6 +30,102 @@ fn diagnostics_are_not_scheduled_for_uncommitted_document_text() {
 }
 
 #[test]
+fn saturated_diagnostic_queue_refills_rejected_open_documents() {
+    use crossbeam_channel::bounded;
+    use std::time::Duration;
+
+    let mut state = ServerState::new();
+    let first_uri = parse_uri("file:///first-refill.aru").expect("first URI");
+    let second_uri = parse_uri("file:///second-refill.aru").expect("second URI");
+    let first_id = state.open_or_commit(&first_uri, "func first() {}".into());
+    let second_id = state.open_or_commit(&second_uri, "func second() {}".into());
+    state.mark_open(&first_uri);
+    state.mark_open(&second_uri);
+    state.last_diag_fp.insert(
+        second_id,
+        ([0; 32], None, arandu_query::AnalysisRevision::default()),
+    );
+    let pool = WorkerPool::with_capacity(1, 1).expect("worker");
+    let (started_tx, started_rx) = bounded(1);
+    let (release_tx, release_rx) = bounded(1);
+    pool.spawn(Priority::Interactive, None, move |_| {
+        started_tx.send(()).expect("signal worker barrier");
+        release_rx.recv().expect("release worker barrier");
+    })
+    .expect("barrier job");
+    started_rx.recv().expect("worker entered barrier");
+
+    let (connection, _client) = Connection::memory();
+    let (job_tx, job_rx) = bounded(4);
+    crate::diagnostics::spawn_open_diagnostics(&state, &pool, &job_tx);
+    release_tx.send(()).expect("release worker");
+
+    let first_result = job_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("one admitted diagnostic completes");
+    let completed_id = match &first_result {
+        JobResult::Diagnostics { doc_id, .. } => *doc_id,
+        _ => panic!("expected diagnostic result"),
+    };
+    assert!(completed_id == first_id || completed_id == second_id);
+    handle_job_result(&connection, &mut state, &pool, &job_tx, first_result)
+        .expect("publish first current diagnostics");
+
+    crate::diagnostics::refill_missing_diagnostics(&state, &pool, &job_tx);
+    let second_result = job_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("rejected open document is retried after capacity frees");
+    let JobResult::Diagnostics { doc_id, .. } = second_result else {
+        panic!("expected refilled diagnostic result");
+    };
+    assert_ne!(doc_id, completed_id);
+}
+
+#[test]
+fn duplicate_diagnostics_advance_revision_without_requeueing_document() {
+    let (connection, _client) = Connection::memory();
+    let mut state = ServerState::new();
+    let uri = parse_uri("file:///same-diagnostics.aru").expect("URI");
+    let id = state.open_or_commit(&uri, "func first() {}".into());
+    state.set_version(id, 1);
+    state.mark_open(&uri);
+    let fingerprint = [7; 32];
+    let previous_revision = state.revision();
+    state
+        .last_diag_fp
+        .insert(id, (fingerprint, Some(1), previous_revision));
+
+    // A different document advances the global Salsa revision while this
+    // document's source and diagnostics remain unchanged.
+    let other_uri = parse_uri("file:///other-document.aru").expect("other URI");
+    state.open_or_commit(&other_uri, "func second() {}".into());
+    let revision = state.revision();
+    assert_ne!(revision, previous_revision);
+
+    let pool = WorkerPool::new(1).expect("worker");
+    let (job_tx, _) = unbounded();
+    handle_job_result(
+        &connection,
+        &mut state,
+        &pool,
+        &job_tx,
+        JobResult::Diagnostics {
+            uri,
+            doc_id: id,
+            version: Some(1),
+            revision,
+            fingerprint,
+            diags: Vec::new(),
+        },
+    )
+    .expect("deduplicate diagnostics");
+    assert_eq!(state.last_diag_fp[&id], (fingerprint, Some(1), revision));
+
+    crate::diagnostics::refill_missing_diagnostics(&state, &pool, &job_tx);
+    assert!(!pool.contains_key(&JobKey::Diagnostics(id)));
+}
+
+#[test]
 fn pending_document_edits_block_diagnostic_publication_until_commit() {
     let (connection, client) = Connection::memory();
     let mut state = ServerState::new();

@@ -31,7 +31,14 @@ e backends, sem depender de detalhes de host ou frontend.
    - `Branch { condition, if_true: bbX, if_false: bbY }`: Boolean conditional branch; used for `if`, `while`, and C-style `for` conditions.
    - `SwitchInt { discriminant, targets: [(value, bbX), ...], otherwise: bbY }`: Integer discriminant switch used for `match` on `int` literals, enum unit variants (via `discriminant`), `if`/`while` boolean conditions (`1 => true`), and hybrid fallbacks (range/guard arms chain on `otherwise`).
    - `Suspend { resume, args, ... }`: suspension frontier with live values and resume block.
-   - `Unreachable`: Denotes code that cannot be executed.
+   - `Unreachable`: Denotes code that cannot be executed. Passes may assume
+     it never runs and use it to mark dead blocks.
+   - `Trap(kind)`: a failed run-time check (`TrapKind`: range or index out
+     of bounds, division by zero or overflow, allocation, cast). Backends
+     print `panic: <message>` on the standard error stream and trap, so the
+     exit status stays the platform's trap; Wasm leaves the report to its
+     host. No pass treats it as dead, and compile-time evaluation reports it
+     as T044 with the message. Prints as `trap "<message>"`.
 
 Goto/Branch/SwitchInt edges carry arguments matching destination block parameters. These logical examples omit the physical dense statement table and some arguments; canonical fixtures and `arandu_middle::amir` define the current schema.
 
@@ -155,11 +162,11 @@ Todo pass que lê ou escreve AMIR deve preservar estas regras. O validador `vali
 
 | ID | Invariante |
 |----|------------|
-| CFG-1 | Todo basic block termina com exatamente um **terminador** (`Return`, `Goto`, `Branch`, `SwitchInt`, `Suspend`, `Unreachable`). |
+| CFG-1 | Todo basic block termina com exatamente um **terminador** (`Return`, `Goto`, `Branch`, `SwitchInt`, `Suspend`, `Unreachable`, `Trap`). |
 | CFG-2 | Nenhuma instrução aparece **após** o terminador no mesmo bloco. |
 | CFG-3 | Todo `Goto` / `Branch` / `SwitchInt` / `Suspend.resume` aponta para um `bb` existente na mesma função. |
 | CFG-4 | `bb0` é o único ponto de entrada; blocos órfãos são erro de lowering (ou `Unreachable` explícito). |
-| CFG-5 | Blocos alcançáveis a partir de `bb0` (exceto código morto marcado `Unreachable`). |
+| CFG-5 | Blocos alcançáveis a partir de `bb0` (exceto código morto marcado `Unreachable` e o `Trap` de uma checagem que a otimização provou sempre passar). |
 
 ### SSA (implementado)
 

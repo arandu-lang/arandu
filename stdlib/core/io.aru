@@ -265,7 +265,7 @@ public func SliceWriter.asSlice(self: ref SliceWriter): []u8 {
 
 /// Returns the full underlying destination buffer as an immutable slice view.
 public func SliceWriter.buffer(self: ref SliceWriter): []u8 {
-    return self.data
+    return unsafe { intrinsics.sliceSubslice<u8>(self.data, 0, slice.len<u8>(self.data)) }
 }
 
 /// Consumes the writer and returns the underlying destination buffer.

@@ -7,14 +7,15 @@
 //!
 //! That is sound only when the fingerprint covers every read and the output is
 //! a deterministic function of them: a missing read would let Salsa backdate a
-//! changed value and leave consumers stale. Debug builds therefore also hash
-//! the content and fail when one database produces two contents for the same
-//! fingerprint. Outputs carry their identity in [`crate::db::FingerprintEq`].
+//! changed value and leave consumers stale. The owner crate's unit tests also
+//! hash the content and fail when one database produces two contents for the
+//! same fingerprint. Outputs carry their identity in
+//! [`crate::db::FingerprintEq`].
 
 /// Fails when this database already produced different content for
 /// `fingerprint` of the same query kind, which means the fingerprint omits a
 /// read.
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 pub(crate) fn verify(
     db: &dyn crate::ArandCompilerDb,
     kind: &'static str,
@@ -30,7 +31,7 @@ pub(crate) fn verify(
     );
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 pub(crate) mod oracle {
     use rustc_hash::FxHashMap;
     use std::sync::atomic::{AtomicU64, Ordering};

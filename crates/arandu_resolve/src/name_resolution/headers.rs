@@ -18,6 +18,7 @@ pub fn resolve_headers_with_poll(
     // exactly once when the seed is still shared with a memoized query.
     let mut resolver = Resolver {
         reusable_definitions: rustc_hash::FxHashSet::default(),
+        or_patterns: Vec::new(),
         symbols: std::sync::Arc::unwrap_or_clone(result.symbols),
         resolved: std::sync::Arc::unwrap_or_clone(result.resolved),
         docs: result.docs,
@@ -32,40 +33,37 @@ pub fn resolve_headers_with_poll(
 
     let global = resolver.symbols.global_scope();
 
-    for import in &program.imports {
-        poll();
-        if reject_package_filesystem_import(db, &mut resolver, import) {
-            continue;
-        }
-        // Collect aliases only after package policy accepts the import. A rejected
-        // filesystem import must not leave a partially usable namespace behind.
-        if let arandu_parser::ImportDecl::ExternalAlias { source, alias, .. } = import {
-            // SmolStr::clone is O(1)
-            resolver
-                .import_aliases
-                .insert(alias.clone(), source.clone());
-        }
+    for raw_import in &program.imports {
+        for expanded in crate::expand_module_group(raw_import) {
+            let import = &expanded;
+            poll();
+            if reject_package_filesystem_import(db, &mut resolver, import) {
+                continue;
+            }
+            // Collect aliases only after package policy accepts the import. A rejected
+            // filesystem import must not leave a partially usable namespace behind.
+            if let arandu_parser::ImportDecl::ExternalAlias { source, alias, .. } = import {
+                // SmolStr::clone is O(1)
+                resolver
+                    .import_aliases
+                    .insert(alias.clone(), source.clone());
+            }
 
-        resolver.collect_import(global, import);
-        if short_circuit_prelude_import(db, &mut resolver, import, global) {
-            continue;
+            resolver.collect_import(global, import);
+            if short_circuit_prelude_import(db, &mut resolver, import, global) {
+                continue;
+            }
+            merge_import_exports(db, &mut resolver, import, global);
         }
-        merge_import_exports(db, &mut resolver, import, global);
     }
 
     // Ambient linkage for inherent methods of primitive types (str, char, int, float, ptr).
     // Allows methods like `s.len()` or `x.abs()` without requiring an explicit import.
     // Core library modules (`std.core.*`) are excluded to avoid circular dependency cycles.
-    if !resolver
-        .current_module
-        .as_deref()
-        .is_some_and(|m| m.starts_with("std.core."))
     {
-        for &(path, mod_name) in crate::AMBIENT_PRIMITIVE_MODULES {
+        let current = resolver.current_module.clone();
+        for (path, mod_name) in crate::ambient_modules(current.as_deref()) {
             poll();
-            if resolver.current_module.as_deref() == Some(mod_name) {
-                continue;
-            }
             let Some(imported_file) = db.resolve_module_path(path) else {
                 continue;
             };
@@ -73,10 +71,21 @@ pub fn resolve_headers_with_poll(
                 continue;
             }
             let exports = db.exported_symbols(imported_file);
+            if mod_name == crate::AMBIENT_CLOSURE_MODULE.1
+                || matches!(mod_name, "std.core.hash" | "std.core.fmt")
+            {
+                link_unnamed_exports(&mut resolver, &exports, global);
+                continue;
+            }
+            if let Some(exposed) = prelude_exposed_names(mod_name) {
+                link_prelude_exports(&mut resolver, &exports, global, exposed);
+                continue;
+            }
             for (name, &(id, kind)) in &exports.symbols {
                 if matches!(kind, arandu_middle::SymbolKind::AssociatedFunc)
                     && let Some((ty, method)) = name.rsplit_once('.')
-                    && let Some(type_sym) = resolver.symbols.lookup_type(global, ty)
+                    && let Some(type_sym) =
+                        resolver.symbols.lookup_type(arandu_middle::ScopeId(0), ty)
                 {
                     let lang_item = exports.lang_items.get(&id).copied().or_else(|| {
                         let internal = db
@@ -337,5 +346,107 @@ fn explicit_self_import(import: &arandu_parser::ImportDecl) -> Option<String> {
             Some(format!("from self.{} import {{ {items} }}", path[0]))
         }
         _ => None,
+    }
+}
+
+/// Curated symbols from ambient stdlib modules exposed into the prelude scope
+/// (`ScopeId(0)`). Any local declaration or explicit `import` in `ScopeId(1)`
+/// shadows these cleanly without conflict.
+fn prelude_exposed_names(mod_name: &str) -> Option<&'static [&'static str]> {
+    match mod_name {
+        "std.alloc.string" => Some(&["String"]),
+        "std.alloc.vec" => Some(&["Vec"]),
+        "std.alloc.boxed" => Some(&["Box"]),
+        "std.core.range" => Some(&["Range", "RangeInclusive"]),
+        "std.core.cmp" => Some(&["Ordering"]),
+        "std.core.iter" => Some(&["Iterator"]),
+        "std.core.marker" => Some(&["Copy", "Clone", "Send", "Sync"]),
+        "std.core.ops" => Some(&["Index", "IndexMut"]),
+        _ => None,
+    }
+}
+
+/// Registers exports of an ambient prelude module: curated names enter
+/// `ScopeId(0)` (prelude scope), remaining exports stay registered by ID for
+/// lang items/lowering, and associated methods attach to both the module's
+/// exported types (e.g. `String.*`, `Vec.*`, `Box.*`) and local primitive types
+/// (e.g. `str.toString`).
+fn link_prelude_exports(
+    resolver: &mut Resolver<'_>,
+    exports: &arandu_middle::ExportedSymbolTable,
+    global: arandu_middle::ScopeId,
+    exposed_names: &[&str],
+) {
+    for (name, &(id, kind)) in &exports.symbols {
+        if exports.sealed_symbols.contains(name) {
+            continue;
+        }
+        let sym = arandu_middle::Symbol {
+            id,
+            name: name.clone().into(),
+            kind,
+            span: arandu_lexer::Span::new(id.file_id, 0, 0),
+            scope: global,
+            visibility: arandu_parser::Visibility::Public,
+            lang_item: exports.lang_items.get(&id).copied(),
+        };
+        if exposed_names.contains(&name.as_str()) {
+            resolver.symbols.insert_prelude_imported(sym);
+        } else {
+            resolver.symbols.register_imported_symbol(sym);
+        }
+        exports.record_type_path(id, &mut resolver.symbols);
+        if kind == arandu_middle::SymbolKind::AssociatedFunc
+            && let Some((ty, method)) = name.rsplit_once('.')
+        {
+            if let Some(&(type_sym, _)) = exports.symbols.get(ty) {
+                resolver
+                    .symbols
+                    .associated_members_mut()
+                    .insert((type_sym, SmolStr::new(method)), id);
+            }
+            if let Some(local_type_sym) =
+                resolver.symbols.lookup_type(arandu_middle::ScopeId(0), ty)
+            {
+                resolver
+                    .symbols
+                    .associated_members_mut()
+                    .insert((local_type_sym, SmolStr::new(method)), id);
+            }
+        }
+    }
+}
+
+/// Registers every export of an ambient module without naming it in any scope:
+/// the symbols and their lang items reach the compiler, never source code.
+fn link_unnamed_exports(
+    resolver: &mut Resolver<'_>,
+    exports: &arandu_middle::ExportedSymbolTable,
+    global: arandu_middle::ScopeId,
+) {
+    for (name, &(id, kind)) in &exports.symbols {
+        if exports.sealed_symbols.contains(name) {
+            continue;
+        }
+        resolver
+            .symbols
+            .register_imported_symbol(arandu_middle::Symbol {
+                id,
+                name: name.clone().into(),
+                kind,
+                span: arandu_lexer::Span::new(id.file_id, 0, 0),
+                scope: global,
+                visibility: arandu_parser::Visibility::Public,
+                lang_item: exports.lang_items.get(&id).copied(),
+            });
+        if kind == arandu_middle::SymbolKind::AssociatedFunc
+            && let Some((ty, method)) = name.rsplit_once('.')
+            && let Some(&(type_sym, _)) = exports.symbols.get(ty)
+        {
+            resolver
+                .symbols
+                .associated_members_mut()
+                .insert((type_sym, SmolStr::new(method)), id);
+        }
     }
 }

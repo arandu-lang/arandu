@@ -162,6 +162,7 @@ fn transfer_local_holders(
         AmirStmt::Assign { .. }
         | AmirStmt::Call { .. }
         | AmirStmt::Free(_)
+        | AmirStmt::ArenaRewind(_)
         | AmirStmt::StorageLive(_)
         | AmirStmt::Destroy(_)
         | AmirStmt::Nop => {}
@@ -222,7 +223,9 @@ fn terminator_edges(terminator: &AmirTerminator) -> Vec<(BlockId, &[AmirOperand]
             edges.push((otherwise.0, otherwise.1.as_slice()));
             edges
         }
-        AmirTerminator::Return | AmirTerminator::Unreachable => Vec::new(),
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {
+            Vec::new()
+        }
     }
 }
 

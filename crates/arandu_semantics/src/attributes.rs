@@ -17,12 +17,20 @@ pub enum AnnotationId {
     Deny,
     Forbid,
     NoFallback,
+    NoCopy,
+    NoSend,
+    NoSync,
+    UnsafeSend,
+    UnsafeSync,
     Destructor,
     Unsafe,
     Effects,
     NoSuspend,
     Specialize,
     Repr,
+    Union,
+    Cold,
+    Derive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -67,11 +75,14 @@ impl AnnotationTarget {
 pub enum AnnotationArguments {
     None,
     OneString,
+    /// One or more string arguments (e.g. `@Suppress("unused_variable", "shadowing")`).
+    OneOrMoreStrings,
     /// No argument or exactly one string: the declaration name is the default,
     /// and the string overrides it (e.g. `@Export` / `@Export("c_name")`).
     OptionalString,
     OneStringOrIdent,
     EffectList,
+    OneOrMoreIdents,
 }
 
 impl AnnotationArguments {
@@ -80,9 +91,13 @@ impl AnnotationArguments {
         match self {
             Self::None => "no arguments",
             Self::OneString => "one string argument",
+            Self::OneOrMoreStrings => "one or more string arguments",
             Self::OptionalString => "no arguments or one string argument",
             Self::OneStringOrIdent => "one string or identifier argument",
             Self::EffectList => "one or more effect identifiers or strings",
+            Self::OneOrMoreIdents => {
+                "one or more trait identifiers (PartialEq, Eq, Ord, Clone, Hash, Debug)"
+            }
         }
     }
 }
@@ -110,20 +125,6 @@ pub struct AnnotationSpec {
 const FUNCTION: &[AnnotationTarget] = &[AnnotationTarget::Function, AnnotationTarget::Method];
 const FREE_FUNCTION: &[AnnotationTarget] = &[AnnotationTarget::Function];
 const EXTERN_BLOCK: &[AnnotationTarget] = &[AnnotationTarget::ExternBlock];
-const DECLARATIONS: &[AnnotationTarget] = &[
-    AnnotationTarget::Const,
-    AnnotationTarget::TypeAlias,
-    AnnotationTarget::Function,
-    AnnotationTarget::Method,
-    AnnotationTarget::Struct,
-    AnnotationTarget::Field,
-    AnnotationTarget::Enum,
-    AnnotationTarget::EnumVariant,
-    AnnotationTarget::Interface,
-    AnnotationTarget::InterfaceMethod,
-    AnnotationTarget::ExternBlock,
-    AnnotationTarget::ExternFunction,
-];
 const STRUCT_OR_ENUM: &[AnnotationTarget] = &[AnnotationTarget::Struct, AnnotationTarget::Enum];
 
 pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
@@ -175,31 +176,31 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         id: AnnotationId::Suppress,
         canonical_name: "Suppress",
         renamed_from: &[],
-        targets: DECLARATIONS,
-        arguments: AnnotationArguments::OneString,
+        targets: FUNCTION,
+        arguments: AnnotationArguments::OneOrMoreStrings,
         repeatable: true,
-        availability: AnnotationAvailability::Planned,
-        summary: "Suppresses a named lint in a declaration scope.",
+        availability: AnnotationAvailability::Implemented,
+        summary: "Suppresses named warnings in a function body.",
     },
     AnnotationSpec {
         id: AnnotationId::Deny,
         canonical_name: "Deny",
         renamed_from: &[],
-        targets: DECLARATIONS,
-        arguments: AnnotationArguments::OneString,
+        targets: FUNCTION,
+        arguments: AnnotationArguments::OneOrMoreStrings,
         repeatable: true,
-        availability: AnnotationAvailability::Planned,
-        summary: "Promotes a named lint to an error.",
+        availability: AnnotationAvailability::Implemented,
+        summary: "Makes named warnings an error in a function body.",
     },
     AnnotationSpec {
         id: AnnotationId::Forbid,
         canonical_name: "Forbid",
         renamed_from: &[],
-        targets: DECLARATIONS,
-        arguments: AnnotationArguments::OneString,
+        targets: FUNCTION,
+        arguments: AnnotationArguments::OneOrMoreStrings,
         repeatable: true,
-        availability: AnnotationAvailability::Planned,
-        summary: "Forbids nested scopes from suppressing a named lint.",
+        availability: AnnotationAvailability::Implemented,
+        summary: "Makes named warnings an error that cannot be suppressed.",
     },
     AnnotationSpec {
         id: AnnotationId::NoFallback,
@@ -210,6 +211,56 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         repeatable: false,
         availability: AnnotationAvailability::Implemented,
         summary: "Forbids generational heap fallback in a function.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::NoCopy,
+        canonical_name: "NoCopy",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Opts a struct or enum out of structural Copy, giving it move-only semantics.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::NoSend,
+        canonical_name: "NoSend",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Opts a struct or enum out of structural Send, preventing cross-thread transfer.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::NoSync,
+        canonical_name: "NoSync",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Opts a struct or enum out of structural Sync, preventing cross-thread sharing.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::UnsafeSend,
+        canonical_name: "UnsafeSend",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Unsafely asserts structural Send for a type whose fields include raw pointers while still propagating generic T: Send bounds.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::UnsafeSync,
+        canonical_name: "UnsafeSync",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Unsafely asserts structural Sync for a type whose fields include raw pointers while still propagating generic T: Sync bounds.",
     },
     AnnotationSpec {
         id: AnnotationId::Destructor,
@@ -248,7 +299,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         targets: FUNCTION,
         arguments: AnnotationArguments::None,
         repeatable: false,
-        availability: AnnotationAvailability::Planned,
+        availability: AnnotationAvailability::Implemented,
         summary: "Declares that a function cannot suspend.",
     },
     AnnotationSpec {
@@ -270,6 +321,36 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         repeatable: false,
         availability: AnnotationAvailability::Implemented,
         summary: "Selects a representation contract for a data type.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::Union,
+        canonical_name: "Union",
+        renamed_from: &["union"],
+        targets: &[AnnotationTarget::Struct],
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Marks a nominal aggregate as an untagged union with overlapping fields.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::Cold,
+        canonical_name: "Cold",
+        renamed_from: &[],
+        targets: FUNCTION,
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Marks a function or method as infrequently executed (suppresses inlining and emits cold hints).",
+    },
+    AnnotationSpec {
+        id: AnnotationId::Derive,
+        canonical_name: "Derive",
+        renamed_from: &[],
+        targets: STRUCT_OR_ENUM,
+        arguments: AnnotationArguments::OneOrMoreIdents,
+        repeatable: true,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Generates built-in trait implementations (PartialEq, Eq, Ord, Clone, Hash, Debug).",
     },
 ];
 
@@ -318,6 +399,13 @@ fn arguments_match(spec: &AnnotationSpec, attr: &Attribute, pool: &AstPool) -> b
                     matches!(pool.expr(*arg), ExprKind::InterpolatedString { .. })
                 })
         }
+        AnnotationArguments::OneOrMoreStrings => {
+            !attr.args.is_empty()
+                && attr
+                    .args
+                    .iter()
+                    .all(|arg| matches!(pool.expr(*arg), ExprKind::InterpolatedString { .. }))
+        }
         AnnotationArguments::OptionalString => {
             attr.args.is_empty()
                 || (attr.args.len() == 1
@@ -343,6 +431,12 @@ fn arguments_match(spec: &AnnotationSpec, attr: &Attribute, pool: &AstPool) -> b
                     )
                 })
         }
+        AnnotationArguments::OneOrMoreIdents => {
+            !attr.args.is_empty()
+                && attr.args.iter().all(
+                    |arg| matches!(pool.expr(*arg), ExprKind::Path { path } if path.len() == 1),
+                )
+        }
     }
 }
 
@@ -366,6 +460,28 @@ pub fn attribute_string_arg(attr: &Attribute, pool: &AstPool) -> Option<String> 
         }
     }
     Some(value)
+}
+
+/// Extracts static text arguments of an annotation.
+///
+/// Returns `None` when any argument is not a purely textual string literal.
+#[must_use]
+pub fn attribute_string_args(attr: &Attribute, pool: &AstPool) -> Option<Vec<String>> {
+    let mut values = Vec::with_capacity(attr.args.len());
+    for &arg in &attr.args {
+        let ExprKind::InterpolatedString { parts } = pool.expr(arg) else {
+            return None;
+        };
+        let mut value = String::new();
+        for &part in pool.string_part_list(*parts) {
+            match pool.string_part(part) {
+                arandu_parser::StringPart::Text { text, .. } => value.push_str(text),
+                _ => return None,
+            }
+        }
+        values.push(value);
+    }
+    Some(values)
 }
 
 /// Whether `name` is a valid flat symbol for a C toolchain.
@@ -482,6 +598,29 @@ pub fn validate_attributes(
                 continue;
             }
         }
+        if spec.id == AnnotationId::Derive {
+            let mut has_invalid_derive = false;
+            for &arg in &attr.args {
+                let Some(name) = (match pool.expr(arg) {
+                    ExprKind::Path { path } if path.len() == 1 => Some(path[0].as_str()),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                if let Err(issue) = arandu_middle::derive::DeriveKind::parse(name) {
+                    out.diagnostics
+                        .push(arandu_middle::derive::invalid_derive_arg_diagnostic(
+                            issue,
+                            name,
+                            pool.expr_span(arg),
+                        ));
+                    has_invalid_derive = true;
+                }
+            }
+            if has_invalid_derive {
+                continue;
+            }
+        }
         if spec.id == AnnotationId::Repr {
             let repr_val = attr.args.first().and_then(|arg| match pool.expr(*arg) {
                 ExprKind::Path { path } => path.first().map(|s| s.as_str()),
@@ -532,6 +671,28 @@ pub fn validate_attributes(
             out.diagnostics.push(Diagnostic::error(
                 DiagCode::N015DuplicateAnnotation,
                 format!("annotation '@{}' cannot be repeated", spec.canonical_name),
+                attr.name_span,
+            ));
+            continue;
+        }
+        let conflict = match spec.id {
+            AnnotationId::NoSend if out.ids.contains(&AnnotationId::UnsafeSend) => {
+                Some("UnsafeSend")
+            }
+            AnnotationId::UnsafeSend if out.ids.contains(&AnnotationId::NoSend) => Some("NoSend"),
+            AnnotationId::NoSync if out.ids.contains(&AnnotationId::UnsafeSync) => {
+                Some("UnsafeSync")
+            }
+            AnnotationId::UnsafeSync if out.ids.contains(&AnnotationId::NoSync) => Some("NoSync"),
+            _ => None,
+        };
+        if let Some(other) = conflict {
+            out.diagnostics.push(Diagnostic::error(
+                DiagCode::N015DuplicateAnnotation,
+                format!(
+                    "conflicting concurrency annotations '@{}' and '@{other}' on the same declaration",
+                    spec.canonical_name
+                ),
                 attr.name_span,
             ));
             continue;
@@ -782,6 +943,27 @@ mod tests {
         assert_eq!(
             result_invalid_target.diagnostics[0].code,
             DiagCode::N013InvalidAnnotationTarget
+        );
+    }
+
+    #[test]
+    fn cold_is_canonical_and_func_only() {
+        let valid = validate("@Cold\nfunc slow(): void {}\n");
+        assert!(valid.contains(AnnotationId::Cold));
+        assert!(valid.diagnostics.is_empty(), "{:?}", valid.diagnostics);
+
+        let wrong_target = validate("@Cold\nstruct Slow {}\n");
+        assert!(!wrong_target.contains(AnnotationId::Cold));
+        assert_eq!(
+            wrong_target.diagnostics[0].code,
+            DiagCode::N013InvalidAnnotationTarget
+        );
+
+        let extra_args = validate("@Cold(1)\nfunc slow(): void {}\n");
+        assert!(!extra_args.contains(AnnotationId::Cold));
+        assert_eq!(
+            extra_args.diagnostics[0].code,
+            DiagCode::N014InvalidAnnotationArguments
         );
     }
 }

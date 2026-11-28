@@ -1,6 +1,8 @@
 //! Eligibility and cost evaluation for AMIR leaf function inlining.
 
-use crate::amir::{AmirFunc, AmirStmt, AmirTerminator, BlockId};
+use crate::SymbolId;
+use crate::amir::{AmirFunc, AmirOperand, AmirStmt, AmirTerminator, BlockId};
+use rustc_hash::FxHashSet;
 
 /// Default maximum statement/operation budget for inlining a leaf function.
 pub const INLINE_LEAF_BUDGET: usize = 32;
@@ -35,7 +37,18 @@ const NONLEAF_CALL_PENALTY: usize = 2;
 /// and returns its estimated cost if eligible.
 #[must_use]
 pub fn evaluate_leaf_inlining(func: &AmirFunc, budget: usize) -> Option<usize> {
-    evaluate_inlining(func, budget, false)
+    evaluate_leaf_inlining_with_intrinsics(func, budget, &FxHashSet::default())
+}
+
+/// Like [`evaluate_leaf_inlining`], treating calls to `inline_intrinsics` as
+/// inline codegen operations rather than opaque external calls.
+#[must_use]
+pub fn evaluate_leaf_inlining_with_intrinsics(
+    func: &AmirFunc,
+    budget: usize,
+    inline_intrinsics: &FxHashSet<SymbolId>,
+) -> Option<usize> {
+    evaluate_inlining(func, budget, false, inline_intrinsics)
 }
 
 /// Evaluates whether `func` may be inlined into its callers, returning its cost.
@@ -56,7 +69,18 @@ pub fn evaluate_leaf_inlining(func: &AmirFunc, budget: usize) -> Option<usize> {
 /// this pass does not implement.
 #[must_use]
 pub fn evaluate_nonleaf_inlining(func: &AmirFunc, budget: usize) -> Option<usize> {
-    evaluate_inlining(func, budget, true)
+    evaluate_nonleaf_inlining_with_intrinsics(func, budget, &FxHashSet::default())
+}
+
+/// Like [`evaluate_nonleaf_inlining`], treating calls to `inline_intrinsics`
+/// as inline operations that do not consume non-leaf call slots.
+#[must_use]
+pub fn evaluate_nonleaf_inlining_with_intrinsics(
+    func: &AmirFunc,
+    budget: usize,
+    inline_intrinsics: &FxHashSet<SymbolId>,
+) -> Option<usize> {
+    evaluate_inlining(func, budget, true, inline_intrinsics)
 }
 
 /// Symbols called from `func`'s body, in first-appearance order.
@@ -78,7 +102,12 @@ pub fn nested_call_targets(func: &AmirFunc) -> Vec<crate::SymbolId> {
     out
 }
 
-fn evaluate_inlining(func: &AmirFunc, budget: usize, allow_calls: bool) -> Option<usize> {
+fn evaluate_inlining(
+    func: &AmirFunc,
+    budget: usize,
+    allow_calls: bool,
+    inline_intrinsics: &FxHashSet<SymbolId>,
+) -> Option<usize> {
     let max_blocks = if allow_calls {
         MAX_NONLEAF_BLOCKS
     } else {
@@ -108,7 +137,7 @@ fn evaluate_inlining(func: &AmirFunc, budget: usize, allow_calls: bool) -> Optio
             AmirTerminator::Goto { .. } => total_cost += 1,
             AmirTerminator::Branch { .. } => total_cost += 2,
             AmirTerminator::SwitchInt { targets, .. } => total_cost += 2 + targets.len(),
-            AmirTerminator::Unreachable => {}
+            AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
             AmirTerminator::Suspend { .. } => return None,
         }
 
@@ -116,6 +145,12 @@ fn evaluate_inlining(func: &AmirFunc, budget: usize, allow_calls: bool) -> Optio
         for instr_id in block.statements.iter_ids::<crate::amir::InstrId>() {
             let stmt = func.stmts.get(instr_id)?;
             match stmt {
+                AmirStmt::Call {
+                    callee: AmirOperand::FunctionRef(sym),
+                    ..
+                } if inline_intrinsics.contains(sym) => {
+                    total_cost += 1;
+                }
                 AmirStmt::Call { .. } => {
                     if !allow_calls {
                         return None;
@@ -125,7 +160,9 @@ fn evaluate_inlining(func: &AmirFunc, budget: usize, allow_calls: bool) -> Optio
                 }
                 AmirStmt::Assign { .. } => total_cost += 1,
                 AmirStmt::Store { .. } => total_cost += 1,
-                AmirStmt::Free(_) | AmirStmt::Destroy(_) => total_cost += 1,
+                AmirStmt::Free(_) | AmirStmt::ArenaRewind(_) | AmirStmt::Destroy(_) => {
+                    total_cost += 1
+                }
                 AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => {}
             }
         }

@@ -15,6 +15,14 @@ impl<'a> Resolver<'a> {
                     self.record_import_symbol(sym, alias.clone(), *span);
                 }
             }
+            ImportDecl::ModuleGroup { items, .. } => {
+                for item in items {
+                    let alias = item.alias.as_ref().unwrap_or(&item.name);
+                    if let Some(sym) = self.define(scope, alias, SymbolKind::Module, item.span) {
+                        self.record_import_symbol(sym, alias.clone(), item.span);
+                    }
+                }
+            }
             ImportDecl::Named { items, .. } => {
                 for item in items {
                     let name = item.alias.as_ref().unwrap_or(&item.name);
@@ -77,13 +85,12 @@ impl<'a> Resolver<'a> {
     pub(crate) fn collect_top_level(&mut self, scope: ScopeId, decl: &TopLevelDecl) {
         match decl {
             TopLevelDecl::Const(decl) => {
-                self.define_with_visibility(
-                    scope,
-                    &decl.name,
-                    SymbolKind::Const,
-                    decl.span,
-                    decl.visibility,
-                );
+                let kind = if decl.is_static_mut {
+                    SymbolKind::StaticMut
+                } else {
+                    SymbolKind::Const
+                };
+                self.define_with_visibility(scope, &decl.name, kind, decl.span, decl.visibility);
             }
             TopLevelDecl::TypeAlias(decl) => {
                 self.define_with_visibility(
@@ -197,9 +204,20 @@ impl<'a> Resolver<'a> {
                     let item = match (self.current_module.as_deref(), decl.name.as_str()) {
                         (Some("std.runtime.executor"), "TaskHandle") => Some(LangItem::TaskHandle),
                         (Some("std.alloc.string"), "String") => Some(LangItem::String),
+                        (Some("std.core.range"), "Range") => Some(LangItem::Range),
+                        (Some("std.core.range"), "RangeInclusive") => {
+                            Some(LangItem::RangeInclusive)
+                        }
                         (Some("std.alloc.vec"), "Vec") => Some(LangItem::Vec),
                         (Some("std.alloc.arc"), "Arc") => Some(LangItem::Arc),
                         (Some("std.alloc.arc"), "ArcWeak") => Some(LangItem::ArcWeak),
+                        (Some("std.alloc.closure"), "Closure") => Some(LangItem::Closure),
+                        (Some("std.alloc.closure"), "SendClosure") => Some(LangItem::SendClosure),
+                        (Some("std.alloc.closure"), "ClosureJob") => Some(LangItem::ClosureJob),
+                        (Some("std.alloc.closure"), "OnceClosure") => Some(LangItem::OnceClosure),
+                        (Some("std.alloc.closure"), "SendOnceClosure") => {
+                            Some(LangItem::SendOnceClosure)
+                        }
                         (Some("std.core.simd"), "F32x4") => Some(LangItem::VectorF32x4),
                         (Some("std.core.simd"), "F64x2") => Some(LangItem::VectorF64x2),
                         (Some("std.core.simd"), "I32x4") => Some(LangItem::VectorI32x4),
@@ -215,6 +233,9 @@ impl<'a> Resolver<'a> {
                         (Some("std.sync.rwlock"), "RwLockWriteGuard") => {
                             Some(LangItem::RwLockWriteGuard)
                         }
+                        (Some("std.core.marker"), "PhantomData") => Some(LangItem::PhantomData),
+                        (Some("std.core.pointer"), "NonNull") => Some(LangItem::NonNull),
+                        (Some("std.core.fmt"), "Formatter") => Some(LangItem::Formatter),
                         (Some("std.sync.mutex"), "Mutex") => Some(LangItem::Mutex),
                         (Some("std.sync.mutex"), "MutexGuard") => Some(LangItem::MutexGuard),
                         _ => None,
@@ -222,6 +243,13 @@ impl<'a> Resolver<'a> {
                     if let Some(item) = item {
                         self.symbols.set_lang_item(symbol, item);
                     }
+                    self.collect_derive_methods(
+                        symbol,
+                        &decl.name,
+                        &decl.attrs,
+                        decl.span,
+                        decl.visibility,
+                    );
                 }
             }
             TopLevelDecl::Enum(decl) => {
@@ -258,8 +286,27 @@ impl<'a> Resolver<'a> {
                                 arandu_middle::symbol_table::LangItem::Coroutine,
                             );
                         }
+                        (Some("std.core.cmp"), "Ordering") => {
+                            self.symbols.set_lang_item(
+                                enum_sym,
+                                arandu_middle::symbol_table::LangItem::Ordering,
+                            );
+                        }
+                        (Some("std.core.fmt"), "FmtError") => {
+                            self.symbols.set_lang_item(
+                                enum_sym,
+                                arandu_middle::symbol_table::LangItem::FmtError,
+                            );
+                        }
                         _ => {}
                     }
+                    self.collect_derive_methods(
+                        enum_sym,
+                        &decl.name,
+                        &decl.attrs,
+                        decl.span,
+                        visibility,
+                    );
                     // Variants inherit the enum's export visibility (public enum → public ctors).
                     for variant in &decl.variants {
                         if let Ok(symbol) = self.symbols.define_associated_member_with_visibility(
@@ -310,6 +357,24 @@ impl<'a> Resolver<'a> {
                                         arandu_middle::symbol_table::LangItem::PollPending,
                                     );
                                 }
+                                (Some("std.core.cmp"), "Ordering", "Less") => {
+                                    self.symbols.set_lang_item(
+                                        symbol,
+                                        arandu_middle::symbol_table::LangItem::OrderingLess,
+                                    );
+                                }
+                                (Some("std.core.cmp"), "Ordering", "Equal") => {
+                                    self.symbols.set_lang_item(
+                                        symbol,
+                                        arandu_middle::symbol_table::LangItem::OrderingEqual,
+                                    );
+                                }
+                                (Some("std.core.cmp"), "Ordering", "Greater") => {
+                                    self.symbols.set_lang_item(
+                                        symbol,
+                                        arandu_middle::symbol_table::LangItem::OrderingGreater,
+                                    );
+                                }
                                 _ => {}
                             }
                         }
@@ -331,8 +396,18 @@ impl<'a> Resolver<'a> {
                     use arandu_middle::symbol_table::LangItem;
                     let capability = match (self.current_module.as_deref(), decl.name.as_str()) {
                         (Some("std.core.marker"), "Copy") => Some(LangItem::Copy),
+                        (Some("std.core.marker"), "Clone") => Some(LangItem::Clone),
                         (Some("std.core.marker"), "Send") => Some(LangItem::Send),
                         (Some("std.core.marker"), "Sync") => Some(LangItem::Sync),
+                        (Some("std.core.ops"), "Index") => Some(LangItem::Index),
+                        (Some("std.core.ops"), "IndexMut") => Some(LangItem::IndexMut),
+                        (Some("std.core.cmp"), "PartialEq") => Some(LangItem::PartialEq),
+                        (Some("std.core.cmp"), "Eq") => Some(LangItem::Eq),
+                        (Some("std.core.cmp"), "Ord") => Some(LangItem::Ord),
+                        (Some("std.core.hash"), "Hash") => Some(LangItem::Hash),
+                        (Some("std.core.hash"), "Hasher") => Some(LangItem::Hasher),
+                        (Some("std.core.fmt"), "Display") => Some(LangItem::Display),
+                        (Some("std.core.fmt"), "Debug") => Some(LangItem::Debug),
                         (Some("std.thread"), "ThreadJob") => Some(LangItem::ThreadJob),
                         _ => None,
                     };
@@ -399,6 +474,54 @@ impl<'a> Resolver<'a> {
                 }
             }
             TopLevelDecl::Error(_) => {}
+        }
+    }
+
+    fn collect_derive_methods(
+        &mut self,
+        type_sym: arandu_middle::SymbolId,
+        type_name: &str,
+        attrs: &[arandu_parser::Attribute],
+        decl_span: arandu_lexer::Span,
+        visibility: Visibility,
+    ) {
+        let mut requested = Vec::new();
+        for attr in attrs {
+            if attr.name != "Derive" {
+                continue;
+            }
+            for &arg in &attr.args {
+                if let arandu_parser::ast_pool::ExprKind::Path { path } = self.pool.expr(arg)
+                    && path.len() == 1
+                    && let Ok(kind) = arandu_middle::derive::DeriveKind::parse(path[0].as_str())
+                {
+                    requested.push(kind);
+                }
+            }
+        }
+        if requested.is_empty() {
+            return;
+        }
+        for method_kind in arandu_middle::derive::derived_methods_for_kinds(&requested) {
+            let method_name = method_kind.method_name();
+            if let Err(previous) = self.symbols.define_associated_member_with_visibility(
+                type_sym,
+                method_name,
+                decl_span,
+                visibility,
+            ) {
+                let previous_symbol = self.symbols.get(previous);
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagCode::N003RedefinedName,
+                        format!(
+                            "associated function '{type_name}.{method_name}' is already declared"
+                        ),
+                        decl_span,
+                    )
+                    .with_label(previous_symbol.span, "previous declaration is here"),
+                );
+            }
         }
     }
 }

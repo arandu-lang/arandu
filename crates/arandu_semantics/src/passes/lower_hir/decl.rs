@@ -185,6 +185,9 @@ fn lower_decl_with_body(
             if annotations.contains(crate::attributes::AnnotationId::Export) {
                 lower_export(type_check, pool, d, symbol, &formal_types, return_type)?;
             }
+            if annotations.contains(crate::attributes::AnnotationId::Cold) {
+                type_check.symbols_mut().cold_functions.insert(symbol);
+            }
             Ok(Some(HirDecl::Func(HirFunc {
                 symbol,
                 params,
@@ -295,6 +298,18 @@ fn lower_decl_with_body(
                         receiver_kind: receiver_kind(type_check, p.is_receiver, p.ownership, p_ty),
                     });
                 }
+                let abi = arandu_parser::AbiKind::from_abi_str(&d.abi);
+                if abi == arandu_parser::AbiKind::C {
+                    // Extern parameters carry no binding type of their own;
+                    // the declaration's function type is the contract.
+                    let formals = match type_check.type_info.type_interner.resolve(m_ty_id) {
+                        ArType::Func(formals, _) => {
+                            type_check.type_info.type_interner.type_args(formals)
+                        }
+                        _ => Vec::new(),
+                    };
+                    validate_c_import(type_check, m, &formals, return_type)?;
+                }
                 let params = hir_pool.alloc_param_list(&params);
                 members.push(HirFuncSignature {
                     symbol,
@@ -332,6 +347,70 @@ fn receiver_kind(
                 _ => ReceiverKind::Own,
             })
         })
+}
+
+/// Validates that an `extern "C"` declaration only names types with a C
+/// spelling: the same classifier as `@Export`, so a value is never passed to
+/// C in a layout the foreign side cannot read.
+fn validate_c_import(
+    type_check: &TypeCheckResult,
+    member: &arandu_parser::FuncSignature,
+    formal_types: &[TypeId],
+    return_type: TypeId,
+) -> Result<(), Diagnostic> {
+    let interner = &type_check.type_info.type_interner;
+    let provider = type_check.type_info.as_ref();
+    let target = &type_check.type_info.target_identity;
+    // Structs by value follow the target's aggregate rule; an unconfigured
+    // target (unit tests) defers that check to the backend, like `@Export`.
+    let classifies_aggregates = target.arch.is_empty()
+        || arandu_middle::layout::ExportAbi::for_target(&target.arch, &target.os, &target.triple)
+            .is_some();
+    let check = |ty: TypeId, position, what: String, span| {
+        let resolved = interner.resolve(ty);
+        match arandu_middle::layout::ffi_type_of(&resolved, interner, provider, position, 0) {
+            Ok(arandu_middle::layout::FfiType::Struct(_)) if !classifies_aggregates => {
+                Err(Diagnostic::error(
+                    crate::DiagCode::T049InvalidFfiExport,
+                    format!(
+                        "cannot pass {what} to C: structs by value are not classified for target '{}'; pass a pointer",
+                        target.triple
+                    ),
+                    span,
+                ))
+            }
+            Ok(_) => Ok(()),
+            Err(reason) => Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!("cannot pass {what} to C: {reason}"),
+                span,
+            )),
+        }
+    };
+    for (index, ty) in formal_types.iter().enumerate() {
+        let param = member.params.get(index);
+        // C varargs promote each argument at the call; the declaration only
+        // marks where they start. A `void` parameter is erased from the C
+        // declaration and from every call.
+        if param.is_some_and(|param| param.is_variadic)
+            || matches!(interner.resolve(*ty), ArType::Void)
+        {
+            continue;
+        }
+        let span = param.map_or(member.span, |param| param.span);
+        check(
+            *ty,
+            arandu_middle::layout::FfiPosition::Parameter,
+            format!("parameter {}", index + 1),
+            span,
+        )?;
+    }
+    check(
+        return_type,
+        arandu_middle::layout::FfiPosition::Return,
+        "the return value".to_owned(),
+        member.span,
+    )
 }
 
 /// Applies `@Export` to a free function: validates that the signature crosses

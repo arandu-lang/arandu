@@ -27,10 +27,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             match projection {
                 AmirProjection::Deref => {
                     let pointee = match &ty {
-                        ArType::Ptr(inner)
-                        | ArType::Ref(inner)
-                        | ArType::RefMut(inner)
-                        | ArType::Nullable(inner) => self.module.interner.resolve(*inner),
+                        ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                            self.module.interner.resolve(*inner)
+                        }
                         other => {
                             return Err(ice(format!(
                                 "deref projection requires a pointer, got {other:?}"
@@ -134,6 +133,34 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     ty = self.module.interner.resolve(*field_ty);
                 }
                 AmirProjection::IndexConstant(index) => {
+                    // `p[k]` on a raw pointer: unchecked, as in C. The place
+                    // holds the pointer; the element is where it points.
+                    if let ArType::Ptr(element) = &ty {
+                        let element = self.module.interner.resolve(*element);
+                        let data = self.new_value();
+                        let align = self.module.pointer_align();
+                        self.writer
+                            .line(format!("{data} = load ptr, ptr {address}, align {align}"));
+                        let stride = self
+                            .module
+                            .layout
+                            .layout_of_type(&element, self.module.interner, self.module.info)
+                            .map_err(|error| {
+                                ice(format!("LLVM layout failed for {element:?}: {error}"))
+                            })?
+                            .size;
+                        address = data;
+                        let offset = stride * *index as u64;
+                        if offset != 0 {
+                            let next = self.new_value();
+                            self.writer.line(format!(
+                                "{next} = getelementptr inbounds i8, ptr {address}, i64 {offset}"
+                            ));
+                            address = next;
+                        }
+                        ty = element;
+                        continue;
+                    }
                     let element = match &ty {
                         ArType::Array(_, element) => self.module.interner.resolve(*element),
                         ArType::Tuple(args) => self
@@ -204,6 +231,14 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                             self.writer
                                 .line(format!("{data} = load ptr, ptr {address}, align {align}"));
                             (data, ArType::Primitive(Primitive::U8), None)
+                        }
+                        // `p[i]` on a raw pointer: unchecked, as in C.
+                        ArType::Ptr(element) => {
+                            let data = self.new_value();
+                            let align = self.module.pointer_align();
+                            self.writer
+                                .line(format!("{data} = load ptr, ptr {address}, align {align}"));
+                            (data, self.module.interner.resolve(*element), None)
                         }
                         other => {
                             return Err(ice(format!(
@@ -284,7 +319,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     info.index
                 ))
             })?;
-        Ok((offset, self.module.interner.resolve(info.ty)))
+        // Generic owners (`Pair<int>`) declare their fields over parameters.
+        let field_ty = arandu_middle::layout::instantiated_field_type(
+            base,
+            info.name.as_str(),
+            self.module.interner,
+            self.module.info,
+        )
+        .unwrap_or(info.ty);
+        Ok((offset, self.module.interner.resolve(field_ty)))
     }
 
     pub(in crate::codegen) fn aggregate_address(

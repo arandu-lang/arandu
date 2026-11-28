@@ -49,7 +49,8 @@ const fn mem(align: u32) -> MemArg {
     MemArg {
         offset: 0,
         align,
-        memory_index: 0,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
     }
 }
 
@@ -675,7 +676,8 @@ fn entry(first: u32) -> CabiFunc {
             I::I64Store(MemArg {
                 offset: u64::from(offset.unsigned_abs()),
                 align: 3,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             }),
         ]
     };
@@ -687,14 +689,16 @@ fn entry(first: u32) -> CabiFunc {
         I::I64Store(MemArg {
             offset: MINUS as u64,
             align: 3,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
         I::LocalGet(l.frame),
         I::I64Const(1),
         I::I64Store(MemArg {
             offset: SCALE as u64,
             align: 3,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
     ]);
     // `scale = 2^-exp`, or the value and its interval times `2^exp`.
@@ -842,7 +846,8 @@ fn entry(first: u32) -> CabiFunc {
         I::I32Store8(MemArg {
             offset: DIGITS as u64,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
         I::LocalGet(l.digits),
         I::I32Const(1),
@@ -911,7 +916,8 @@ fn entry(first: u32) -> CabiFunc {
         I::I32Load8U(MemArg {
             offset: DIGITS as u64,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
         I::I32Const(i32::from(b'9')),
         I::I32Ne,
@@ -925,7 +931,8 @@ fn entry(first: u32) -> CabiFunc {
         I::I32Store8(MemArg {
             offset: DIGITS as u64,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
         I::LocalGet(l.index),
         I::I32Const(1),
@@ -946,14 +953,16 @@ fn entry(first: u32) -> CabiFunc {
         I::I32Load8U(MemArg {
             offset: DIGITS as u64,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
         I::I32Const(1),
         I::I32Add,
         I::I32Store8(MemArg {
             offset: DIGITS as u64,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
         I::Else,
         I::LocalGet(l.frame),
@@ -961,7 +970,8 @@ fn entry(first: u32) -> CabiFunc {
         I::I32Store8(MemArg {
             offset: DIGITS as u64,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
         I::LocalGet(l.frame),
         I::LocalGet(l.digits),
@@ -970,7 +980,8 @@ fn entry(first: u32) -> CabiFunc {
         I::I32Store8(MemArg {
             offset: DIGITS as u64,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }),
         I::LocalGet(l.digits),
         I::I32Const(1),

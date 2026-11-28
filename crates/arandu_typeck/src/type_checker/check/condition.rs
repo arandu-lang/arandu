@@ -29,7 +29,16 @@ pub fn check_condition(checker: &mut TypeChecker<'_>, condition: &Condition) {
             span: _,
         } => {
             let cond_ty_id = super::super::synth::synth_expr(checker, *expr);
-            super::super::synth::check_pattern(checker, *pattern, cond_ty_id);
+            let bind_ty_id = if matches!(
+                checker.pool.pattern(*pattern),
+                arandu_parser::Pattern::Bind { .. }
+            ) && let ArType::Option(inner) = checker.resolve(cond_ty_id)
+            {
+                inner
+            } else {
+                cond_ty_id
+            };
+            super::super::synth::check_pattern(checker, *pattern, bind_ty_id);
         }
         arandu_parser::Condition::And { conditions, .. } => {
             for condition in conditions {

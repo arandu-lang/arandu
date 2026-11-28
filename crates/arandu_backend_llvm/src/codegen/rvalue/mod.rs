@@ -16,50 +16,6 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         rvalue: &AmirRvalue,
         lhs: Option<TempId>,
     ) -> Result<(), Diagnostic> {
-        // A `T` built or written into a `T?` box handle: produce the `T`
-        // under a fresh name, then box it as `assign_coerced` does.
-        if let ArType::Nullable(inner) = lhs_ty {
-            let inner = self.module.interner.resolve(*inner);
-            let plain_temp = matches!(
-                rvalue,
-                AmirRvalue::Use(
-                    arandu_middle::amir::AmirOperand::Copy(temp)
-                        | arandu_middle::amir::AmirOperand::Move(temp)
-                ) if {
-                    let source = self.temp_type(*temp);
-                    !matches!(source, ArType::Nullable(_)) && !self.module.is_pointer(&source)
-                }
-            );
-            let constructs = plain_temp
-                || matches!(
-                    rvalue,
-                    AmirRvalue::StructLiteral { .. }
-                        | AmirRvalue::Tuple { .. }
-                        | AmirRvalue::Array { .. }
-                        | AmirRvalue::EnumConstruct { .. }
-                        | AmirRvalue::Binary { .. }
-                        | AmirRvalue::Unary { .. }
-                        | AmirRvalue::Use(arandu_middle::amir::AmirOperand::Constant(_))
-                ) && !matches!(
-                    rvalue,
-                    AmirRvalue::Use(arandu_middle::amir::AmirOperand::Constant(
-                        arandu_middle::amir::AmirConstant::Nil
-                    ))
-                );
-            if constructs && self.is_boxed_nullable(&inner) {
-                let pending = self.pending_assignment.take();
-                let value_name = self.new_value();
-                if let AmirRvalue::Use(operand) = rvalue {
-                    let value = self.operand(operand, &inner)?;
-                    self.pending_assignment = pending;
-                    return self.assign_coerced(result, value, lhs_ty);
-                }
-                self.emit_rvalue(&value_name, &inner, rvalue, None)?;
-                let value = super::TypedValue::new(self.module.llvm_ty(&inner)?, value_name);
-                self.pending_assignment = pending;
-                return self.assign_coerced(result, value, lhs_ty);
-            }
-        }
         match rvalue {
             AmirRvalue::Use(operand) => {
                 let value = self.operand(operand, lhs_ty)?;
@@ -74,6 +30,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             | AmirRvalue::BorrowMut(_)
             | AmirRvalue::RelativeBorrow { .. }
             | AmirRvalue::Alloc(_)
+            | AmirRvalue::ArenaAlloc { .. }
+            | AmirRvalue::ArenaCheckpoint
+            | AmirRvalue::StaticAddr(_)
             | AmirRvalue::Len(_)
             | AmirRvalue::StrView { .. }
             | AmirRvalue::SliceView { .. }
@@ -111,6 +70,23 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 if_true,
                 if_false,
             } => self.emit_vector_select(result, lhs_ty, mask, if_true, if_false),
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let bool_ty = ArType::Primitive(arandu_middle::types::Primitive::Bool);
+                let cond = self.operand(condition, &bool_ty)?;
+                let arm_true = self.operand(if_true, lhs_ty)?;
+                let arm_false = self.operand(if_false, lhs_ty)?;
+                self.writer.line(format!(
+                    "{result} = select {}, {}, {}",
+                    cond.render(),
+                    arm_true.render(),
+                    arm_false.render()
+                ));
+                Ok(())
+            }
             AmirRvalue::VectorSplat { value } => self.emit_vector_splat(result, lhs_ty, value),
             AmirRvalue::VectorShuffle { left, right, mask } => {
                 self.emit_vector_shuffle(result, lhs_ty, left, right, mask)
@@ -150,9 +126,26 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 ));
                 Ok(())
             }
+            AmirRvalue::VectorBitmask { vector } => self.emit_vector_bitmask(result, vector),
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                self.emit_vector_load_unaligned(result, source)
+            }
             AmirRvalue::BlackBox { value, .. } => {
                 let value = self.operand(value, lhs_ty)?;
-                self.assign_coerced(result, value, lhs_ty)
+                if matches!(lhs_ty, ArType::Void | ArType::Never) {
+                    return Ok(());
+                }
+                let llvm_ty = self.module.llvm_ty(lhs_ty)?;
+                let align = self.module.align_of(lhs_ty);
+                let slot = self.scratch_alloca(lhs_ty)?;
+                self.store_value(&slot, &value, lhs_ty)?;
+                self.writer.line(format!(
+                    "call void asm sideeffect \"\", \"r,~{{memory}}\"(ptr {slot})"
+                ));
+                self.writer.line(format!(
+                    "{result} = load {llvm_ty}, ptr {slot}, align {align}"
+                ));
+                Ok(())
             }
         }
     }

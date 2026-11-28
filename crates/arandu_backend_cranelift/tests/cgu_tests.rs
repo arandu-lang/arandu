@@ -348,7 +348,7 @@ fn function_references_outside_calls_keep_their_declaration() {
 
 #[test]
 fn implicit_destructor_is_declared_without_a_source_call() {
-    let source = "struct Owner { value: int }\n@Destructor\nfunc Owner.destroy(own self: Owner): void {}\nfunc main(): int { let owner = Owner { value: 42 } return owner.value }";
+    let source = "struct Owner { value: int }\n@Destructor\nfunc Owner.destroy(own self: Owner): void {}\nfunc main(): int { let owner = Owner { value: 42 }; return owner.value }";
     for target in [
         Triple::host(),
         format!("{}-apple-darwin", Triple::host().architecture)

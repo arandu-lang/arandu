@@ -93,7 +93,6 @@ pub enum HirExprKind {
     Call {
         callee: HirExprId,
         args: IndexRange,
-        trailing_block: Option<HirBlockId>,
     },
     ResultCtor {
         variant: ResultCtorVariant,
@@ -129,6 +128,12 @@ pub enum HirExprKind {
         block: HirBlockId,
     },
     UnsafeBlock {
+        block: HirBlockId,
+    },
+    /// A block that lowering introduces around an expression to declare the
+    /// temporaries it reads (`{ let t = make(); t.code(t.env, x) }`). Locals
+    /// drop at its end; `return` inside it still leaves the function.
+    Scope {
         block: HirBlockId,
     },
     If {
@@ -273,11 +278,7 @@ impl HirExpr {
             HirExprKind::Try { expr } => {
                 pool.expr(*expr).validate_invariants(pool, symbols)?;
             }
-            HirExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
+            HirExprKind::Call { callee, args } => {
                 let callee_node = pool.expr(*callee);
                 callee_node.validate_invariants(pool, symbols)?;
                 if callee_node.ty == crate::types::TypeInterner::preinterned_error_id() {
@@ -285,9 +286,6 @@ impl HirExpr {
                 }
                 for &arg in pool.expr_list(*args) {
                     pool.expr(arg).validate_invariants(pool, symbols)?;
-                }
-                if let Some(tb) = trailing_block {
-                    pool.block(*tb).validate_invariants(pool, symbols)?;
                 }
             }
             HirExprKind::ResultCtor { value, .. } => {
@@ -326,6 +324,7 @@ impl HirExpr {
             }
             HirExprKind::AsyncBlock { block }
             | HirExprKind::UnsafeBlock { block }
+            | HirExprKind::Scope { block }
             | HirExprKind::ValueBlock { block } => {
                 pool.block(*block).validate_invariants(pool, symbols)?;
             }

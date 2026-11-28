@@ -8,7 +8,9 @@ use crate::diagnostics::{Diagnostic, Severity};
 use crate::hir::HirProgram;
 use arandu_parser::Program;
 
+mod closure;
 mod decl;
+mod derive;
 mod expr;
 mod link;
 mod materialize;
@@ -16,11 +18,12 @@ mod ops;
 mod pattern;
 mod place;
 mod stmt;
-mod thread_capture;
 
+pub use closure::{link_generic_closure_headers, lower_closure_hir};
+pub use derive::lower_derived_method_hir;
+pub use expr::lower_export_thunk_hir;
 pub use link::link_hir_module;
 pub use materialize::{MaterializationError, materialize_ctfe_scalar, materialize_ctfe_value};
-pub use thread_capture::lower_thread_capture_hir;
 
 /// Lower only an initially typed expression into the caller's HIR context.
 /// The canonical AST/pool and declaration headers remain shared by the caller;
@@ -105,11 +108,20 @@ fn lower_declaration_context(
     let mut pool = crate::hir::HirPool::new();
     let mut decls = Vec::new();
     let mut failure = None;
+    let mut owner_types = rustc_hash::FxHashSet::default();
     program.for_each_decl_recursive(|_, declaration| {
         if failure.is_some()
             || (!include_constants && matches!(declaration, arandu_parser::TopLevelDecl::Const(_)))
         {
             return;
+        }
+        if matches!(
+            declaration,
+            arandu_parser::TopLevelDecl::Struct(_) | arandu_parser::TopLevelDecl::Enum(_)
+        ) && let Some(key) = crate::primary_def_key(declaration)
+            && let Some(&sym) = type_check.resolved.definitions.get(&key)
+        {
+            owner_types.insert(sym);
         }
         match decl::lower_declaration(type_check, &program.pool, &mut pool, declaration) {
             Ok(Some(declaration)) => decls.push(pool.alloc_decl(declaration)),
@@ -120,6 +132,7 @@ fn lower_declaration_context(
     if let Some(diagnostic) = failure {
         return Err(vec![diagnostic]);
     }
+    derive::lower_derived_decl_headers(type_check, &mut pool, &mut decls, &owner_types);
     Ok(HirProgram {
         span: program.span,
         module: program.module.as_ref().map(|module| module.path.join(".")),
@@ -159,6 +172,14 @@ pub fn lower_to_hir(
         &program.decls,
         &mut decls,
     )?;
+    derive::lower_derived_methods_for_file(
+        type_check,
+        &mut hir_pool,
+        &mut decls,
+        program.span.file_id,
+    )
+    .map_err(|diagnostic| vec![diagnostic])?;
+    decls.extend(std::mem::take(&mut hir_pool.synthetic_decls));
     let module = program.module.as_ref().map(|m| m.path.join("."));
     Ok(HirProgram {
         span: program.span,
@@ -213,6 +234,9 @@ fn lower_selected_declaration(
     {
         return Err(type_check.diagnostics.clone());
     }
+    if !external && !ctfe && type_check.type_info.derived_methods.contains_key(&symbol) {
+        return derive::lower_derived_method_hir(type_check, symbol);
+    }
     let mut selected = None;
     program.for_each_decl_recursive(|_, item| {
         let matches = if external {
@@ -240,10 +264,12 @@ fn lower_selected_declaration(
         return Ok(None);
     };
     let declaration = pool.alloc_decl(declaration);
+    let mut decls = vec![declaration];
+    decls.extend(std::mem::take(&mut pool.synthetic_decls));
     Ok(Some(HirProgram {
         span: crate::item_source_span(item),
         module: program.module.as_ref().map(|module| module.path.join(".")),
-        decls: vec![declaration],
+        decls,
         pool,
     }))
 }

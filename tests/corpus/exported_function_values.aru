@@ -1,0 +1,35 @@
+// An `@Export` function whose signature holds scalars and thin pointers
+// alone is also a function value, as a C callback table such as Lua's
+// `lua_CFunction` needs; places index raw pointers as C does.
+import std.core.intrinsics as intrinsics
+
+struct State {
+    top: int,
+}
+
+@Export("demo_push")
+func push(state: ptr[State]): int {
+    unsafe {
+        state[0].top = state[0].top + 1
+        return state[0].top
+    }
+}
+
+@Export("demo_halve")
+func halve(x: f64): f64 {
+    return x / 2.0
+}
+
+func apply(f: (ptr[State]) -> int, state: ptr[State]): int {
+    return f(state)
+}
+
+func main(): int {
+    let mut s = State { top: 40 }
+    let p = unsafe { intrinsics.addressOf(mut ref s) }
+    let f: (ptr[State]) -> int = push
+    if apply(f, p) != 41 || f(p) != 42 || push(p) != 43 { return 1 }
+    let h: (f64) -> f64 = halve
+    if h(5.0) != 2.5 { return 2 }
+    return 0
+}

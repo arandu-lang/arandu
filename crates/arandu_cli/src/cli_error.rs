@@ -31,6 +31,7 @@ pub enum CliFailure {
     Diagnostics {
         diagnostics: Vec<arandu_middle::Diagnostic>,
         source_path: Option<PathBuf>,
+        file_paths: std::collections::BTreeMap<u32, PathBuf>,
     },
 }
 
@@ -99,12 +100,26 @@ impl CliFailure {
         Self::Diagnostics {
             diagnostics: diagnostics.into_iter().collect(),
             source_path,
+            file_paths: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn diagnostics_with_files(
+        diagnostics: impl IntoIterator<Item = arandu_middle::Diagnostic>,
+        source_path: Option<PathBuf>,
+        file_paths: std::collections::BTreeMap<u32, PathBuf>,
+    ) -> Self {
+        Self::Diagnostics {
+            diagnostics: diagnostics.into_iter().collect(),
+            source_path,
+            file_paths,
         }
     }
 
     pub fn render(&self) {
         match self {
-            Self::Usage { message } => eprintln!("{message}"),
+            Self::Usage { message } => eprintln!("{}", render_usage_message(message)),
             Self::Operational {
                 operation,
                 context,
@@ -116,15 +131,28 @@ impl CliFailure {
             Self::Diagnostics {
                 diagnostics,
                 source_path,
+                file_paths,
             } => {
-                let path = source_path
+                let fallback_path = source_path
                     .as_deref()
                     .unwrap_or_else(|| std::path::Path::new(""));
-                let source: Arc<str> = std::fs::read_to_string(path).unwrap_or_default().into();
+                let mut source_cache: std::collections::BTreeMap<PathBuf, Arc<str>> =
+                    std::collections::BTreeMap::new();
                 for diagnostic in diagnostics {
+                    let diag_path = file_paths
+                        .get(&diagnostic.span.file_id)
+                        .map(PathBuf::as_path)
+                        .unwrap_or(fallback_path);
+                    let source = source_cache
+                        .entry(diag_path.to_path_buf())
+                        .or_insert_with(|| {
+                            std::fs::read_to_string(diag_path)
+                                .unwrap_or_default()
+                                .into()
+                        });
                     let mut diag = diagnostic.clone();
                     if diag.is_ice() {
-                        attach_ice_report_metadata(&mut diag, source_path.as_deref());
+                        attach_ice_report_metadata(&mut diag, Some(diag_path));
                     }
                     let source_len = u32::try_from(source.len()).unwrap_or(u32::MAX);
                     if diag.span.end > source_len || diag.span.start > source_len {
@@ -138,7 +166,7 @@ impl CliFailure {
                         }
                     }
                     let named_source =
-                        miette::NamedSource::new(path.to_string_lossy(), Arc::clone(&source));
+                        miette::NamedSource::new(diag_path.to_string_lossy(), Arc::clone(source));
                     let report = miette::Report::new(diag).with_source_code(named_source);
                     eprintln!("{report:?}");
                 }
@@ -204,6 +232,15 @@ fn urlencoding_simple(s: &str) -> String {
     out
 }
 
+/// Prefixes one-line usage errors while preserving multi-line help and errors that are already labelled.
+fn render_usage_message(message: &str) -> std::borrow::Cow<'_, str> {
+    if message.contains('\n') || message.starts_with("error:") {
+        std::borrow::Cow::Borrowed(message)
+    } else {
+        std::borrow::Cow::Owned(format!("error: {message}"))
+    }
+}
+
 pub type CliResult = Result<CliSuccess, CliFailure>;
 
 #[cfg(test)]
@@ -220,6 +257,23 @@ mod tests {
             1
         );
         assert_eq!(CliFailure::diagnostics([], None).exit_code(), 1);
+    }
+
+    #[test]
+    fn diagnostics_with_files_preserves_per_file_paths() {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(1, PathBuf::from("src/a.aru"));
+        map.insert(2, PathBuf::from("src/b.aru"));
+        let failure =
+            CliFailure::diagnostics_with_files([], Some(PathBuf::from("src/main.aru")), map);
+        assert_eq!(failure.exit_code(), 1);
+        match failure {
+            CliFailure::Diagnostics { file_paths, .. } => {
+                assert_eq!(file_paths.get(&1), Some(&PathBuf::from("src/a.aru")));
+                assert_eq!(file_paths.get(&2), Some(&PathBuf::from("src/b.aru")));
+            }
+            _ => panic!("expected Diagnostics failure"),
+        }
     }
 
     #[test]
@@ -245,5 +299,20 @@ mod tests {
     fn urlencoding_handles_special_characters() {
         assert_eq!(urlencoding_simple("hello world"), "hello+world");
         assert_eq!(urlencoding_simple("a/b:c"), "a%2Fb%3Ac");
+    }
+
+    #[test]
+    fn usage_render_prefixes_only_unlabelled_single_line_errors() {
+        let jobs = "--jobs requires an integer greater than zero";
+        assert_eq!(
+            render_usage_message(jobs).as_ref(),
+            format!("error: {jobs}")
+        );
+
+        let unknown = "error: unknown option '--jbs'. Did you mean '--jobs'?";
+        assert_eq!(render_usage_message(unknown).as_ref(), unknown);
+
+        let help = "Usage: arandu [options]\n\nOptions:\n  --help  Show help\n";
+        assert_eq!(render_usage_message(help).as_ref(), help);
     }
 }

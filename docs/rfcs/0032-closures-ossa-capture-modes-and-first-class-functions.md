@@ -4,7 +4,7 @@
 - **Título:** Closures, Modos de Captura sob OSSA e Funções de Primeira Classe (`LAMBDA`)
 - **Autor(es):** Bruno e Equipe do Compilador Arandu
 - **Data de Início:** 2026-10-15
-- **Status:** `Draft`
+- **Status:** `Implemented` (L1–L3 na 0.3.0; §1–§9 abaixo são o desenho original)
 - **Área Principal:** `Frontend` / `Middle-end` / `OSSA` / `Backend`
 - **Documentos Relacionados:**
   - [Roadmap mestre](../arandu-compiler-roadmap-v0.1.md)
@@ -24,6 +24,128 @@
 > de primeira classe. Chamadas indiretas gerais na linguagem produzem T033.
 > Tipos de função, `FunctionRef` e callbacks internos existentes não habilitam
 > automaticamente closures executáveis ou funções de primeira classe de uso geral.
+>
+> **Estado auditado em 2026-11-06:** a 0.3.0 exige esta RFC
+> ([campanha 0.3.x](../campaigns/0.3.x-instances-and-closures.md), trilha LAMBDA) em três recortes: L1 callbacks não
+> escapantes por desfuncionalização, sem chamada indireta; L2 valor função
+> `{code, env}` e chamada indireta nos quatro backends; L3 closures
+> escapantes e com dono. Antes da L2 é preciso decidir a gramática (§8), se a
+> chamada indireta é statement ou terminador (§5.2) e o layout do valor função
+> (§5.1). O status continua `Draft` até essas decisões.
+>
+> **Decisões do mantenedor em 2026-11-07** (fecham as questões acima; o
+> status continua `Draft` até a L3):
+>
+> - **Tipo de função (atualizado em 0.3.1):**
+>   - `(A, B) -> R`: callback emprestado e não escapante em posição de parâmetro (L1; monomorfizado como `mut ref F`, sem prefixo, com modos nos parâmetros `(ref T, mut ref T) -> R`); não há palavra `fn`.
+>   - `func(A, B) -> R`: ponteiro de função puro e não-capturante (C ABI / tabela de callbacks, pode ser armazenado e retornado sem `T100` e rejeita lambdas com captura). Substitui o antigo uso ambíguo de `func(A) R` como mero alias.
+>   - `own [once] (A) -> R [+ Send]`: closure com dono e escapante (L3). Suporta múltiplos bounds sintáticos (`+ Send + Sync`), rejeitando `+ Sync` explicitamente porque chamadas através da closure exigem acesso exclusivo.
+> - **Literal:** `(x: T) => expr` e `(x) => { ... }` são canônicos, com
+>   dois-pontos como em toda declaração; `(x T)` continua aceito. `|x| expr`
+>   continua aceito e o formatter normaliza para a seta. `own () => ...` força
+>   todas as capturas por movimento; `move` é alias de `own`.
+> - **Bloco final** (2026-11-11): `f(a) { corpo }` é `f(a, () => { corpo })` e
+>   `f { corpo }` é `f(() => { corpo })`, como no Kotlin e no Swift. O parser
+>   baixa o bloco para uma lambda sem parâmetros no último argumento, então
+>   typeck e lowering não têm caminho próprio; o T012 de uma função sem esse
+>   parâmetro explica o bloco. Na condição de `if`/`while`/`match` o `{` é da
+>   instrução.
+> - **Capturas:** deduzidas por caminho de projeção: leitura de tipo `Copy`
+>   copia, leitura de outro tipo empresta, mutação empresta mutável, consumo
+>   move; `own` força movimento. O OSSA as verifica como campos de struct.
+> - **Chamada indireta:** statement, o `AmirStmt::Call` com callee operando;
+>   os modos dos argumentos vêm do tipo `Func`.
+> - **Valor função** (revisto em 2026-11-10): `(A) -> R` é um ponteiro de
+>   código fino, de uma palavra, como `fn` no Rust e o ponteiro de função do C
+>   e do Zig. Assim, ele cruza a fronteira C sem conversão, como o c2arandu
+>   precisa ao traduzir ponteiros de função para `func(...)`. O par
+>   `{code, env}` fica para `own (A) -> R` (L3), cujo ambiente no heap começa
+>   por `{drop, size, align}`. C: typedef de ponteiro de função; Wasm: índice
+>   na tabela de funções; LLVM: `ptr`.
+>
+> **Estado em 2026-11-10 (L2):** chamada indireta nos quatro backends
+> (`call_indirect` no Cranelift e no Wasm, sobre uma tabela `funcref` com
+> cada função no próprio índice; chamada por ponteiro no LLVM e no C). São
+> valores função:
+> - funções livres e associadas;
+> - instâncias de funções genéricas fixadas pelo tipo esperado;
+> - lambdas sem captura, que viram funções próprias.
+>
+> Um valor passado a um parâmetro de callback é o próprio callback: o callee
+> é instanciado com `F = (A) -> R`, como um `fn` do Rust implementa `FnMut`.
+> Restrições:
+> - `@Unsafe` e `extern` não viram valor (O013);
+> - `@Export` com parâmetros ou retorno agregados (structs, tuplas, `str`,
+>   fatias) ainda não vira valor (U001). Com escalares e ponteiros finos, a
+>   entrada C é também a interna, então vira valor (2026-11-20), como pede
+>   uma tabela de callbacks C como o `lua_CFunction` do Lua; lambdas com
+>   captura ainda não viram;
+> - a chamada indireta observa todos os efeitos e não é admitida em CTFE.
+>
+> O T033 foi retirado. Corpus: `tests/corpus/function_values.aru`.
+>
+> **Estado em 2026-11-10 (L3, encerra a RFC):** `own (A) -> R` é uma closure
+> com dono e escapante; `own (A) -> R + Send` pode cruzar threads.
+>
+> - **Representação:** os lang items `Closure<F>` e `SendClosure<F>` de
+>   `std.alloc.closure`, três palavras: código, ambiente e drop do ambiente.
+>   `F` é a assinatura do código, `(ptr[u8], A) -> R`, então chamar é a
+>   chamada indireta da L2 (`c.code(c.env, args)`). O drop fica na struct, não
+>   num cabeçalho do ambiente, como a decisão de 2026-11-07 previa: não
+>   depende da ordem dos campos nem lê o heap para destruir.
+> - **Módulo ambiente:** `std.alloc.closure` é ligado a todo módulo fora da
+>   stdlib como os módulos ambientes de primitivos, sem nome no escopo; o
+>   compilador acha os tipos pelo lang item. `Send` sem qualificação, não
+>   sombreado, dispensa import na posição de bound.
+> - **Criação:** a lambda (com ou sem `own`) onde o tipo esperado é `own`
+>   vira recipe + função de código sintetizada; as capturas movem ou copiam
+>   para `Closure.make<Env, F>`, que aloca. Sem captura, ou de uma função
+>   nomeada, `Closure.fromFunction<F>` não aloca. Um valor `(A) -> R` local
+>   copia o ponteiro para o ambiente.
+> - **Chamada:** o dono ou um `mut ref` chamam; `ref` compartilhado não
+>   (T026), o que exclui duas chamadas mudando as capturas ao mesmo tempo.
+>   Um temporário é avaliado uma vez num local sintético que vive até o fim
+>   da chamada (`TypeInfo::closure_temporaries`, bloco `Scope` no HIR), e os
+>   argumentos antes dele mantêm a ordem do fonte. Efeitos: `ANY_CALL`.
+> - **Capturas:** nenhuma referência ou view (`ref`, `[]T`, `str`) — O010,
+>   fail-closed como o modelo de memória exige; `+ Send` prova cada captura
+>   (T025). `SendClosure` é `Send` e nunca `Sync`/`Copy`; `Closure` não é
+>   nenhum.
+> - **Ajustes do typeck** (como os do rustc): `+ Send` vira `own` sem `Send`
+>   onde esperado (`SendClosure.local`), e `thread.spawn(c)` roda uma closure
+>   `Send` sem parâmetros como `ClosureJob<R>`. Um local `own` é emprestado a
+>   um parâmetro de callback por um adaptador que o toma por `mut` borrow.
+> - **Recusas:** assinatura `extern` (T049); `@Export` pela regra de ABI C;
+>   closure com captura em bare-metal (T099), enquanto a sem captura segue
+>   disponível; CTFE pela chamada indireta.
+> - **Capturas genéricas:** ambiente, método e código herdam os parâmetros de
+>   tipo do item pai quando uma captura ou a assinatura os menciona; cada
+>   instância do item os instancia. Fecha o U001 que a L1 deixou.
+>
+> - **`own once (A) -> R [+ Send]`** (o `FnOnce` do Rust): lang items
+>   `OnceClosure<F>`/`SendOnceClosure<F>`, quatro palavras (código, ambiente,
+>   `drop` se nunca chamada, `finish` depois da chamada). O método recebe
+>   `own Env` e o código começa com `OnceClosure.take<Env>(env)`, então o
+>   corpo consome as capturas. A chamada é
+>   `{ let call = release(c); call.code(call.env, args) }`; destruir o
+>   `OnceCall` roda o `finish`. Só o dono chama (por referência é T026) e o
+>   move checker recusa a segunda chamada. Toda closure vira `once` onde é
+>   esperada (`Closure.once`, `SendClosure.once`/`localOnce`), nunca o
+>   inverso; `thread.spawn` roda jobs `once`.
+> - **Soundness do consumo:** consumir uma captura numa closure que pode
+>   rodar de novo é O016. A L3 fechou o buraco que deixava `return p.campo`,
+>   o valor de um bloco ou o corpo de uma closure mover para fora de uma
+>   referência sem diagnóstico, e o falso positivo de `let owned = name`
+>   seguido de um `if`. Valores de função `(A) -> R` são `Copy`.
+>
+> Corpus `own_closures.aru`, `once_closures.aru`, `generic_closures.aru`
+> (todos os backends, Wasmtime incluído, IR LLVM compilado) e
+> `own_closures_threads.aru` (backends nativos); testes em
+> `query_suite/owning_closures.rs` e `cli_ownership_regressions.rs`.
+>
+> Pontos de melhoria: os diagnósticos de IDE por função
+> (`file_ide_diagnostics`) não analisam os métodos sintetizados de closures,
+> então o O016 de uma captura consumida aparece na build e não no editor.
 
 ---
 

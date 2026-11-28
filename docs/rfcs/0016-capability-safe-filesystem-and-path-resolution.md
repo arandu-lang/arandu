@@ -49,8 +49,8 @@ Rust/C foi verificada em Linux; a execução nativa depende do runner Windows.
 Os mecanismos multiplataforma completos, fallback para kernels antigos, efeitos de
 autoridade ambiente e `[capabilities]` descritos adiante são propostas. O
 recorte não implementa sandbox do processo, `removeTree`, integração WASI ou
-lifecycle integral de `File`. `File.close` e `DirListing.close` ainda retornam
-`void`, não o contrato uniforme `Result` proposto aqui.
+lifecycle integral de `File`. `File.close`, `DirListing.close` e `Dir.close`
+já retornam `Result<void, IoError>`, mas isso não completa esse lifecycle.
 
 O [`VFS`](../../crates/arandu_query/src/vfs.rs) usa worklist iterativa, limite
 de profundidade e detecção de ciclos. Ainda segue symlinks de diretório e não

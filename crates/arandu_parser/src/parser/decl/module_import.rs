@@ -192,11 +192,56 @@ impl<'a> Parser<'a> {
             return Ok(import);
         }
 
-        let path = self.parse_module_path()?;
+        let mut path = SmallVec::new();
+        path.push(self.expect_module_segment()?);
+        while self.at_kind_name("DOT")
+            && !self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|token| token.kind == TokenKind::LBrace)
+        {
+            self.advance();
+            path.push(self.expect_module_segment()?);
+        }
+
+        if self.at_kind_name("DOT")
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|token| token.kind == TokenKind::LBrace)
+        {
+            self.advance(); // `.`
+            self.expect_name("LBRACE")?;
+            let items = self.parse_comma_separated_list("RBRACE", 1, |parser| {
+                let item_start = parser.mark();
+                let name = parser.expect_module_segment()?;
+                let alias = if parser.eat_name("KW_AS") {
+                    Some(parser.expect_import_name()?)
+                } else {
+                    None
+                };
+                Ok(ImportItem {
+                    span: parser.span_from_mark(item_start),
+                    name,
+                    alias,
+                })
+            })?;
+            self.skip_semicolons();
+            self.expect_name("RBRACE")?;
+            self.expect_optional_semicolon_after_module_path()?;
+            let import = ImportDecl::ModuleGroup {
+                span: self.span_from_mark(start),
+                prefix: path,
+                items,
+            };
+            self.attach_docs(docs, import.span());
+            return Ok(import);
+        }
+
         let alias = if self.eat_name("KW_AS") {
             self.expect_import_name()?
         } else {
-            // `parse_module_path` always pushes at least one segment.
+            // `path` always has at least one segment.
             path.last().cloned().ok_or_else(|| {
                 ParseError::new(
                     ParseErrorCode::ExpectedToken,

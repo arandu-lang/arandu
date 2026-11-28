@@ -42,29 +42,21 @@ pub(crate) fn module_import_edges(
     let mut edges: Vec<_> = program
         .imports
         .iter()
-        .filter_map(|import| {
-            let path = arandu_resolve::canonicalize_import_path(import)?;
+        .flat_map(arandu_resolve::canonicalize_import_paths)
+        .map(|path| {
             let file_id = db
                 .as_source_db()
                 .resolve_module_path(&path)
                 .map(|imported| *imported.file_id(db));
-            Some((path, file_id))
+            (path, file_id)
         })
         .collect();
 
     let current_mod = program.module.as_ref().map(|m| m.path.join("."));
-    if !current_mod
-        .as_deref()
-        .is_some_and(|m| m.starts_with("std.core."))
-    {
-        for &(path, mod_name) in arandu_resolve::AMBIENT_PRIMITIVE_MODULES {
-            if current_mod.as_deref() == Some(mod_name) {
-                continue;
-            }
-            if let Some(imported) = db.as_source_db().resolve_module_path(path) {
-                if imported != file && !edges.iter().any(|(p, _)| p == path) {
-                    edges.push((path.to_string(), Some(*imported.file_id(db))));
-                }
+    for (path, _) in arandu_resolve::ambient_modules(current_mod.as_deref()) {
+        if let Some(imported) = db.as_source_db().resolve_module_path(path) {
+            if imported != file && !edges.iter().any(|(p, _)| p == path) {
+                edges.push((path.to_string(), Some(*imported.file_id(db))));
             }
         }
     }

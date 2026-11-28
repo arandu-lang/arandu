@@ -65,7 +65,9 @@ pub(super) fn discover_nested_keys<'bump>(
                     visit_block(hir, *b, tc, bump, template_funcs, enqueue);
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition, body, ..
+            } => {
                 visit_condition(hir, condition, tc, bump, template_funcs, enqueue);
                 visit_block(hir, *body, tc, bump, template_funcs, enqueue);
             }
@@ -104,7 +106,7 @@ pub(super) fn discover_nested_keys<'bump>(
             | HirStmtKind::Scope(b) => {
                 visit_block(hir, *b, tc, bump, template_funcs, enqueue);
             }
-            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Error => {}
+            HirStmtKind::Break { .. } | HirStmtKind::Continue { .. } | HirStmtKind::Error => {}
         }
     }
 
@@ -158,17 +160,10 @@ pub(super) fn discover_nested_keys<'bump>(
     ) {
         let expr = hir.pool.expr(expr_id);
         match &expr.kind {
-            HirExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
+            HirExprKind::Call { callee, args } => {
                 visit_expr(hir, *callee, tc, bump, template_funcs, enqueue);
                 for &a in hir.pool.expr_list(*args) {
                     visit_expr(hir, a, tc, bump, template_funcs, enqueue);
-                }
-                if let Some(b) = trailing_block {
-                    visit_block(hir, *b, tc, bump, template_funcs, enqueue);
                 }
                 // Explicit Generic type args on the callee.
                 if let HirExprKind::Generic {
@@ -268,6 +263,7 @@ pub(super) fn discover_nested_keys<'bump>(
             },
             HirExprKind::AsyncBlock { block }
             | HirExprKind::UnsafeBlock { block }
+            | HirExprKind::Scope { block }
             | HirExprKind::ValueBlock { block } => {
                 visit_block(hir, *block, tc, bump, template_funcs, enqueue);
             }
@@ -279,7 +275,7 @@ pub(super) fn discover_nested_keys<'bump>(
             HirExprKind::ArrayRepeat { value } => {
                 visit_expr(hir, *value, tc, bump, template_funcs, enqueue);
             }
-            HirExprKind::Array { items } => {
+            HirExprKind::Array { items } | HirExprKind::Tuple { items } => {
                 for &e in hir.pool.expr_list(*items) {
                     visit_expr(hir, e, tc, bump, template_funcs, enqueue);
                 }

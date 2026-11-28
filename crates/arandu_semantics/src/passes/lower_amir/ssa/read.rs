@@ -20,29 +20,9 @@ impl LowerCtx<'_> {
                 ArType::Primitive(primitive) if primitive.is_integer() && *primitive != Primitive::Int))
     }
 
-    /// If `local` is `T?` and `value` is a non-Nil `T`, assign through a
-    /// `T?` temp so codegen boxes it (a bare `0` must not become `nil`, and a
-    /// phi or block parameter of `T?` must not receive a raw `T`).
-    fn materialize_nullable_const(&mut self, local: LocalId, value: AmirOperand) -> AmirOperand {
-        let ty = self.resolve_ty(self.locals[local.as_usize()].ty);
-        if !matches!(ty, ArType::Nullable(_)) {
-            return value;
-        }
-        let needs_box = match &value {
-            AmirOperand::Constant(AmirConstant::Nil) => false,
-            AmirOperand::Constant(_) => true,
-            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => !matches!(
-                self.resolve_ty(self.temps[temp.as_usize()].ty),
-                ArType::Nullable(_)
-            ),
-            AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => false,
-        };
-        if !needs_box {
-            return value;
-        }
-        let t = self.new_temp(ty);
-        self.emit_assign_temp(t, AmirRvalue::Use(value));
-        AmirOperand::Copy(t)
+    /// Pass-through helper retained for variable writes (options are explicit enums).
+    fn materialize_nullable_const(&mut self, _local: LocalId, value: AmirOperand) -> AmirOperand {
+        value
     }
 
     pub(crate) fn write_variable(&mut self, block: BlockId, local: LocalId, value: AmirOperand) {
@@ -80,15 +60,41 @@ impl LowerCtx<'_> {
     ) -> Result<(), Diagnostic> {
         let block = self.require_block()?;
         let value = self.materialize_nullable_const(local, value);
-        self.write_variable(block, local, value);
+        // A non-Copy value read from another place (`let owned = name`) is
+        // owned by the binding from here on, as `emit_store_place` does for
+        // `set`: its SSA definition is a reload of the binding, since the
+        // read temp's provenance still names the moved source, and later
+        // uses of the binding would look like repeated moves from it.
+        let moved_from_place = match value {
+            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => {
+                self.temp_place_origins
+                    .get(temp.as_usize())
+                    .is_some_and(|origin| origin.as_ref().is_some_and(|place| place.local != local))
+                    && !self.tc.type_info.is_copy(self.locals[local.as_usize()].ty)
+            }
+            AmirOperand::Constant(_) | AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => {
+                false
+            }
+        };
+        let place = AmirPlace {
+            local,
+            projections: smallvec::smallvec![],
+        };
         // Emit a dummy Store statement
         self.push_stmt(AmirStmt::Store {
-            lhs: AmirPlace {
-                local,
-                projections: smallvec::smallvec![],
-            },
+            lhs: place.clone(),
             rhs: value,
         });
+        let definition = if moved_from_place {
+            let temp = self.new_temp_id(self.locals[local.as_usize()].ty);
+            self.emit_assign_temp(temp, AmirRvalue::Load(place.clone()));
+            self.temp_origins[temp.as_usize()] = Some(local);
+            self.temp_place_origins[temp.as_usize()] = Some(place);
+            AmirOperand::Copy(temp)
+        } else {
+            value
+        };
+        self.write_variable(block, local, definition);
         Ok(())
     }
 
@@ -113,7 +119,7 @@ impl LowerCtx<'_> {
         let ty_id = self.locals[local.as_usize()].ty;
         let ty = self.resolve_ty(ty_id);
         let is_copy = self.tc.type_info.is_copy(ty_id);
-        let is_nullable = matches!(ty, ArType::Nullable(_));
+        let is_nullable = false;
         let is_mem = super::super::is_memory_type(&ty)
             // F2.0: an address-taken local (`&`/`&mut`, W3.3 out-params) must be
             // re-loaded from its stack home after any call that could have

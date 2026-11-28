@@ -352,7 +352,7 @@ fn remap_place(
     );
     for suffix in &mut place.suffixes {
         match suffix {
-            HirPlaceSuffix::Field { ty, .. } => {
+            HirPlaceSuffix::Field { ty, .. } | HirPlaceSuffix::Deref { ty, .. } => {
                 *ty = map_type(
                     *ty,
                     from,

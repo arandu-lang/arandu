@@ -19,6 +19,16 @@ pub(in crate::stable_hash) fn hash_rvalue(
             hash_amir_operand(hasher, if_true);
             hash_amir_operand(hasher, if_false);
         }
+        R::Select {
+            condition,
+            if_true,
+            if_false,
+        } => {
+            hasher.update(&[38]);
+            hash_amir_operand(hasher, condition);
+            hash_amir_operand(hasher, if_true);
+            hash_amir_operand(hasher, if_false);
+        }
         R::VectorCompare { op, left, right } => {
             hasher.update(&[37, op.stable_tag()]);
             hash_amir_operand(hasher, left);
@@ -51,6 +61,14 @@ pub(in crate::stable_hash) fn hash_rvalue(
             hasher.update(&[35, *lane]);
             hash_amir_operand(hasher, vector);
             hash_amir_operand(hasher, value);
+        }
+        R::VectorBitmask { vector } => {
+            hasher.update(&[39]);
+            hash_amir_operand(hasher, vector);
+        }
+        R::VectorLoadUnaligned { source } => {
+            hasher.update(&[40]);
+            hash_amir_operand(hasher, source);
         }
         R::Use(op) => {
             hasher.update(&[0]);
@@ -268,6 +286,23 @@ pub(in crate::stable_hash) fn hash_rvalue(
             hasher.update(&[30]);
             hash_amir_operand(hasher, value);
             hash_id(hasher, value_ty.as_usize());
+        }
+        R::ArenaAlloc {
+            size,
+            align,
+            payload_ty,
+        } => {
+            hasher.update(&[31]);
+            hasher.update(&size.to_le_bytes());
+            hasher.update(&align.to_le_bytes());
+            hash_id(hasher, payload_ty.as_usize());
+        }
+        R::ArenaCheckpoint => {
+            hasher.update(&[32]);
+        }
+        R::StaticAddr(symbol) => {
+            hasher.update(&[37]);
+            hash_symbol_id(hasher, *symbol);
         }
     }
 }

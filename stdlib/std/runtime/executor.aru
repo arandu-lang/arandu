@@ -32,13 +32,13 @@ module std.runtime.executor
 // -- Host: SyncExecutor queue ------------------------------------------------
 extern "C" {
     /// Host executor bridge that drives a coroutine to completion.
-    func ar_rt_block_on_i64(state: ptr[u8]): int
+    func ar_rt_block_on_i64(state: ptr[u8]): i64
     /// Host executor bridge that queues a coroutine.
-    func ar_rt_spawn_i64(state: ptr[u8]): int
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
     /// Host executor bridge that joins a queued task.
-    func ar_rt_join_i64(handle: int): int
+    func ar_rt_join_i64(handle: i64): i64
     /// Host bridge that discards a pending task or retires a running handle.
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_cancel_i64(handle: i64): void
 }
 
 // ===========================================================================
@@ -52,12 +52,12 @@ public struct SyncExecutor {
 }
 
 /// Join handle carrying its coroutine result type at compile time.
-/// `T` adds no runtime field; the host queue ID keeps its existing layout.
+/// `T` adds no runtime field; the opaque host queue ID is a fixed-width `i64`.
 ///
-/// POD auto-copy (`id: int`): pass/reuse by value without move consumption.
+/// POD auto-copy (`id: i64`): pass/reuse by value without move consumption.
 public struct TaskHandle<T> {
     /// Opaque host handle.
-    id: int
+    id: i64
 }
 
 /// Creates a value used to call the synchronous host executor bridge.

@@ -89,6 +89,7 @@ pub fn lower_type_expr_ctx(
                 None => ArType::Error,
             }
         }
+        TypeExpr::Never { .. } => ArType::Never,
         TypeExpr::Named { span, name, args } => {
             let arg_ids = ctx.pool.type_expr_list(*args);
             lower_named_type(*span, name, arg_ids, ctx, interner)
@@ -96,7 +97,7 @@ pub fn lower_type_expr_ctx(
         TypeExpr::Nullable { inner, .. } => {
             let inner_ty = lower_type_expr_ctx(*inner, ctx, interner);
             let id = interner.intern(inner_ty);
-            ArType::Nullable(id)
+            ArType::Option(id)
         }
         TypeExpr::Pointer { inner, .. } => {
             let inner_ty = lower_type_expr_ctx(*inner, ctx, interner);
@@ -168,7 +169,100 @@ pub fn lower_type_expr_ctx(
             ArType::func(&param_types, ret_id, interner)
         }
         TypeExpr::Group { inner, .. } => lower_type_expr_ctx(*inner, ctx, interner),
+        TypeExpr::Tuple { items, .. } => {
+            let items: Vec<super::type_interner::TypeId> = ctx
+                .pool
+                .type_expr_list(*items)
+                .iter()
+                .map(|&item| {
+                    let ty = lower_type_expr_ctx(item, ctx, interner);
+                    interner.intern(ty)
+                })
+                .collect();
+            ArType::tuple(&items, interner)
+        }
+        TypeExpr::OwnFunc {
+            func, bounds, once, ..
+        } => lower_owning_closure(*func, *bounds, *once, ctx, interner),
     }
+}
+
+/// Checks whether a bound type expression denotes the canonical `Send` marker.
+#[must_use]
+pub(crate) fn owning_closure_bound_is_send(bound: TypeExprId, ctx: &LowerCtx<'_>) -> bool {
+    owning_closure_bound_is_marker(
+        bound,
+        ctx,
+        arandu_middle::symbol_table::LangItem::Send,
+        "Send",
+    )
+}
+
+/// Checks whether a bound type expression denotes the canonical `Sync` marker.
+#[must_use]
+pub(crate) fn owning_closure_bound_is_sync(bound: TypeExprId, ctx: &LowerCtx<'_>) -> bool {
+    owning_closure_bound_is_marker(
+        bound,
+        ctx,
+        arandu_middle::symbol_table::LangItem::Sync,
+        "Sync",
+    )
+}
+
+fn owning_closure_bound_is_marker(
+    bound: TypeExprId,
+    ctx: &LowerCtx<'_>,
+    marker: arandu_middle::symbol_table::LangItem,
+    ambient_name: &str,
+) -> bool {
+    let TypeExpr::Named { name, args, .. } = ctx.pool.type_expr(bound) else {
+        return false;
+    };
+    if !ctx.pool.type_expr_list(*args).is_empty() {
+        return false;
+    }
+    match ctx.resolved.type_refs.get(&crate::NodeKey::from(name.span)) {
+        Some(&symbol) => ctx
+            .symbols
+            .try_get(symbol)
+            .is_some_and(|symbol| symbol.lang_item == Some(marker)),
+        // Name resolution leaves an unshadowed, unqualified marker unbound.
+        None => name.path.len() == 1 && name.path[0] == ambient_name,
+    }
+}
+
+/// `own (A) -> R [+ Send]` is `Closure<(ptr[u8], A) -> R>` (or
+/// `SendClosure`): the stored code takes the environment first, so a call
+/// through the value is an ordinary indirect call (RFC 0032, L3).
+fn lower_owning_closure(
+    func: TypeExprId,
+    bounds: arandu_parser::IndexRange,
+    once: bool,
+    ctx: &LowerCtx<'_>,
+    interner: &mut TypeInterner,
+) -> ArType {
+    use arandu_middle::symbol_table::{LangItem, OwningClosureKind};
+    let mut send = false;
+    for &bound in ctx.pool.type_expr_list(bounds) {
+        if owning_closure_bound_is_send(bound, ctx) && !send {
+            send = true;
+        } else {
+            return ArType::Error;
+        }
+    }
+    let item = LangItem::for_owning_closure(OwningClosureKind { send, once });
+    let Some(symbol) = ctx.symbols.lang_item_symbol(item) else {
+        return ArType::Error;
+    };
+    let ArType::Func(params, ret) = lower_type_expr_ctx(func, ctx, interner) else {
+        return ArType::Error;
+    };
+    let byte = interner.intern(ArType::Primitive(Primitive::U8));
+    let mut code_params = vec![interner.intern(ArType::Ptr(byte))];
+    code_params.extend(interner.type_args(params));
+    let code = ArType::func(&code_params, ret, interner);
+    let code = interner.intern(code);
+    ArType::named(symbol, &[code], interner)
 }
 
 /// Convert an AST `ResultType` into an `ArType`.
@@ -454,7 +548,7 @@ mod tests {
         };
         let result = lower_type_expr_ctx(id, &ctx, &mut i);
         let expected_inner = i.intern(ArType::Primitive(Primitive::Int));
-        assert_eq!(result, ArType::Nullable(expected_inner));
+        assert_eq!(result, ArType::Option(expected_inner));
     }
 
     // ── Pointer ──
@@ -672,6 +766,7 @@ mod tests {
             span: Span::new(0, 12, 0),
             params: params_range,
             result: None,
+            is_bare_func: false,
         });
 
         let mut i = new_interner();
@@ -708,6 +803,7 @@ mod tests {
                 span: Span::new(10, 18, 0),
                 ty: ret_expr,
             }),
+            is_bare_func: false,
         });
 
         let mut i = new_interner();

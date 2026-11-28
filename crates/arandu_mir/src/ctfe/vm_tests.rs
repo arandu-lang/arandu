@@ -1686,3 +1686,143 @@ fn vector_ctfe_nan_is_unordered_and_select_preserves_its_bits() {
         "non-zero mantissa (NaN, not infinity)"
     );
 }
+
+#[test]
+fn scalar_select_evaluates_in_ctfe() {
+    let root = SymbolId::new(1, 1);
+    let (mut f, types, pool) = function(root, 4);
+    let bool_ty = types.intern(ArType::Primitive(Primitive::Bool));
+    f.params = vec![TempId(1), TempId(2), TempId(3)];
+    f.temps[1].ty = bool_ty;
+    assign(
+        &mut f,
+        0,
+        AmirRvalue::Select {
+            condition: AmirOperand::Copy(TempId(1)),
+            if_true: AmirOperand::Copy(TempId(2)),
+            if_false: AmirOperand::Copy(TempId(3)),
+        },
+    );
+    let units = Units(vec![unit(f, &types, pool)]);
+    let layout = DataLayout::ptr_width(8);
+    let i32_t = IntegerType::new(Primitive::Int, layout).unwrap();
+    let a = ConstValue::Integer(ConstInt::new(i32_t, 42).unwrap());
+    let b = ConstValue::Integer(ConstInt::new(i32_t, -99).unwrap());
+    assert_eq!(
+        evaluate(
+            &units,
+            root,
+            &[ConstValue::Bool(true), a.clone(), b.clone()],
+            budget(),
+            || false
+        )
+        .unwrap(),
+        a
+    );
+    assert_eq!(
+        evaluate(
+            &units,
+            root,
+            &[ConstValue::Bool(false), a, b.clone()],
+            budget(),
+            || false
+        )
+        .unwrap(),
+        b
+    );
+}
+
+#[test]
+fn task_arena_alloc_deref_checkpoint_and_rewind_evaluates_in_ctfe() {
+    let root = SymbolId::new(1, 0);
+    let (mut f, types, mut pool) = function(root, 5);
+    let int_ty = types.intern(ArType::Primitive(Primitive::Int));
+    let ptr_ty = types.intern(ArType::Ptr(int_ty));
+    let usize_ty = types.intern(ArType::Primitive(Primitive::USize));
+    f.locals.push(AmirLocal {
+        id: LocalId::from_usize(0),
+        ty: ptr_ty,
+        is_memory: false,
+        symbol: None,
+        span: Span::new(root.file_id, 1, 2),
+        use_span: None,
+    });
+    f.temps[1].ty = usize_ty;
+    f.temps[2].ty = ptr_ty;
+    f.temps[3].ty = int_ty;
+    f.temps[4].ty = int_ty;
+    f.temps[0].ty = int_ty;
+
+    // t1 = ArenaCheckpoint
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(1),
+            rhs: AmirRvalue::ArenaCheckpoint,
+        },
+    );
+    // t2 = ArenaAlloc { size: 4, align: 4, payload_ty: int }
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(2),
+            rhs: AmirRvalue::ArenaAlloc {
+                size: 4,
+                align: 4,
+                payload_ty: int_ty,
+            },
+        },
+    );
+    // Store s0 = t2 (store pointer into local)
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Store {
+            lhs: AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec::smallvec![],
+            },
+            rhs: AmirOperand::Copy(TempId(2)),
+        },
+    );
+    // t3 = 42
+    let lit42 = pool.intern_int("42");
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(3),
+            rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Pool(lit42))),
+        },
+    );
+    // Store (*s0) = t3
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Store {
+            lhs: AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec::smallvec![AmirProjection::Deref],
+            },
+            rhs: AmirOperand::Copy(TempId(3)),
+        },
+    );
+    // t0 = Load((*s0))
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(0),
+            rhs: AmirRvalue::Load(AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec::smallvec![AmirProjection::Deref],
+            }),
+        },
+    );
+    // ArenaRewind(t1)
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::ArenaRewind(AmirOperand::Copy(TempId(1))),
+    );
+
+    let units = Units(vec![unit(f, &types, pool)]);
+    let result = evaluate(&units, root, &[], budget(), || false)
+        .expect("Dual-Locus TaskArena CTFE evaluates cleanly");
+    assert_eq!(result, value(42));
+}

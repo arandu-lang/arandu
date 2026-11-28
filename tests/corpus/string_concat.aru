@@ -1,0 +1,62 @@
+module stringConcat
+
+from std.alloc.string import { String }
+import std.core.str as strs
+
+// Text built at run time is an owned `String`: `a + b` and interpolation
+// with expressions allocate one, `s += t` appends in place, and a `String`
+// lends itself as a `str` view to calls and `let` bindings.
+
+func greet(name: str): String {
+    return "hello, " + name + "!"
+}
+
+func joined(count: int): String {
+    let mut out = String.new()
+    let mut i = 0
+    while i < count {
+        out += "ab"
+        i += 1
+    }
+    return out
+}
+
+// A literal where a `String` is expected is one, so every arm agrees.
+func label(n: int): String {
+    return match n {
+        0 => "none",
+        1 => "one",
+        _ => "many: ${n}",
+    }
+}
+
+func size(text: str): usize {
+    return text.len()
+}
+
+func main(): int {
+    let a = "ab" + "cd"
+    if size(a) != 4 { return 1 }
+    let mut s = String.from("x")
+    s += "y"
+    s += a
+    if size(s) != 6 { return 2 }
+    if size(greet("arandu")) != 14 { return 3 }
+    if size(joined(50)) != 100 { return 4 }
+    let n = 7
+    let mixed = "n=" + "${n}"
+    if size(mixed) != 3 { return 5 }
+    let view: str = "v${n}"
+    if view.len() != 2 { return 6 }
+    // A `String` compares with text through its `str` view.
+    if mixed != "n=7" { return 7 }
+    if "n=7" != mixed { return 8 }
+    if mixed != "n=" + "7" { return 9 }
+    if label(0) != "none" || label(5) != "many: 5" { return 10 }
+    let mut named: String = "abc"
+    named += "d"
+    if size(named) != 4 { return 11 }
+    // A `String` lends itself to a `ref str` parameter too.
+    if strs.asBytes(named)[0] != 97 { return 12 }
+    return 0
+}

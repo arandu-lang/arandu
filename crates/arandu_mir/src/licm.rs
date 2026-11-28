@@ -201,6 +201,15 @@ fn is_speculatable(rv: &AmirRvalue) -> bool {
         AmirRvalue::Unary { op, .. } => {
             matches!(op, crate::ops::UnaryOp::Not | crate::ops::UnaryOp::BitNot)
         }
+        AmirRvalue::Select {
+            condition,
+            if_true,
+            if_false,
+        } => {
+            !matches!(condition, AmirOperand::Move(_))
+                && !matches!(if_true, AmirOperand::Move(_))
+                && !matches!(if_false, AmirOperand::Move(_))
+        }
         // Loads, calls, allocations and projections may trap or have effects.
         _ => false,
     }
@@ -211,6 +220,11 @@ fn operands(rv: &AmirRvalue) -> Vec<AmirOperand> {
         AmirRvalue::Use(op) => vec![*op],
         AmirRvalue::Binary { left, right, .. } => vec![*left, *right],
         AmirRvalue::Unary { operand, .. } => vec![*operand],
+        AmirRvalue::Select {
+            condition,
+            if_true,
+            if_false,
+        } => vec![*condition, *if_true, *if_false],
         _ => Vec::new(),
     }
 }

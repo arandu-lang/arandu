@@ -5,7 +5,7 @@ use std::fmt::Write;
 use arandu_middle::SymbolId;
 use arandu_middle::amir::{AmirFunc, AmirRvalue, AmirStmt};
 use arandu_middle::literal_pool::AmirLiteralEntry;
-use arandu_middle::types::{ArType, Primitive};
+use arandu_middle::types::ArType;
 
 use super::CEmitter;
 
@@ -95,34 +95,7 @@ impl<'a> CEmitter<'a> {
         }
     }
 
-    /// Whether `T?` with this inner type is a `T*` box handle in C.
-    pub(super) fn is_boxed_nullable(&self, inner: &ArType) -> bool {
-        inner.slice_abi_element(self.interner).is_none()
-            && !matches!(
-                inner,
-                ArType::Ptr(_)
-                    | ArType::Ref(_)
-                    | ArType::RefMut(_)
-                    | ArType::Nullable(_)
-                    | ArType::Primitive(Primitive::Str)
-                    | ArType::Void
-                    | ArType::Error
-            )
-    }
-
     pub(super) fn ensure_type_emitted(&mut self, ty: &ArType) {
-        if let ArType::Nullable(inner) = ty {
-            let inner_ty = self.interner.resolve(*inner);
-            if (matches!(
-                inner_ty,
-                ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
-            ) && inner_ty.slice_abi_element(self.interner).is_none())
-                || self.is_boxed_nullable(&inner_ty)
-            {
-                self.ensure_type_emitted(&inner_ty);
-                return;
-            }
-        }
         if let ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) = ty {
             let inner_ty = self.interner.resolve(*inner);
             self.ensure_type_emitted(&inner_ty);
@@ -158,7 +131,7 @@ impl<'a> CEmitter<'a> {
             let mut params_c_tys = Vec::new();
             for &p in self.interner.type_args(*params).iter() {
                 let p_ty = self.interner.resolve(p);
-                if matches!(p_ty, ArType::Void) {
+                if matches!(p_ty, ArType::Void | ArType::Never) {
                     continue;
                 }
                 self.ensure_type_emitted(&p_ty);
@@ -236,10 +209,7 @@ impl<'a> CEmitter<'a> {
                     self.ensure_type_emitted(&field_ty);
                 }
             }
-            ArType::Option(inner)
-            | ArType::Nullable(inner)
-            | ArType::Slice(inner)
-            | ArType::MutSlice(inner) => {
+            ArType::Option(inner) | ArType::Slice(inner) | ArType::MutSlice(inner) => {
                 let inner_ty = self.interner.resolve(*inner);
                 self.ensure_type_emitted(&inner_ty);
             }
@@ -271,11 +241,24 @@ impl<'a> CEmitter<'a> {
         }
     }
 
+    pub(super) fn c_function_cold_prefix(&self, symbol: arandu_middle::SymbolId) -> &'static str {
+        if self.symbols.is_cold(symbol)
+            || self
+                .type_context
+                .is_some_and(|ctx| ctx.is_cold_function(symbol))
+        {
+            "AR_COLD "
+        } else {
+            ""
+        }
+    }
+
     pub(super) fn emit_func_decl(&mut self, func: &AmirFunc) {
         let name = self.c_function_name(func.symbol);
         let linkage = self.c_function_linkage(func.symbol);
+        let cold = self.c_function_cold_prefix(func.symbol);
         let ret_ty = self.c_func_return_type(func);
-        let _ = write!(&mut self.output, "{linkage}{} {}(", ret_ty, name);
+        let _ = write!(&mut self.output, "{linkage}{cold}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ");");
     }
@@ -284,7 +267,7 @@ impl<'a> CEmitter<'a> {
         let mut emitted = false;
         for param in &func.params {
             let ty = self.temp_ty(func, *param);
-            if matches!(ty, ArType::Void) {
+            if matches!(ty, ArType::Void | ArType::Never) {
                 continue;
             }
             if emitted {

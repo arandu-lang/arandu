@@ -38,11 +38,50 @@ pub(super) fn synth_control_flow_expr(
 ) -> Option<TypeId> {
     match kind {
         ExprKind::Lambda { .. } => {
-            checker.diagnostics.push(crate::Diagnostic::error(
-                crate::DiagCode::U001FeatureNotSupported,
-                "AMIR v0.1: lambda/closure is not supported yet (v0.3 LAMBDA: closure type checking and lowering)",
-                span,
-            ));
+            // A callback argument was already typed (or rejected) against its bound.
+            if let Some(recipe) = checker.type_info.closure_at(span) {
+                if let Some(code) = &recipe.owning {
+                    return Some(code.closure_ty);
+                }
+                if recipe.is_function() {
+                    return checker.type_info.expr_type_id(_expr);
+                }
+                let struct_symbol = recipe.struct_symbol;
+                return checker.decl_type_id(struct_symbol);
+            }
+            if let Some(checked) = checker.type_info.expr_type_id(_expr)
+                && checker.resolve(checked).is_error()
+            {
+                return Some(checked);
+            }
+            if let Some(expected) = expected
+                && matches!(checker.resolve(expected), ArType::Func(..))
+            {
+                return Some(super::call::check_lambda_value(checker, _expr, expected));
+            }
+            if let Some(expected) = expected
+                && let Some(signature) = super::call::owning_closure_signature(checker, expected)
+            {
+                return Some(super::call::check_lambda_owning(
+                    checker, _expr, expected, signature,
+                ));
+            }
+            if expected.is_none()
+                && let Some(ty) = super::call::check_lambda_inferred(checker, _expr)
+            {
+                return Some(ty);
+            }
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::T001CannotInferType,
+                    "cannot infer the type of this closure",
+                    span,
+                )
+                .with_primary_label("a parameter has no type and nothing here expects one")
+                .with_hint(
+                    "annotate the parameters, as in `(x: int) => x * 2`, or pass the closure where a function type is expected",
+                ),
+            );
             Some(checker.intern(ArType::Error))
         }
         ExprKind::Alloc { expr: inner_expr } => {
@@ -84,13 +123,20 @@ pub(super) fn synth_control_flow_expr(
         ExprKind::UnsafeBlock { block } => {
             checker.ctx.enter_unsafe();
             let block_id = *block;
-            let block_ty = crate::type_checker::check::check_block(
+            let is_void_context =
+                expected.is_some_and(|exp| matches!(checker.resolve(exp), ArType::Void));
+            let block_ty = crate::type_checker::check::check_block_tail(
                 checker,
                 checker.pool,
                 checker.pool.block(block_id),
+                if is_void_context { expected } else { None },
             );
             checker.ctx.exit_unsafe();
-            Some(checker.intern(block_ty))
+            Some(checker.intern(if is_void_context {
+                ArType::Void
+            } else {
+                block_ty
+            }))
         }
         ExprKind::If {
             condition,
@@ -100,17 +146,42 @@ pub(super) fn synth_control_flow_expr(
             let cond = condition.clone();
             let then_id = *then_block;
             let else_id = *else_block;
+            let is_void_context =
+                expected.is_some_and(|exp| matches!(checker.resolve(exp), ArType::Void));
+            let branch_expected = if is_void_context { expected } else { None };
             crate::type_checker::check::check_condition(checker, &cond);
-            let then_ty = crate::type_checker::check::check_block(
+            let then_ty = crate::type_checker::check::check_block_tail(
                 checker,
                 checker.pool,
                 checker.pool.block(then_id),
+                branch_expected,
             );
-            let else_ty = crate::type_checker::check::check_block(
+            let else_ty = crate::type_checker::check::check_block_tail(
                 checker,
                 checker.pool,
                 checker.pool.block(else_id),
+                branch_expected,
             );
+            if is_void_context {
+                return Some(checker.intern(ArType::Void));
+            }
+            let then_diverges = crate::type_checker::check::block_diverges(
+                checker.pool,
+                checker.pool.block(then_id),
+            ) || matches!(then_ty, ArType::Never);
+            let else_diverges = crate::type_checker::check::block_diverges(
+                checker.pool,
+                checker.pool.block(else_id),
+            ) || matches!(else_ty, ArType::Never);
+            if then_diverges && else_diverges {
+                return Some(checker.intern(ArType::Never));
+            }
+            if then_diverges && !else_diverges {
+                return Some(checker.intern(else_ty));
+            }
+            if else_diverges && !then_diverges {
+                return Some(checker.intern(then_ty));
+            }
             if !types::unify(&then_ty, &else_ty, &checker.type_info.type_interner) {
                 checker.add_constraint(
                     then_ty.clone(),
@@ -140,8 +211,9 @@ pub(super) fn synth_control_flow_expr(
                 span,
             );
 
-            let mut expected_arm_ty_id = checker.intern(ArType::Error);
-            let mut first_arm_span = span;
+            let is_void_context =
+                expected.is_some_and(|exp| matches!(checker.resolve(exp), ArType::Void));
+            let mut first_non_diverging: Option<(crate::type_checker::types::TypeId, Span)> = None;
 
             for (i, arm_id) in arm_ids.iter().copied().enumerate() {
                 let arm = checker.pool.match_arm(arm_id);
@@ -178,35 +250,80 @@ pub(super) fn synth_control_flow_expr(
                     }
                 }
 
+                let arm_diverges_syntactically = match &arm.body {
+                    arandu_parser::MatchArmBody::Expr {
+                        expr: inner_expr, ..
+                    } => crate::type_checker::check::expr_diverges(checker.pool, *inner_expr),
+                    arandu_parser::MatchArmBody::Block { block, .. } => {
+                        crate::type_checker::check::block_diverges(checker.pool, block)
+                    }
+                };
+                let arm_expected = match &arm.body {
+                    arandu_parser::MatchArmBody::Expr {
+                        expr: inner_expr, ..
+                    } if is_void_context
+                        && !matches!(
+                            checker.pool.expr(*inner_expr),
+                            ExprKind::If { .. }
+                                | ExprKind::Match { .. }
+                                | ExprKind::UnsafeBlock { .. }
+                        ) =>
+                    {
+                        None
+                    }
+                    _ => expected,
+                };
                 let arm_ty_id = match &arm.body {
                     arandu_parser::MatchArmBody::Expr {
                         expr: inner_expr, ..
-                    } => synth_expr(checker, *inner_expr),
+                    } => super::super::synth_expr_expected(checker, *inner_expr, arm_expected),
                     arandu_parser::MatchArmBody::Block { block, .. } => {
-                        let block_ty =
-                            crate::type_checker::check::check_block(checker, checker.pool, block);
+                        let block_ty = crate::type_checker::check::check_block_tail(
+                            checker,
+                            checker.pool,
+                            block,
+                            if is_void_context { expected } else { None },
+                        );
                         checker.intern(block_ty)
                     }
                 };
 
-                if i == 0 {
-                    expected_arm_ty_id = arm_ty_id;
-                    first_arm_span = arm.span;
-                } else if !checker.unify_ids(expected_arm_ty_id, arm_ty_id) {
-                    let expected_arm_ty = checker.resolve(expected_arm_ty_id);
-                    let arm_ty = checker.resolve(arm_ty_id);
-                    checker.add_constraint(
-                        expected_arm_ty,
-                        arm_ty,
-                        ConstraintOrigin::MatchArms {
-                            first_span: first_arm_span,
-                            mismatch_span: arm.span,
-                            arm_index: i,
-                        },
-                    );
+                let arm_diverges = arm_diverges_syntactically
+                    || matches!(checker.resolve(arm_ty_id), ArType::Never);
+                if is_void_context || arm_diverges {
+                    continue;
+                }
+                match first_non_diverging {
+                    None => {
+                        first_non_diverging = Some((arm_ty_id, arm.span));
+                    }
+                    Some((expected_arm_ty_id, first_arm_span))
+                        if !checker.unify_ids(expected_arm_ty_id, arm_ty_id) =>
+                    {
+                        let expected_arm_ty = checker.resolve(expected_arm_ty_id);
+                        let arm_ty = checker.resolve(arm_ty_id);
+                        checker.add_constraint(
+                            expected_arm_ty,
+                            arm_ty,
+                            ConstraintOrigin::MatchArms {
+                                first_span: first_arm_span,
+                                mismatch_span: arm.span,
+                                arm_index: i,
+                            },
+                        );
+                    }
+                    Some(_) => {}
                 }
             }
-            Some(expected_arm_ty_id)
+            if is_void_context {
+                Some(checker.intern(ArType::Void))
+            } else if let Some((ty_id, _)) = first_non_diverging {
+                Some(ty_id)
+            } else if !arm_ids.is_empty() {
+                Some(checker.intern(ArType::Never))
+            } else {
+                Some(expected.unwrap_or_else(|| checker.intern(ArType::Void)))
+            }
         }
         _ => None,
     }

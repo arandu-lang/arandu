@@ -172,27 +172,13 @@ impl Resolver<'_> {
                     };
                 }
             }
-            ExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
-                if let Some(block) = trailing_block
-                    && contains(pool.block(*block).span)
-                {
-                    let scope = self.symbols.new_scope(scope);
-                    return self.staging_context(
-                        scope,
-                        pool,
-                        pool.block(*block),
-                        target,
-                        depth + 1,
-                    );
-                }
+            ExprKind::Call { callee, args } => {
                 children.push(*callee);
                 children.extend_from_slice(pool.expr_list(*args));
             }
-            ExprKind::VariantSugar { args, .. } | ExprKind::Array { items: args } => {
+            ExprKind::VariantSugar { args, .. }
+            | ExprKind::Array { items: args }
+            | ExprKind::Tuple { items: args } => {
                 children.extend_from_slice(pool.expr_list(*args));
             }
             ExprKind::ArrayRepeat { value, count } => {
@@ -241,6 +227,7 @@ impl Resolver<'_> {
             | ExprKind::Char { .. }
             | ExprKind::Byte { .. }
             | ExprKind::ByteString { .. }
+            | ExprKind::CString { .. }
             | ExprKind::Nil => {}
         }
         for child in children {

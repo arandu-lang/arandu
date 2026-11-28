@@ -65,6 +65,7 @@ fn check_escapes_by_block_impl(
         |type_info| find_escapes_with_type_info(func, type_info),
     );
     let no_fb = opts.effective_no_fallback();
+    let return_carrier = crate::dual_locus::return_is_dual_locus_carrier(func, interner, type_info);
     let mut diags = Vec::new();
 
     for ev in events {
@@ -72,60 +73,73 @@ fn check_escapes_by_block_impl(
             continue;
         }
         let name = local_name(ev.place_local, func, symbols);
+        let dual_locus = crate::dual_locus::is_dual_locus_promotable(
+            func,
+            ev.place_local,
+            interner,
+            type_info,
+            opts.data_layout,
+        );
         match ev.kind {
             EscapeKind::Return => {
-                // Returning &local is always a hard error (O010). O004 explains
-                // the static-window failure (Magia Inspecionável).
-                diags.push((
-                    ev.block,
-                    Diagnostic::error(
-                        DiagCode::O010EscapeOfBorrowedValue,
-                        format!(
-                            "escape of borrowed value: returning reference to local variable '{name}'"
+                if return_carrier && dual_locus && !no_fb {
+                    diags.push((
+                        ev.block,
+                        o004_diag(&name, ev.span, ev.block, ev.reason, false, false).with_note(
+                            "storage locus (\\lambda_store) promoted to linear TaskArena while preserving direct native pointer reference locus (\\lambda_ref) (RFC 0043)",
                         ),
-                        ev.span,
-                    )
-                    .with_label(ev.span, "reference to local would dangle after return")
-                    .with_note(ev.reason)
-                    .with_note(
-                        "keep the owner alive in the caller, or return owned data instead of `ref`",
-                    ),
-                ));
-                diags.push((
-                    ev.block,
-                    o004_diag(&name, ev.span, ev.block, ev.reason, no_fb, no_fb),
-                ));
+                    ));
+                } else {
+                    // Returning &local directly (or under @NoFallback) is always a hard error (O010).
+                    // O004 explains the static-window failure (Magia Inspecionável).
+                    diags.push((
+                        ev.block,
+                        Diagnostic::error(
+                            DiagCode::O010EscapeOfBorrowedValue,
+                            format!(
+                                "escape of borrowed value: returning reference to local variable '{name}'"
+                            ),
+                            ev.span,
+                        )
+                        .with_label(ev.span, "reference to local would dangle after return")
+                        .with_note(ev.reason)
+                        .with_note(
+                            "keep the owner alive in the caller, or return owned data instead of `ref`",
+                        ),
+                    ));
+                    diags.push((
+                        ev.block,
+                        o004_diag(&name, ev.span, ev.block, ev.reason, no_fb, no_fb),
+                    ));
+                }
             }
             EscapeKind::HeapStore => {
-                // Controlled fallback path: O004 is Note by default; G2 promotes to Error.
-                // Projected refs cannot be represented by the current scalar
-                // handle without either snapshot semantics or losing the base
-                // owner/path relation. Reject instead of compiling stale data.
-                let projected = has_projected_borrow(func, ev.place_local);
-                // Runtime references are raw pointers: a promoted handle
-                // stored in memory would be read back as a pointer.
-                let promotable = !projected
-                    && crate::gen_promote::would_promote(func, interner, type_info, ev.place_local);
-                diags.push((
-                    ev.block,
-                    o004_diag(
-                        &name,
-                        ev.span,
+                if dual_locus {
+                    diags.push((
                         ev.block,
-                        ev.reason,
-                        no_fb || projected || promotable,
-                        no_fb,
-                    )
-                    .with_note(if projected {
-                        "projected escaping borrows require a first-class owner/path handle; snapshot promotion is intentionally forbidden"
-                    } else if promotable {
-                        "the reference is stored into an aggregate or memory location; runtime references are raw pointers while GenRef handles are arena indices, so transparent fallback cannot be safely re-read. Store the owned value or use an explicit container instead"
-                    } else {
-                        "this payload is not promoted: the stored reference keeps its stack provenance"
-                    }),
-                ));
-                if no_fb {
-                    // Extra hint only when hard-failing.
+                        o004_diag(&name, ev.span, ev.block, ev.reason, no_fb, no_fb).with_note(
+                            "storage locus (\\lambda_store) promoted to linear TaskArena while preserving direct native pointer reference locus (\\lambda_ref) (RFC 0043)",
+                        ),
+                    ));
+                } else {
+                    // Projected refs and non-dual-locus heap stores stay unpromoted.
+                    let projected = has_projected_borrow(func, ev.place_local);
+                    diags.push((
+                        ev.block,
+                        o004_diag(
+                            &name,
+                            ev.span,
+                            ev.block,
+                            ev.reason,
+                            no_fb || projected,
+                            no_fb,
+                        )
+                        .with_note(if projected {
+                            "projected escaping borrows require a first-class owner/path handle; snapshot promotion is intentionally forbidden"
+                        } else {
+                            "this payload is not promoted: the stored reference keeps its stack provenance"
+                        }),
+                    ));
                 }
             }
         }

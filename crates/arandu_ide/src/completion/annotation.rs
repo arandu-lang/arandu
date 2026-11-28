@@ -53,12 +53,23 @@ pub(super) fn annotation_completions(text: &str, offset: u32, prefix: &str) -> V
                     Some(format!("{}(\"${{1:library}}\")", spec.canonical_name)),
                     true,
                 ),
+                attrs::AnnotationArguments::OneOrMoreStrings => (
+                    Some(format!("{}(\"${{1:warning}}\")", spec.canonical_name)),
+                    true,
+                ),
                 attrs::AnnotationArguments::OneStringOrIdent => {
                     (Some(format!("{}(\"${{1:C}}\")", spec.canonical_name)), true)
                 }
                 attrs::AnnotationArguments::EffectList => {
                     (Some(format!("{}(${{1:Pure}})", spec.canonical_name)), true)
                 }
+                attrs::AnnotationArguments::OneOrMoreIdents => (
+                    Some(format!(
+                        "{}(${{1|PartialEq,Eq,Ord,Clone,Hash,Debug|}})",
+                        spec.canonical_name
+                    )),
+                    true,
+                ),
                 // Bare form is the common case (`@Export`); the optional C
                 // symbol can be typed as `@Export("name")` when needed.
                 attrs::AnnotationArguments::OptionalString => (None, false),

@@ -1,6 +1,6 @@
 [package]
 name = "arandu_resolve"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
@@ -9,6 +9,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+arandu_base = { path = "../arandu_base" }
 arandu_lexer = { path = "../arandu_lexer" }
 arandu_middle = { path = "../arandu_middle" }
 arandu_parser = { path = "../arandu_parser" }

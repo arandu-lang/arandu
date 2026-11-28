@@ -67,7 +67,9 @@ impl LowerCtx<'_> {
         // Evaluate once even for zero elements: effects and lexical cleanup
         // remain visible to the shared drop elaborator and optimizers.
         self.charge_static_expansion_work(expr.span, count)?;
+        let val_expr_ty = self.hir.pool.expr(value).ty;
         let operand = self.lower_expr(value, None, symbols)?;
+        let operand = self.coerce_to_option(operand, val_expr_ty, element);
         if count == 0 && !self.tc.type_info.is_copy(element) {
             self.begin_local_scope();
             let local = self.new_compiler_local_id(element, expr.span);
@@ -198,15 +200,24 @@ impl LowerCtx<'_> {
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
         let fields_slice = self.hir.pool.field_inits_list(fields);
+        let struct_ty_resolved = self.resolve_ty(expr.ty);
         let mut field_ops = Vec::with_capacity(fields_slice.len());
         for f in fields_slice {
             let field_ty = self.hir.pool.expr(f.value).ty;
+            let expected_field_ty = arandu_middle::layout::instantiated_field_type(
+                &struct_ty_resolved,
+                f.name.as_str(),
+                &self.tc.type_info.type_interner,
+                &*self.tc.type_info,
+            )
+            .unwrap_or(field_ty);
             let value = self.lower_expr(f.value, None, symbols)?;
+            let value = self.coerce_to_option(value, field_ty, expected_field_ty);
             // A struct literal takes ownership of each non-Copy field value.
             // Record that move before drop elaboration so the source local is
             // not destroyed after its value has been installed in the result.
             let value = self.consume_operand(value)?;
-            field_ops.push((f.name.clone(), value, field_ty));
+            field_ops.push((f.name.clone(), value, expected_field_ty));
         }
         if let Some(struct_fields) = self.tc.type_info.struct_fields.get(&struct_symbol) {
             field_ops.sort_by_key(|(name, _, _)| {
@@ -263,7 +274,27 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
+        let val_expr_ty = self.hir.pool.expr(value).ty;
         let val_op = self.lower_expr(value, None, symbols)?;
+        let expected_payload_ty = match self.resolve_ty(expr.ty) {
+            crate::types::ArType::Result(ok, err) => match variant {
+                ResultCtorVariant::Ok => Some(ok),
+                ResultCtorVariant::Err => Some(err),
+                _ => None,
+            },
+            crate::types::ArType::Option(inner) if variant == ResultCtorVariant::Some => {
+                Some(inner)
+            }
+            crate::types::ArType::Poll(inner) if variant == ResultCtorVariant::PollReady => {
+                Some(inner)
+            }
+            _ => None,
+        };
+        let val_op = if let Some(exp_ty) = expected_payload_ty {
+            self.coerce_to_option(val_op, val_expr_ty, exp_ty)
+        } else {
+            val_op
+        };
         let val_op = if matches!(
             variant,
             ResultCtorVariant::Ok

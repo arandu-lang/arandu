@@ -12,8 +12,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         args: &[AmirOperand],
     ) -> bool {
         let (op, width) = match kind {
-            IntrinsicKind::Atomic(op, width) => (op, width),
-            IntrinsicKind::AtomicFence | IntrinsicKind::AtomicCompilerFence => {
+            IntrinsicKind::Atomic(op, width, _) => (op, width),
+            IntrinsicKind::AtomicFence(..) | IntrinsicKind::AtomicCompilerFence(..) => {
                 self.builder.ins().fence();
                 return true;
             }

@@ -1,7 +1,7 @@
 # Arandu — Roadmap mestre
 
-**Revisão:** 2026-10-18. **Base publicada:** 0.1.10.
-**Próximo marco de produto:** 0.2.0 — compilador quente e imagem dev recuperável.
+**Revisão:** 2026-11-06. **Base publicada:** 0.2.0.
+**Próximo marco de produto:** 0.3.x — granularidade por instância.
 
 Esta é a única fila permanente do projeto. Contratos descrevem comportamento
 implementado; RFCs descrevem propostas e seus recortes; relatórios de release
@@ -99,14 +99,14 @@ mesmo após uma rodada completa verde anterior.
 
 Ordem imediata para a próxima campanha, mantendo correções independentes na
 0.1.x quando necessário. DIST.3, GATE.LSP, NUM.C, WASM.CFG e os métodos de
-primitivos saíram na v0.1.11 (2026-10-26) e deixaram a fila.
+primitivos saíram na v0.1.11 (2026-10-26) e deixaram a fila; HOT.2–6 e
+WASM.FLOAT saíram na v0.2.0 (2026-11-06).
 
 | Prioridade / ID | Trabalho aberto | Dono e prova de saída |
 | --- | --- | --- |
-| P1 / HOT.1 | feito na 0.2.0: `bench-incremental` com corpora pequeno/médio/grande, p50/p95, CPU/RSS, caminho de publicação, delta de bytes por função e retenção de slot | falta a execução no host de referência |
-| P1 / HOT.2–6 | HOT.2–5 feitos na 0.2.0 (sessão, daemon, imagem dev, recuperação); HOT.6 com endurance de 1000 edições e RSS/filas limitados | matriz nativa instalada pelo workflow de release; gate de p95 por decisão do mantenedor |
-| P1 / AGG.1 | reproduzir e classificar gaps de lifetime/cleanup dos fallbacks admitidos; correção local de GenArena.get com Copy e novo getRef para impedir duplicação de owners. Corrigido localmente na 0.2.0: o vazamento do Cranelift em agregados com view (`Option<ref T>`; ~225 B por `GenArena.getRef`), por admissão de carriers no scratch da invocação, retornos `ref` com resumo provado e handle por escalares no `GenArena` | MIR/backends; resultados corretos, alloc/free e RSS limitado: `cli_agg_endurance` em C (ASan/LSan e RSS) e na JIT (RSS) passa; resultados `ptr`/`ref` promovidos pela análise de escape de endereço no AMIR (`agg1_pointer_results.aru`); residual documentado em ABI/layout (funções que tomam o endereço do próprio armazenamento, carriers no Wasm), destino dual-locus (RFC 0043) |
-| P1 / WASM.FLOAT | implementado localmente na 0.2.0: o `ToStr` de `f64` no Wasm usa o algoritmo exato de referência do `flt2dec` do Rust (Dragon4 em modo shortest, bignum de 40 limbs na shadow stack, sem tabelas) numa função auxiliar emitida só quando o módulo formata float | `float_text` igual a `format!` em 200 mil padrões de bits, 50 mil decimais curtos e todas as potências de 2 e de 10; paridade Cranelift/C/Wasm em `cli_backend_parity`; custo ~1,9 KB por módulo que formata float, ~64 B por chamada (antes ~580 B inline) |
+| P0 / AUD.ELF | auditar o patch ELF da 0.2.0: `.eh_frame`/CFI de uma função cujo prólogo muda e relocação `Absolute64` aplicada num executável PIE | concluído na `0.3.0-dev`: nenhum defeito alcançável (o Cranelift AOT não emite unwind e, com `is_pic`, não gera `Absolute64`); o patch passa a recusar CGU com `.eh_frame` mudado (layout schema 4), relocação absoluta em PIE e relocação fora de alcance, caindo no link completo; regressão em `cli_elf_in_place_linker.rs` |
+| P1 / BENCH.2 | corpus representativo e contadores determinísticos de trabalho para os gates da 0.3.0 | concluído na `0.3.0-dev`: corpus `representative` (diamante, structs com destrutor em `Vec`, genérico e instâncias, chamador único), classes `generic-body`, `new-instance` e `direct-call-signature`, schema 4 com units reexecutadas, memos verificados e arquivos recompostos; linha de base em [benchmarks](benchmarks/README.md) e na [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md) |
+| P1 / AGG.1 | reproduzir e classificar gaps de lifetime/cleanup dos fallbacks admitidos; correção local de GenArena.get com Copy e novo getRef para impedir duplicação de owners. Corrigido na v0.2.0: o vazamento do Cranelift em agregados com view (`Option<ref T>`; ~225 B por `GenArena.getRef`), por admissão de carriers no scratch da invocação, retornos `ref` com resumo provado e handle por escalares no `GenArena` | MIR/backends; resultados corretos, alloc/free e RSS limitado: `cli_agg_endurance` em C (ASan/LSan e RSS) e na JIT (RSS) passa; resultados `ptr`/`ref` promovidos pela análise de escape de endereço no AMIR (`agg1_pointer_results.aru`); residual documentado em ABI/layout (funções que tomam o endereço do próprio armazenamento, carriers no Wasm), destino dual-locus (RFC 0043) |
 | P2 / CT.4–5 e IDE | campanha de editor/playground e ampliação do corpus real | query/IDE/web/extensão; prova correspondente, sem equiparar smoke instalado ao universo de alvos |
 | P2 / SL_T, SL_P | fechar soak e evidência nativa específica antes de promover `gold` | harness/runtime; artefatos versionados por campanha e matriz descrita nos contratos |
 
@@ -140,7 +140,7 @@ e `arandu-ast-v0.1.md`.
 | --- | --- | --- |
 | ST.0 | consolidar primitivos, Decimal e alterações locais | `done` (v0.1.11, SDK instalado testado pelo workflow de release); Decimal com overflow checado, comparação exata, HalfEven e conversões validadas no corpus contratual e no oráculo inteiro independente executados nos três backends (C/Cranelift/Wasm); gates locais passaram; manter as provas de métodos/imports/completion e cutoff no SDK instalado |
 | ST.1 | `core.math`: sqrt, sin/cos/tan, pow, log/exp e PI/TAU/E | implementação escalar local; corrigidos trunc acima de 32 bits, round, escala extrema de exp, potências subnormais e overflow intermediário de cbrt; regressões independentes IEEE/f64 nos três backends; oráculos trigonométricos (sin, cos, tan) e logarítmicos (ln) com tolerâncias ULP e bordas fechados e validados em JIT, C (Clang -O0/-O2 UBSan) e Wasm; perfis float32 e matriz instalada pendentes |
-| ST.2 | `core.simd`: seis vetores de 128 bits | implementação local de tipos canônicos, métodos/intrínsecos tipados, layout 16/16, AMIR e Cranelift/C/Wasm; máscaras/comparações/select, wrapping e slices com bounds; escrita segura usa MutableSlice afim, descritores compartilhados exigem unsafe; backing heap do compilador alinhado a 16; CTFE concluído e verificado na VM com suporte a 128-bit hardware vectors, splat, extract/insert, ops, select, shuffle e intrínseco abort; faltam provas do SDK instalado na matriz nativa por alvo (RFC 0038) |
+| ST.2 | `core.simd`: seis vetores de 128 bits | implementação local de tipos canônicos, métodos/intrínsecos tipados, layout 16/16, AMIR e Cranelift/C/Wasm; máscaras/comparações/select, wrapping e slices com bounds; escrita segura usa `mut []T` afim (`MutableSlice` aposentado na `0.3.1`), construtores brutos exigem `unsafe`; backing heap do compilador alinhado a 16; CTFE concluído e verificado na VM com suporte a 128-bit hardware vectors, splat, extract/insert, ops, select, shuffle e intrínseco abort; faltam provas do SDK instalado na matriz nativa por alvo (RFC 0038) |
 | ST.3 | Q8.8/Q32.32 e correção de Q16.16 | implementação local; oráculo i128, JIT/C com UBSan/Wasm; 384 pares inteiros e gates locais passaram; conversões float validadas com clamping e oráculo diferencial nos três backends; matriz instalada pendente |
 | ST.4 | contagem/reversão de bits em `core.num` | implementação local u32/u64 nos três backends e avaliação puramente escalar no CTFE (popcnt, clz, ctz, bitrev); zero definido; identidade ABI explícita e validação de assinatura antes do codegen; integração local e testes de CTFE validados; matriz instalada pendente |
 | ST.5 | atomics reais como pré-requisito de compartilhamento | implementação local SeqCst em C/Cranelift/Wasm com assinaturas e armazenamento validados; primitivas de sincronização e Arc têm bounds canônicos específicos, sem liberar ponteiros arbitrários; wrappers atômicos comuns ainda exigem mut ref para escrita; fechar matriz instalada |
@@ -175,7 +175,7 @@ As etapas abaixo detalham ST.2/ST.10–12; continuam pertencendo à campanha
 | --- | --- | --- |
 | ST.2a — representação e execução interna | implementada localmente | seis formas, layout e AMIR; JIT/C/Wasm, wrapping, memória, shuffle, ABI interna e hashes; middle/MIR/backends |
 | ST.2b — identidade e frontend | implementada localmente | autoridade stdlib explícita por arquivo, aliases/reexports por SymbolId, assinaturas exatas e métodos genéricos sem reconhecimento por nome solto; preservar cutoff e validar drivers/SDK |
-| ST.2c — API fonte e memória | implementada localmente | API nativa, índices checados, backing 16-aligned, loads escalares e stores com MutableSlice exclusiva; garantir a mesma prova nos artefatos instalados e alvos de 32 bits |
+| ST.2c — API fonte e memória | implementada localmente | API nativa, índices checados, backing 16-aligned, loads escalares e stores com `mut []T` exclusiva; garantir a mesma prova nos artefatos instalados e alvos de 32 bits |
 | ST.2d — máscaras e portabilidade | parcial | comparações/select/reduções e contrato NaN/zero implementados; executar matriz instalada/ARM e medir workloads antes de anunciar desempenho |
 | ST.10a — evento de sequência | implementada localmente | filas por endereço, validação/timeout/notify e isolamento de tokens; runtime Rust/C, JIT e host Wasm explícito |
 | ST.10b — locks compartilhados seguros | implementada localmente | UnsafeCell não-Copy/não-Sync, Mutex/RwLock com bounds distintos e guardas que conservam empréstimos até dentro do mesmo bloco; validar SDK instalado |
@@ -195,8 +195,8 @@ associada. Cada candidata declara seu recorte e limitações antes da promoção
 | Série | Resultado principal | Dependências / gate | Estado |
 | --- | --- | --- | --- |
 | 0.1.x / 0.1.11 | fundação publicada e fechamento autorizado da stdlib | bloqueadores, ST.0–16, regressões e distribuição do pacote exato | 0.1.11 publicada (2026-10-26) |
-| 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | `in_progress`: HOT.1–5 feitos na `0.2.0-dev`; promoção pendente |
-| 0.3.x | granularidade por instância e expressividade delimitada | completar produtores/CGUs, retenção e cutoff; p95 ≤10 ms no workload de referência; closures e reflexão inicial têm gates próprios | `partial` na granularidade; expansões `planned` |
+| 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | 0.2.0 publicada (2026-11-06); p95 registrado, não imposto |
+| 0.3.x | granularidade por instância, closures, reflexão, holes e caminho quente nas três plataformas | gates de trabalho determinísticos (corte por símbolo, composição incremental, memos), patch/daemon em ELF, Mach-O e PE, LAMBDA L1–L3, `types.info<T>()` e holes `todo`; p95 registrado, não imposto | `planned`: [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md) aprovada em 2026-11-06 |
 | 0.4.x | qualidade de código de release mensurada | OPT/AOT oracle, segurança de alias/escape e benchmarks; LLVM opcional só após aceitação da RFC 0031, paridade e distribuição | `experimental` O2; backend novo `planned` |
 | 0.5.x | contratos portáveis de ABI, recursos e interoperabilidade | layout/calling convention por alvo, ownership/FFI e runtime; capabilities/freestanding e WIT/mobile avançam por recortes | base `partial`; expansões `planned` |
 | 0.6.x | ferramentas e armazenamento sustentáveis | CAS/GC/formatos compatíveis quando justificados; documentação/pacotes existentes evoluem, REPL/bindgen/linter por contrato | base `partial`; expansões `planned` |
@@ -210,7 +210,7 @@ associada. Cada candidata declara seu recorte e limitações antes da promoção
 
 ```mermaid
 flowchart LR
-    V01["0.1.x • fundação publicada"] --> V02["0.2.x • motor quente"]
+    V01["0.1.x • fundação publicada"] --> V02["0.2.x • motor quente publicado"]
     V02 --> V03["0.3.x • instâncias"]
     V03 --> V04["0.4.x • otimização medida"]
     V04 --> V05["0.5.x • ABI e recursos"]
@@ -269,12 +269,29 @@ promover o serviço quente.
 
 ### 0.3.x — Instâncias, closures e staging delimitado
 
+Por decisão revisada do mantenedor (2026-11-24), a 0.3.0 prioriza o fechamento
+da campanha de solidez da linguagem (Ondas 1–7: unificação de `T?` para
+`Option<T>`, separação `str`/`String`, `Send`/`Sync` estrutural, drop flags
+reais no AMIR, `ref`/`mut ref` canônico, `Clone`/`Eq`/`Display`, Maranget
+exhaustiveness, APIs coesas de stdlib, indexação/iteração com variáveis
+`Range`, tipo `!`, thunks internos de `@Export`, diagnósticos limpos e `pin_free`
+com projeções de campo), juntamente com `LAMBDA`, `CT.NEXT`, `TYP.NEXT`,
+`D0`, `HW.1–9` e `INC.3a`. Os incrementos de infraestrutura `INC.3b–e` e
+`PLAT.1–3` ficam escalonados para a 0.3.1. Ordem, estado de partida e riscos
+na [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md).
+
 | ID | Base atual | Trabalho / gate |
 | --- | --- | --- |
-| INC.3 | `function_hir`, `instance_hir`, `runtime_raw_unit`, `instance_contracts`, `runtime_unit`, compositor e closure CGU ativos | completar entrega/metadata/retention; editar corpo privado não rebaixa importadores ou CGUs irmãs; clean/incremental idênticos e p95 ≤10 ms no host/workload declarado |
-| LAMBDA / [RFC 0032](rfcs/0032-closures-ossa-capture-modes-and-first-class-functions.md) | parser/tipos preparam lambdas; closures gerais continuam U001; só `move ||` sem parâmetros e com capturas próprias Send baixa para ThreadJob | contrato de capturas, Copy/Move/borrow, representação ambiente, chamadas indiretas, drops/escape e paridade C/Cranelift/Wasm antes de habilitar o sistema geral |
-| CT.NEXT | valores e layout existentes | refletir tipos/descritores imutáveis apenas após contrato aceito de identidade, visibilidade, efeitos e budgets; atributos executáveis/geração de itens não entram por consequência |
-| TYP.NEXT / [RFC 0034](rfcs/0034-adaptive-hybrid-polymorphism-and-witness-tables.md) / [RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md) | inferência contextual, interfaces estáticas e const generics existentes | separação `constraint_gen`/solver é melhoria arquitetural não bloqueante; tipos de literal tardios, typed holes e ergonomia só com escopo/recovery/determinismo; `dyn`/existenciais e dispatch adaptativo continuam propostas separadas |
+| Solidez da Linguagem (Ondas 1–7) | concluído na `0.3.0-dev` (2026-11-24) | fronteira `@Unsafe` para `ptr[T]`, `T?` como açúcar de `Option<T>`, `str` vs `String`, `Send`/`Sync` estrutural com destrutores, drop flags reais + retirada de `O007` + loop reverso de array, `ref`/`mut ref` canônico, `Clone`/`Eq`/`Display`, Maranget exhaustiveness + `or`-patterns aninhados com guarda, `Option.asMut`/`Result.asRef`/`asMut`/`HashMap.getMut`/`GenArena.tryGet*`, `Range` variável em indexação/for, tipo `!`, thunks `@Export`, diagnósticos sem jargão e `pin_free` com campos |
+| Polimento da Linguagem (Ondas A–D) | concluído na `0.3.0-dev` (2026-11-26) | Onda A: thunks C-ABI em `@Export`, ABI `extern "arandu-intrinsic"` com autoridade `trusted_stdlib`, `dual_locus` multi-bloco com rewind/alloc e rejeição `wasm32` (`T099`); Onda B: `NonNull<T>` / `mem.forget` / niche de `Option<Box<T>>`, distinção `func(A) -> R` vs `(A) -> R` vs `own () -> R + Bounds`, atributos `@NoSend`/`@NoSync`/`@UnsafeSend`/`@UnsafeSync` e precedência de `?` (`[]int?` ≡ `[](int?)`); Onda C: `Index<Idx, Out>` / `IndexMut<Idx, Out>` em `std.core.ops`, lowering em `lower_hir`, preservação de `O015MoveOutOfIndex` e fast paths nativos; Onda D: `String.asStr(): str` com `may_borrow_paths`, interpolação via `fmt.Display`, ordenação `<`/`<=`/`>`/`>=` de `str`, métodos em `mut []T` + retirada de `MutableSlice`, intrínseco `abortWithMessage` em `Option`/`Result.expectOrAbort`, `Option.take`/`replace` e limites `mem.maxAllocBytes`/`mem.maxAllocElements` em `std.alloc` |
+| INC.3a / INC.3b–e | `INC.3a` ativo (`function_hir`, `instance_hir`, `runtime_raw_unit`, `instance_contracts`, `runtime_unit`, compositor, closure CGU e corte nos importadores diretos); `INC.3b–e` diferidos para `0.3.1` | dependências por símbolo e contexto reduzido juntos (INC.3b), composição incremental por arquivo (INC.3c), menos memos verificados (INC.3d) e entrega não agregada às CGUs (INC.3e) na 0.3.1 |
+| PLAT.1–3 | `PLAT.1` daemon Windows implementado na `0.3.0-dev`; `PLAT.2–3` e validação em runners nativos diferidos para `0.3.1` | `cli_daemon` em runner Windows; patch Mach-O arm64 e PE x64 com equivalência clean em runners nativos na 0.3.1 |
+| LAMBDA / [RFC 0032](rfcs/0032-closures-ossa-capture-modes-and-first-class-functions.md) | concluído na `0.3.0-dev`: L1–L3, `own once`, temporários e `extern "C"` validado | L1 callbacks não escapantes por desfuncionalização; L2 valor função `{code, env}` e chamada indireta nos quatro backends; L3 closures escapantes e com dono; capturas verificadas pelo OSSA e paridade C/Cranelift/Wasm |
+| CT.NEXT / [RFC 0013](rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md) §10.1 | C2 implementado na `0.3.0-dev` (2026-11-19): `types.info<T>()` em `std.core.types` devolve `TypeInfo` com caminho canônico do módulo declarante, `TypeKind`, layout do alvo, `[]FieldInfo`/`[]VariantInfo` e `isComplete` pela visibilidade da chamada; lowering após a monomorfização, igual no CTFE e em runtime; num `const` vive em armazenamento estático | API de reflexão (C3) e atributos executáveis ficam na 0.4+; padrões aceitam caminho de módulo (`types.TypeKind.Struct =>`) e `..` em struct; `let` ainda não desestrutura struct |
+| D0 — dados estáticos com ponteiros | implementado na `0.3.0-dev` (2026-11-19) | imagem estática com objetos próprios e relocações nos 4 backends (Cranelift `write_data_addr`, LLVM `ptr`, Wasm endereço absoluto, C passo em `main`); `static mut` com `str`, `[]u8`, fatias e arrays de texto; `const` com fatia de elementos vive em armazenamento estático com origem `'static` no solver de empréstimos; CTFE avalia fatias e `ref` compartilhado (como `const fn` do Rust), `mut ref` segue fora (T044). Paridade JIT/`--opt`/C+ASan/Wasm/LLVM |
+| WASM.PTRSTATIC — leitura de `ptr[u8]` em `static mut` | corrigido em `0.3.0-dev` (2026-11-27) | Wasm preserva `Ptr<T>` durante lowering de indexação e lê o endereço armazenado sem aplicar bounds check; `static_c_strings_agree_on_every_backend` executa o corpus no Wasmtime |
+| HW.1–9 — instruções de hardware | implementado na `0.3.0-dev` (2026-11-18), sem prova em runner nativo | intrínsecos `*WithOverflow*`, `saturating*`, `bitRotate*`, `bitSwapBytes*`, `fma*`, `spinLoopHint`, `likely`/`unlikely`, atomics com ordem explícita; `AmirRvalue::Select` por if-conversion de diamante (braço `Nil` só para ponteiro); `@Cold`; métodos inerentes `checked*`/`saturating*` em `i32`/`i64`; `U8x16.highBitmask`, `loadUnaligned` e `Mask8x16.bitmask` sem laço por faixa; `HashMap` SwissTable com grupos de 16 bytes; `str.isAscii`/`eq`/`isValidUtf8` vetorizados. Paridade JIT/`--opt`/C/Wasm/LLVM e avaliação no CTFE. Gate: suítes por crate, fuzz `arandu_fuzz_support` e `cli_backend_parity` verdes |
+| TYP.NEXT / [RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md) | concluído na `0.3.0-dev`: variáveis de inferência no modelo do rustc (S1) e holes `todo` com T102 (H1) | S1 separação `constraint_gen`/solver com diagnósticos determinísticos; H1 holes `todo` com `DiagCode`, DTO no LSP e bloqueio de build/run/testes/CTFE; `dyn`/existenciais ([RFC 0034](rfcs/0034-adaptive-hybrid-polymorphism-and-witness-tables.md)) continuam propostas separadas |
 
 A meta de instância não exige persistir Salsa. Formatos duráveis, se
 necessários, serializam saídas canônicas versionadas fora do grafo, com
@@ -303,6 +320,8 @@ validade; não marcar todas as operações de um bloco por existir um BorrowMut.
 | IDs | Entrega planejada | Gate |
 | --- | --- | --- |
 | AGG.1–3 / ABI | lifetime dos fallbacks, retornos/views/agregados e calling conventions documentadas | phis em backedges, views cruzando branches, retorno Wasm, FFI e suspensão com ownership/drop; alloc/free/RSS e resultados nos três backends |
+| ABI.COPY-RO | passagem indireta `readonly` sem cópia defensiva para parâmetros `Copy` grandes imutáveis em chamadas internas (não-`@Export`), complementando `ArgAbi::Indirect` e `LastUseMovePass` | prova de imutabilidade e ausência de aliasing com `mut ref` no AMIR, paridade entre Cranelift/C/Wasm/LLVM, preservação da ABI C em `@Export` e ganho medido em benchmarks representativos |
+| UNION / ABI | consolidação de `union` / `@Union` (campos `Copy` sobrepostos em offset 0, leitura em `unsafe`) para FFI C e representações compactas/VM (`partial`: palavra-chave suave `union`, `@Union`, layout, leitura `unsafe` com `O012`, CTFE e `types.info<T>()` já implementados localmente) | rejeição explícita de campos não-`Copy` com diagnóstico dedicado, paridade de exportação/header C-ABI (`@Export`) e regressões diferenciais em Cranelift/C/Wasm/LLVM |
 | SL_S-Core.1–4 | promoção freestanding delimitada, TrapCode e formatos fixos adicionais | núcleo sem host/heap implícito no alvo declarado; teste de objeto/opcode e tamanho; Q8.8/Q32.32 e intrínsecos de bits por recorte |
 | A2 / effects / [RFC 0035](rfcs/0035-effect-system-polymorphism-and-capability-authority.md) | inferência/summaries e autoridade por contrato, separados da base de flags/anotações | [contrato de efeitos](arandu-effects-v0.1.md), propagação determinística, unknown conservador e enforcement independente |
 | SL_S-Host.2–5 / RFC 0016 | Dir por capacidades, resolução segura, efeitos e VFS | testes adversariais de traversal/symlink/TOCTOU nos sistemas admitidos; canonicalização/ciclo não provam sandbox |
@@ -381,8 +400,8 @@ antes/depois. Contagem de malloc do processo não mede apenas LUT nem prova leak
 | Marco | Estado | Limite atual / saída |
 | --- | --- | --- |
 | Fundação 0.1 | `done` | fingerprints/closure e artefato verificados, cutoff de trivia, chaves CGU canônicas, sidecars, reuse sem link e patch ELF fail-closed Linux; CLI ainda cria DB nova |
-| Motor quente 0.2 | `in_progress` | HOT.1–5 feitos e HOT.6 com endurance na `0.2.0-dev`: sessão viva, daemon fail-closed, patch em slots e equivalência clean em Linux x86-64 ELF; p95 registrado sem host de referência; macOS/Windows com link completo |
-| Instâncias 0.3 | `partial` | produtores/compositor e closure CGU ativos, regressões de instância nova e objetos clean; faltam gates completos de entrega, retenção, latência e matriz; p95 ≤10 ms delimitado |
+| Motor quente 0.2 | `done` (v0.2.0) | sessão viva, daemon fail-closed, patch em slots e equivalência clean em Linux x86-64 ELF; endurance de 1000 edições; matriz instalada Linux/macOS/Windows; p95 registrado sem host de referência; macOS/Windows com link completo |
+| Instâncias 0.3 | `partial` | produtores/compositor e closure CGU ativos, regressões de instância nova e objetos clean; faltam dependências por símbolo, composição incremental, entrega não agregada, retenção e patch Mach-O/PE (INC.3a–e e PLAT.1–3 na [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md)) |
 
 CAS remoto/distribuído e persistência de IR são decisões posteriores ao perfil
 do caminho quente; nenhuma delas autoriza serializar o grafo Salsa.

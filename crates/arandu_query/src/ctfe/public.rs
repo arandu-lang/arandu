@@ -270,7 +270,7 @@ pub(crate) fn stage_public_roots_in_context(
         };
         let ty = ty.default_literal();
         let expected = match ty {
-            ArType::Void => RootExpectedType::Unit,
+            ArType::Void | ArType::Never => RootExpectedType::Unit,
             ArType::Primitive(Primitive::Bool) => RootExpectedType::Primitive(Primitive::Bool),
             ArType::Primitive(primitive) if primitive.is_integer() => {
                 RootExpectedType::Primitive(primitive)
@@ -373,12 +373,13 @@ pub(crate) fn append_failure(output: &mut Vec<Diagnostic>, error: RootEvalError,
             "compile-time evaluation requires concrete generic arguments",
             root,
         )),
-        RootEvalError::Build(BuildFailure::MissingFunction | BuildFailure::InvalidRoot) => output
-            .push(Diagnostic::ice(
-                DiagCode::ICET001,
-                "public comptime root is missing from its canonical source item",
-                root,
-            )),
+        RootEvalError::Build(
+            BuildFailure::MissingFunction | BuildFailure::InvalidRoot | BuildFailure::CallsGeneric,
+        ) => output.push(Diagnostic::ice(
+            DiagCode::ICET001,
+            "public comptime root is missing from its canonical source item",
+            root,
+        )),
     }
 }
 
@@ -403,6 +404,11 @@ fn evaluation_diagnostic(kind: EvalErrorKind, root: Span) -> Diagnostic {
             DiagCode::T046ComptimeArithmetic,
             "compile-time arithmetic overflows or uses an invalid shift",
             "result cannot be represented",
+        ),
+        EvalErrorKind::Trapped(_) => (
+            DiagCode::T044ComptimeEvaluationFailed,
+            "a run-time check failed during compile-time evaluation",
+            "the check fails for this value",
         ),
         EvalErrorKind::UnsupportedType(_) | EvalErrorKind::UnsupportedOperation => (
             DiagCode::T042UnsupportedComptime,
@@ -436,6 +442,9 @@ fn evaluation_diagnostic(kind: EvalErrorKind, root: Span) -> Diagnostic {
             diagnostic = diagnostic.with_hint(
                 "reduce the amount of intermediate data held during compile-time evaluation",
             );
+        }
+        EvalErrorKind::Trapped(trap) => {
+            diagnostic = diagnostic.with_note(format!("panic: {}", trap.message()));
         }
         _ => {}
     }

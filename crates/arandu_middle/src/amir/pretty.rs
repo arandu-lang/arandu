@@ -211,6 +211,12 @@ impl AmirStmt {
             AmirStmt::Free(op) => {
                 out.push_str(&format!("free {}", op.to_pretty_string(symbols, pool)));
             }
+            AmirStmt::ArenaRewind(op) => {
+                out.push_str(&format!(
+                    "arena_rewind({})",
+                    op.to_pretty_string(symbols, pool)
+                ));
+            }
             AmirStmt::StorageLive(local) => {
                 out.push_str(&format!("StorageLive(v{})", local.0));
             }
@@ -247,6 +253,19 @@ impl AmirRvalue {
             } => {
                 let _ = write!(out, "vector.select {mask:?}, {if_true:?}, {if_false:?}");
             }
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let _ = write!(
+                    out,
+                    "select({}, {}, {})",
+                    condition.to_pretty_string(symbols, pool),
+                    if_true.to_pretty_string(symbols, pool),
+                    if_false.to_pretty_string(symbols, pool)
+                );
+            }
             AmirRvalue::VectorSplat { value } => {
                 let _ = write!(out, "vector.splat {value:?}");
             }
@@ -255,6 +274,12 @@ impl AmirRvalue {
             }
             AmirRvalue::VectorExtractLane { vector, lane } => {
                 let _ = write!(out, "vector.extract {vector:?}, {lane}");
+            }
+            AmirRvalue::VectorBitmask { vector } => {
+                let _ = write!(out, "vector.bitmask {vector:?}");
+            }
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                let _ = write!(out, "vector.load_unaligned {source:?}");
             }
             AmirRvalue::VectorInsertLane {
                 vector,
@@ -506,6 +531,22 @@ impl AmirRvalue {
                     value.to_pretty_string(symbols, pool)
                 ));
             }
+            AmirRvalue::ArenaAlloc {
+                size,
+                align,
+                payload_ty,
+            } => {
+                out.push_str(&format!(
+                    "arena_alloc(ty#{}, size={size}, align={align})",
+                    payload_ty.as_usize()
+                ));
+            }
+            AmirRvalue::ArenaCheckpoint => {
+                out.push_str("arena_checkpoint()");
+            }
+            AmirRvalue::StaticAddr(symbol) => {
+                out.push_str(&format!("static_addr(@{})", symbols.get(*symbol).name));
+            }
         }
     }
 }
@@ -653,6 +694,9 @@ impl AmirTerminator {
             }
             AmirTerminator::Unreachable => {
                 out.push_str("unreachable");
+            }
+            AmirTerminator::Trap(kind) => {
+                out.push_str(&format!("trap \"{}\"", kind.message()));
             }
         }
     }

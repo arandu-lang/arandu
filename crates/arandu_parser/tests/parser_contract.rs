@@ -84,6 +84,13 @@ fn incomplete_blocks_preserve_balanced_lossless_cst_and_one_error_per_closer() {
     }
 }
 
+#[test]
+fn interface_methods_with_generic_results_use_implicit_terminators() {
+    let source = "interface Reader {\n    func read(): Result<int, int>\n    func write(): Result<int, int>\n}\n";
+    let program = parse(source).expect("generic interface method signatures should parse");
+    assert_eq!(program.decls.len(), 1);
+}
+
 fn contains(outer_start: usize, outer_end: usize, inner_start: usize, inner_end: usize) -> bool {
     outer_start <= inner_start && inner_end <= outer_end
 }
@@ -311,15 +318,23 @@ fn ast_call_with_block_span_covers_trailing_block() {
     };
     let expr_id = *expr;
     let call_kind = program.pool.expr(expr_id);
-    let ExprKind::Call { trailing_block, .. } = call_kind else {
+    let ExprKind::Call { args, .. } = call_kind else {
         panic!("expected call, got {call_kind:?}");
     };
     let span = program.pool.expr_span(expr_id);
-    let block_id = trailing_block.expect("call should have block");
-    let block = program.pool.block(block_id);
+    // The trailing block is the last argument, `() => { ... }`.
+    let lambda = *program
+        .pool
+        .expr_list(*args)
+        .last()
+        .expect("call should have the block as its last argument");
+    let ExprKind::Lambda { params, .. } = program.pool.expr(lambda) else {
+        panic!("expected the trailing block as a lambda");
+    };
+    assert!(program.pool.lambda_param_list(*params).is_empty());
     let line_index = arandu_base::line_index::LineIndex::new(source);
     let (span_end_line, span_end_col) = line_index.line_col(span.end);
-    let (block_end_line, block_end_col) = line_index.line_col(block.span.end);
+    let (block_end_line, block_end_col) = line_index.line_col(program.pool.expr_span(lambda).end);
     assert_eq!(span_end_line, block_end_line);
     assert_eq!(span_end_col, block_end_col);
 }

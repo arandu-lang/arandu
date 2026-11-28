@@ -17,32 +17,6 @@ impl<'a> CEmitter<'a> {
         expected_ar_type: &ArType,
         expected_c_type: &str,
     ) {
-        // A freshly constructed `T` assigned to a `T?` box handle: compute the
-        // `T`, then box it, as Cranelift does. `Use` converts between `T` and
-        // `T?` itself; projections already have the projected type.
-        if let ArType::Nullable(inner) = expected_ar_type
-            && matches!(
-                rvalue,
-                AmirRvalue::StructLiteral { .. }
-                    | AmirRvalue::Tuple { .. }
-                    | AmirRvalue::Array { .. }
-                    | AmirRvalue::EnumConstruct { .. }
-                    | AmirRvalue::Binary { .. }
-                    | AmirRvalue::Unary { .. }
-            )
-        {
-            let inner_ty = self.interner.resolve(*inner);
-            if self.is_boxed_nullable(&inner_ty) {
-                let inner_c = self.format_type(&inner_ty).into_owned();
-                let _ = write!(
-                    &mut self.output,
-                    "({{ {inner_c}* ar_box = ({inner_c}*)malloc(sizeof({inner_c})); if (!ar_box) abort(); *ar_box = ("
-                );
-                self.emit_rvalue(rvalue, func, &inner_ty, &inner_c);
-                let _ = write!(&mut self.output, "); ar_box; }})");
-                return;
-            }
-        }
         match rvalue {
             AmirRvalue::VectorCompare { .. }
             | AmirRvalue::VectorSelect { .. }
@@ -50,11 +24,25 @@ impl<'a> CEmitter<'a> {
             | AmirRvalue::VectorSplat { .. }
             | AmirRvalue::VectorShuffle { .. }
             | AmirRvalue::VectorExtractLane { .. }
-            | AmirRvalue::VectorInsertLane { .. } => {
+            | AmirRvalue::VectorInsertLane { .. }
+            | AmirRvalue::VectorBitmask { .. }
+            | AmirRvalue::VectorLoadUnaligned { .. } => {
                 self.emit_vector_rvalue(rvalue, func, expected_ar_type)
             }
             AmirRvalue::Use(op) => {
                 self.emit_use_rvalue(op, func, expected_ar_type, expected_c_type);
+            }
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let cond_str = self.format_operand(condition, func);
+                let _ = write!(&mut self.output, "(({cond_str}) ? ({expected_c_type})(");
+                self.emit_use_rvalue(if_true, func, expected_ar_type, expected_c_type);
+                let _ = write!(&mut self.output, ") : ({expected_c_type})(");
+                self.emit_use_rvalue(if_false, func, expected_ar_type, expected_c_type);
+                let _ = write!(&mut self.output, "))");
             }
             AmirRvalue::BlackBox { value, .. } => {
                 self.emit_black_box(value, func, expected_ar_type, expected_c_type);
@@ -152,6 +140,27 @@ impl<'a> CEmitter<'a> {
             }
             AmirRvalue::Alloc(op) => {
                 self.emit_alloc(op, func);
+            }
+            AmirRvalue::ArenaAlloc { size, align, .. } => {
+                self.emit_arena_alloc(*size, *align, expected_c_type);
+            }
+            AmirRvalue::ArenaCheckpoint => {
+                self.emit_arena_checkpoint();
+            }
+            AmirRvalue::StaticAddr(symbol) => {
+                match self
+                    .program
+                    .statics
+                    .iter()
+                    .find(|item| item.symbol == *symbol)
+                {
+                    Some(item) => {
+                        let _ = write!(&mut self.output, "(&{}.value)", item.name);
+                    }
+                    None => {
+                        let _ = write!(&mut self.output, "((void*)0)");
+                    }
+                }
             }
             // Heap CoroutineReady (stack:true is multi-stmt in emit_stmt).
             // A3.6 layout: disc@0 (u32 Ready=0), payload@8.

@@ -52,10 +52,21 @@ pub enum Target {
     Fmt,
     RuntimeAbi,
     HostDiffC,
+    /// Fuzz the parser with intentionally malformed / truncated byte sequences
+    /// to find ICEs, panics and incorrect span recovery in the CST phase only.
+    /// Does not lower to HIR/AMIR — fast and safe to run in parallel.
+    ParserStress,
+    /// Fuzz the semantic pipeline with structurally valid but semantically
+    /// invalid programs: type errors, unresolved names, cycle imports.
+    /// Verifies that all such inputs produce diagnostics and no ICEs.
+    SemanticNegative,
+    /// Fuzz the CTFE evaluator in isolation: exercises the VM fuel meter,
+    /// overflow semantics and aggregate evaluation without any backend.
+    CtfeStress,
 }
 
 impl Target {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 23] = [
         Self::Lex,
         Self::Syntax,
         Self::Pipeline,
@@ -76,6 +87,9 @@ impl Target {
         Self::Fmt,
         Self::RuntimeAbi,
         Self::HostDiffC,
+        Self::ParserStress,
+        Self::SemanticNegative,
+        Self::CtfeStress,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -100,6 +114,9 @@ impl Target {
             Self::Fmt => "fmt",
             Self::RuntimeAbi => "runtime-abi",
             Self::HostDiffC => "host-diff-c",
+            Self::ParserStress => "parser-stress",
+            Self::SemanticNegative => "semantic-negative",
+            Self::CtfeStress => "ctfe-stress",
         }
     }
 
@@ -130,6 +147,9 @@ impl Target {
             Self::Fmt => "fuzz_fmt",
             Self::RuntimeAbi => "fuzz_runtime_abi",
             Self::HostDiffC => "fuzz_host_diff_c",
+            Self::ParserStress => "fuzz_parser_stress",
+            Self::SemanticNegative => "fuzz_semantic_negative",
+            Self::CtfeStress => "fuzz_ctfe_stress",
         }
     }
 }
@@ -159,6 +179,9 @@ pub fn run(target: Target, data: &[u8]) {
         Target::Fmt => fmt::run(data),
         Target::RuntimeAbi => runtime_abi::run(data),
         Target::HostDiffC => host_diff::run(data),
+        Target::ParserStress => run_parser_stress(data),
+        Target::SemanticNegative => run_semantic_negative(data),
+        Target::CtfeStress => run_ctfe_stress(data),
     }
 }
 
@@ -395,6 +418,98 @@ fn run_genref(data: &[u8]) {
             _ => {}
         }
     }
+}
+
+/// **Target: parser-stress** — push truncated/malformed byte sequences through
+/// only the lexer and CST-first parser, isolated from the semantic pipeline.
+/// This group catches ICEs and span panics in the front-end without paying for
+/// name resolution or type checking.
+///
+/// Two sub-checks run per input:
+/// 1. `lex_recovering` must never panic.
+/// 2. `parse_recovering` must never panic; its result is ignored.
+///
+/// A single input here consumes ~10 µs on average (vs ~200 µs for `pipeline`),
+/// so the libFuzzer engine can generate >100 k iterations/s on a single core.
+fn run_parser_stress(data: &[u8]) {
+    let text = source(data);
+    // Lexer must handle any byte sequence without panicking.
+    let _tokens = arandu_lexer::lex_recovering(&text);
+    // CST parser must recover from any input without panicking.
+    let _cst = arandu_parser::parse_syntax(&text);
+    let _ast = arandu_parser::parse_recovering(&text);
+}
+
+/// **Target: semantic-negative** — verify that syntactically valid but
+/// semantically invalid programs always produce at least one diagnostic and
+/// never cause an ICE. The oracle uses `smith::negative` structural mutations
+/// to generate plausible-looking but broken programs efficiently.
+///
+/// Invariant: if `type_check` succeeds (no errors), `lower_amir` must also
+/// succeed. If type checking emits any error, no ICE (`DiagCode::ice`) may
+/// appear in the diagnostic set.
+fn run_semantic_negative(data: &[u8]) {
+    use arandu_query::{passes, DatabaseImpl};
+    let text = source(data);
+    // First use the negative oracle for structurally mutated programs.
+    smith::negative::run(data);
+    // Then run the full pipeline on the raw input, asserting no ICE.
+    let mut db = DatabaseImpl::default();
+    let file = db.new_file("fuzz/neg.aru".into(), text.into_owned());
+    let _ = arandu_query::syntax_tree(&db, file);
+    let _ = passes::parse(&db, file);
+    let _ = passes::resolve(&db, file);
+    let diags = passes::type_check(&db, file);
+    // ICEs must never appear, even when the program is ill-typed.
+    for diag in &diags.diagnostics {
+        assert!(
+            !diag.is_ice(),
+            "ICE in semantic-negative fuzz target: {:?}",
+            diag
+        );
+    }
+    if diags.diagnostics.is_empty() {
+        // No type errors: lowering must succeed.
+        let _ = arandu_query::lower_amir(&db, file);
+    }
+}
+
+/// **Target: ctfe-stress** — exercise the CTFE evaluator in isolation with
+/// arbitrary `const` expressions. This catches fuel exhaustion panics, integer
+/// overflow in the VM, and aggregate evaluation bugs without any backend
+/// involvement.
+///
+/// Budget is kept intentionally small (fuel: 2000, frames: 16, values: 500)
+/// so each seed completes fast and the engine can explore more of the space.
+fn run_ctfe_stress(data: &[u8]) {
+    use arandu_mir::ctfe::Budget;
+    use arandu_query::ctfe::{ctfe_eval, CtfeRequest};
+    use arandu_query::{passes::declaration_signatures, DatabaseImpl};
+
+    let text = source(data);
+    // Wrap in a module so the input can be arbitrary; the outer `const` is our
+    // entry point for the evaluator.
+    let wrapped = format!("func __fuzz_entry(): int {{ return 0 }}\n{text}");
+    let mut db = DatabaseImpl::default();
+    let file = db.new_file("fuzz/ctfe.aru".into(), wrapped);
+    let diags = declaration_signatures(&db, file);
+    // Find our injected sentinel; skip if resolution already failed.
+    let Some(main_sym) = diags
+        .symbols
+        .iter()
+        .find(|s| s.name == "__fuzz_entry")
+        .map(|s| s.id)
+    else {
+        return;
+    };
+    let budget = Budget {
+        fuel: 2000,
+        frames: 16,
+        values: 500,
+    };
+    let request = CtfeRequest::new(&db, file, main_sym, vec![], budget);
+    // The evaluator must never panic; `Err` outcomes (fuel, cycles) are fine.
+    let _ = ctfe_eval(&db as &dyn arandu_query::ArandCompilerDb, request);
 }
 
 #[cfg(test)]

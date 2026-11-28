@@ -38,6 +38,7 @@ fn scalar(ty: &ArType) -> Option<bool> {
         // Literal inference can still be pending at bound checking; every
         // numeric representation it can select has scalar storage.
         ArType::Void
+        | ArType::Never
         | ArType::IntLiteral
         | ArType::FloatLiteral
         | ArType::FrozenConst(_)
@@ -98,19 +99,13 @@ pub(crate) fn satisfies(
                 if declaration.lang_item == Some(LangItem::TaskHandle) {
                     return false;
                 }
+                if (capability == LangItem::Send && info.non_send_types.contains(&symbol))
+                    || (capability == LangItem::Sync && info.non_sync_types.contains(&symbol))
+                {
+                    return false;
+                }
                 let arguments = interner.type_args(arguments);
                 match declaration.lang_item {
-                    Some(
-                        LangItem::RwLockReadGuard
-                        | LangItem::RwLockWriteGuard
-                        | LangItem::MutexGuard,
-                    ) => return false,
-                    Some(LangItem::Condvar) => {
-                        if capability == LangItem::Copy || !arguments.is_empty() {
-                            return false;
-                        }
-                        continue;
-                    }
                     Some(LangItem::Arc | LangItem::ArcWeak) => {
                         if capability == LangItem::Copy || arguments.len() != 1 {
                             return false;
@@ -140,27 +135,33 @@ pub(crate) fn satisfies(
                         }
                         continue;
                     }
-                    Some(LangItem::String) => {
-                        if capability == LangItem::Copy || !arguments.is_empty() {
+                    // The closure types erase their captures: a `SendClosure`
+                    // proved each one `Send` when it was made, and a call needs
+                    // exclusive access, so neither is ever `Sync` or `Copy`.
+                    Some(LangItem::SendClosure | LangItem::SendOnceClosure) => {
+                        if capability != LangItem::Send {
                             return false;
                         }
                         continue;
                     }
-                    Some(LangItem::Vec) => {
-                        if capability == LangItem::Copy {
-                            return false;
-                        }
-                        pending.extend(
-                            arguments
-                                .iter()
-                                .map(|&argument| (argument, capability, depth + 1)),
-                        );
-                        continue;
-                    }
+                    Some(LangItem::Closure | LangItem::OnceClosure) => return false,
                     _ => {}
                 }
-                if info.destructors.contains_key(&symbol) {
+                if capability == LangItem::Copy && info.is_nominal_copy_blocked(symbol) {
                     return false;
+                }
+                if (capability == LangItem::Send && info.unsafe_send_types.contains(&symbol))
+                    || (capability == LangItem::Sync && info.unsafe_sync_types.contains(&symbol))
+                {
+                    if info.is_nominal_copy_blocked(symbol) && capability == LangItem::Copy {
+                        return false;
+                    }
+                    pending.extend(
+                        arguments
+                            .iter()
+                            .map(|&argument| (argument, capability, depth + 1)),
+                    );
+                    continue;
                 }
                 // Include phantom arguments: an empty wrapper must not launder
                 // a resource's negative transfer constraint.
@@ -237,7 +238,6 @@ pub(crate) fn satisfies(
             | ArType::RefMut(_)
             | ArType::Slice(_)
             | ArType::MutSlice(_)
-            | ArType::Nullable(_)
             | ArType::Coroutine(_)
             | ArType::Poll(_)
             | ArType::Func(_, _)
@@ -245,11 +245,13 @@ pub(crate) fn satisfies(
             | ArType::ConstParam(_)
             | ArType::Err
             | ArType::Error
+            | ArType::Infer(_)
             | ArType::IntLiteral
             | ArType::FloatLiteral => return false,
             ArType::Vector(_)
             | ArType::Primitive(_)
             | ArType::Void
+            | ArType::Never
             | ArType::FrozenConst(_)
             | ArType::Const(_) => {} // handled by scalar above
         }

@@ -38,7 +38,7 @@ pub(crate) fn declaration_surface_hash(result: &TypeCheckResult, body_from: u32)
 
 /// Presentation intentionally hides frozen aggregate contents. Memo equality
 /// must instead retain the full structural type and canonical constant values.
-fn semantic_type_bytes(
+pub(crate) fn semantic_type_bytes(
     ty: arandu_middle::types::TypeId,
     interner: &arandu_middle::types::TypeInterner,
     symbols: &SymbolTable,
@@ -208,6 +208,46 @@ fn hash_typing(
         for (symbol, value) in globals {
             hash_symbol_id(&mut h, *symbol);
             h.update(&value.canonical_bytes());
+        }
+        let mut adjustments: Vec<_> = info.adjustments.iter().collect();
+        adjustments.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
+        h.update(b"Adjustments/v1");
+        h.update(&u64_le(adjustments.len() as u64));
+        for (span, adjustment) in adjustments {
+            hash_span(&mut h, *span);
+            match &adjustment.kind {
+                arandu_typeck::type_checker::info::AdjustmentKind::Call {
+                    function,
+                    type_args,
+                } => {
+                    h.update(&[0]);
+                    hash_symbol_id(&mut h, *function);
+                    h.update(&u64_le(type_args.len() as u64));
+                    for &ty in type_args {
+                        hash_semantic_type(&mut h, ty, &info.type_interner, symbols);
+                    }
+                }
+                arandu_typeck::type_checker::info::AdjustmentKind::Unsize => {
+                    h.update(&[1]);
+                }
+                arandu_typeck::type_checker::info::AdjustmentKind::TextView => {
+                    h.update(&[2]);
+                }
+                arandu_typeck::type_checker::info::AdjustmentKind::VecView => {
+                    h.update(&[3]);
+                }
+            }
+            hash_semantic_type(&mut h, adjustment.from, &info.type_interner, symbols);
+            hash_semantic_type(&mut h, adjustment.to, &info.type_interner, symbols);
+        }
+        let mut temporaries: Vec<_> = info.closure_temporaries.iter().collect();
+        temporaries.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
+        h.update(b"ClosureTemporaries/v1");
+        h.update(&u64_le(temporaries.len() as u64));
+        for (span, temporary) in temporaries {
+            hash_span(&mut h, *span);
+            hash_symbol_id(&mut h, temporary.local);
+            hash_semantic_type(&mut h, temporary.ty, &info.type_interner, symbols);
         }
         let mut values: Vec<_> = info.ctfe_values.iter().collect();
         values.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
@@ -397,6 +437,14 @@ fn hash_typing(
         hash_semantic_type(&mut h, *ty, interner, symbols);
     }
 
+    let mut callback_bounds: Vec<_> = info.callback_bounds.iter().collect();
+    callback_bounds.sort_by_key(|(symbol, _)| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(callback_bounds.len() as u64));
+    for (symbol, ty) in callback_bounds {
+        hash_symbol_id(&mut h, *symbol);
+        hash_semantic_type(&mut h, *ty, interner, symbols);
+    }
+
     let mut constraints: Vec<_> = info.param_constraints.iter().collect();
     constraints.sort_by_key(|(symbol, _)| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(constraints.len() as u64));
@@ -475,11 +523,56 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    let mut exported_functions: Vec<_> = info.exported_functions.iter().copied().collect();
+    exported_functions.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(exported_functions.len() as u64));
+    for symbol in exported_functions {
+        hash_symbol_id(&mut h, symbol);
+    }
+
+    let mut cold_functions: Vec<_> = info.cold_functions.iter().copied().collect();
+    cold_functions.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(b"ColdFunctions/v1");
+    h.update(&u64_le(cold_functions.len() as u64));
+    for symbol in cold_functions {
+        hash_symbol_id(&mut h, symbol);
+    }
+
+    let mut variadic_functions: Vec<_> = info.variadic_functions.iter().copied().collect();
+    variadic_functions.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(b"VariadicFunctions/v1");
+    h.update(&u64_le(variadic_functions.len() as u64));
+    for symbol in variadic_functions {
+        hash_symbol_id(&mut h, symbol);
+    }
+
     let mut interior_mutable: Vec<_> = info.interior_mutable_types.iter().copied().collect();
     interior_mutable.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(interior_mutable.len() as u64));
     for symbol in interior_mutable {
         hash_symbol_id(&mut h, symbol);
+    }
+
+    let mut non_copy: Vec<_> = info.non_copy_types.iter().copied().collect();
+    non_copy.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(non_copy.len() as u64));
+    for symbol in non_copy {
+        hash_symbol_id(&mut h, symbol);
+    }
+
+    for set in [
+        &info.non_send_types,
+        &info.non_sync_types,
+        &info.unsafe_send_types,
+        &info.unsafe_sync_types,
+        &info.non_null_types,
+    ] {
+        let mut syms: Vec<_> = set.iter().copied().collect();
+        syms.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+        h.update(&u64_le(syms.len() as u64));
+        for symbol in syms {
+            hash_symbol_id(&mut h, symbol);
+        }
     }
 
     let mut repr_c: Vec<_> = info.struct_repr_c.iter().copied().collect();
@@ -489,8 +582,88 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    let mut unions: Vec<_> = info.struct_unions.iter().copied().collect();
+    unions.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(unions.len() as u64));
+    for symbol in unions {
+        hash_symbol_id(&mut h, symbol);
+    }
+
+    // Parameter defaults: non-local constant defaults are part of the cross-module
+    // call signature contract, while arbitrary LocalExpr defaults depend on arena ExprId.
+    {
+        let mut param_defaults: Vec<_> = info
+            .func_param_defaults
+            .iter()
+            .filter(|(_, default)| {
+                include_spans || !matches!(default, arandu_typeck::ParamDefault::LocalExpr { .. })
+            })
+            .collect();
+        param_defaults.sort_by(|((a, ai), _), ((b, bi), _)| {
+            (a.file_id, a.local_id.0, ai).cmp(&(b.file_id, b.local_id.0, bi))
+        });
+        h.update(&u64_le(param_defaults.len() as u64));
+        for ((symbol, idx), default) in param_defaults {
+            hash_symbol_id(&mut h, *symbol);
+            h.update(&u64_le(*idx as u64));
+            match default {
+                arandu_typeck::ParamDefault::LocalExpr { expr, ty } => {
+                    h.update(&[0]);
+                    hash_id(&mut h, expr.as_usize());
+                    hash_semantic_type(&mut h, *ty, &info.type_interner, symbols);
+                }
+                arandu_typeck::ParamDefault::Int { raw, ty } => {
+                    h.update(&[1]);
+                    hash_str(&mut h, raw);
+                    hash_semantic_type(&mut h, *ty, &info.type_interner, symbols);
+                }
+                arandu_typeck::ParamDefault::Float { raw, ty } => {
+                    h.update(&[2]);
+                    hash_str(&mut h, raw);
+                    hash_semantic_type(&mut h, *ty, &info.type_interner, symbols);
+                }
+                arandu_typeck::ParamDefault::Bool(v) => {
+                    h.update(&[3, u8::from(*v)]);
+                }
+                arandu_typeck::ParamDefault::Str(raw) => {
+                    h.update(&[4]);
+                    hash_str(&mut h, raw);
+                }
+                arandu_typeck::ParamDefault::Char(raw) => {
+                    h.update(&[5]);
+                    hash_str(&mut h, raw);
+                }
+                arandu_typeck::ParamDefault::Nil { ty } => {
+                    h.update(&[6]);
+                    hash_semantic_type(&mut h, *ty, &info.type_interner, symbols);
+                }
+            }
+        }
+    }
+
     // HIR lowering reads the default expression of each omitted field, by its
     // arena ID: a position, like the expression tables.
+    {
+        let mut derived: Vec<_> = info.derived_methods.iter().collect();
+        derived.sort_by_key(|(sym, _)| (sym.file_id, sym.local_id.0));
+        h.update(&u64_le(derived.len() as u64));
+        for (sym, recipe) in derived {
+            hash_symbol_id(&mut h, *sym);
+            hash_symbol_id(&mut h, recipe.type_symbol);
+            h.update(&[recipe.kind as u8, u8::from(recipe.is_copy)]);
+            hash_semantic_type(&mut h, recipe.self_param_ty, &info.type_interner, symbols);
+            h.update(&u64_le(recipe.explicit_param_tys.len() as u64));
+            for &ty in &recipe.explicit_param_tys {
+                hash_semantic_type(&mut h, ty, &info.type_interner, symbols);
+            }
+            hash_semantic_type(&mut h, recipe.return_ty, &info.type_interner, symbols);
+            h.update(&u64_le(recipe.param_symbols.len() as u64));
+            for &p in &recipe.param_symbols {
+                hash_symbol_id(&mut h, p);
+            }
+        }
+    }
+
     if include_spans {
         let mut defaults: Vec<_> = info.struct_field_defaults.iter().collect();
         defaults.sort_by(|((a, x), _), ((b, y), _)| {

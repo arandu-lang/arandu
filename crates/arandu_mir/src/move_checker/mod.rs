@@ -21,67 +21,78 @@ use crate::diagnostics::DiagCode;
 
 mod walk;
 
-use walk::{apply_block, apply_stmt, compute_move_in, temp_origins};
+use walk::{apply_block, apply_stmt, apply_terminator, compute_move_in};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalMoveState {
+pub(crate) enum LocalMoveState {
     Available,
     Moved,
     MaybeMoved,
 }
 
-/// Ownership paths after each block, computed by the same transfer function as
-/// diagnostics so cleanup cannot diverge from the move checker.
-#[must_use]
-pub(crate) fn move_states_at_block_exit(func: &AmirFunc) -> Vec<MoveState> {
+/// Resolves each `TempId` to its single originating memory `AmirPlace`, if any.
+pub(crate) fn compute_temp_origins(func: &AmirFunc) -> Vec<Option<AmirPlace>> {
     let bump = bumpalo::Bump::new();
-    let Some(block_in) = compute_move_in(func, &bump) else {
-        return vec![MoveState::new(func.locals.len()); func.blocks.len()];
-    };
-    let origins = temp_origins(func, &bump);
-    block_in
-        .iter()
-        .enumerate()
-        .map(|(index, incoming)| {
-            let mut state = incoming.clone();
-            apply_block(BlockId::from_usize(index), func, &origins, &mut state, None);
-            state
-        })
-        .collect()
+    walk::temp_origins(func, &bump).into_iter().collect()
 }
 
-/// Move-state snapshot immediately before every statement, used by cleanup
-/// elaboration so replacement drops agree with the ownership checker.
-pub(crate) fn move_states_before_statements(func: &AmirFunc) -> Vec<Vec<MoveState>> {
+/// Ownership paths after each block and immediately before every statement,
+/// computed from a single dataflow pass for drop elaboration.
+#[must_use]
+pub(crate) fn move_states_exit_and_before_statements(
+    func: &AmirFunc,
+) -> (Vec<MoveState>, Vec<Vec<MoveState>>) {
     let bump = bumpalo::Bump::new();
-    let Some(block_in) = compute_move_in(func, &bump) else {
-        return func
+    let Some((block_in, origins)) = compute_move_in(func, &bump) else {
+        let exit = vec![MoveState::new(func.locals.len()); func.blocks.len()];
+        let before = func
             .blocks
             .iter()
             .map(|block| vec![MoveState::new(func.locals.len()); block.statements.len_usize()])
             .collect();
+        return (exit, before);
     };
-    let origins = temp_origins(func, &bump);
-    func.blocks
-        .iter()
-        .map(|block| {
-            let mut state = block_in[block.id.as_usize()].clone();
-            let mut snapshots = Vec::with_capacity(block.statements.len_usize());
-            for stmt in func.block_stmts(block.id) {
-                snapshots.push(state.clone());
-                apply_stmt(stmt, func, &origins, &mut state, &mut None);
-            }
-            snapshots
-        })
-        .collect()
+    let mut exit = Vec::with_capacity(func.blocks.len());
+    let mut before = Vec::with_capacity(func.blocks.len());
+    for (block, incoming) in func.blocks.iter().zip(block_in) {
+        let mut state = incoming;
+        let mut snapshots = Vec::with_capacity(block.statements.len_usize());
+        for stmt in func.block_stmts(block.id) {
+            snapshots.push(state.clone());
+            apply_stmt(stmt, func, &origins, &mut state, &mut None);
+        }
+        apply_terminator(block.id, func, &origins, &mut state, &mut None);
+        before.push(snapshots);
+        exit.push(state);
+    }
+    (exit, before)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Move-state snapshot immediately before every statement, used by cleanup
+/// elaboration passes that only fire when indirect/dynamic drops exist.
+pub(crate) fn move_states_before_statements(func: &AmirFunc) -> Vec<Vec<MoveState>> {
+    move_states_exit_and_before_statements(func).1
+}
+
+#[derive(Debug, Clone, Eq, Default)]
 pub(crate) struct MoveState {
     moved: BitSet<LocalId>,
     maybe_moved: BitSet<LocalId>,
     moved_fields: SmallVec<[AmirPlace; 4]>,
     maybe_moved_fields: SmallVec<[AmirPlace; 4]>,
+}
+
+impl PartialEq for MoveState {
+    fn eq(&self, other: &Self) -> bool {
+        self.moved == other.moved
+            && self.maybe_moved == other.maybe_moved
+            && same_places(&self.moved_fields, &other.moved_fields)
+            && same_places(&self.maybe_moved_fields, &other.maybe_moved_fields)
+    }
+}
+
+fn same_places(a: &[AmirPlace], b: &[AmirPlace]) -> bool {
+    a.len() == b.len() && a.iter().all(|item| b.contains(item))
 }
 
 impl MoveState {
@@ -108,33 +119,58 @@ impl MoveState {
     }
 
     fn join(&self, other: &Self, num_locals: usize) -> Self {
-        let mut joined = Self::new(num_locals);
-        for index in 0..num_locals {
-            let local = LocalId::from_usize(index);
-            joined.set(
-                local,
-                join_move_state(self.root_state(local), other.root_state(local)),
-            );
+        let num_words = num_locals.div_ceil(64);
+        let self_moved = self.moved.words();
+        let other_moved = other.moved.words();
+        let self_maybe = self.maybe_moved.words();
+        let other_maybe = other.maybe_moved.words();
+
+        let mut moved_words = Vec::with_capacity(num_words);
+        let mut maybe_words = Vec::with_capacity(num_words);
+        for i in 0..num_words {
+            let sm = self_moved.get(i).copied().unwrap_or(0);
+            let om = other_moved.get(i).copied().unwrap_or(0);
+            let sy = self_maybe.get(i).copied().unwrap_or(0);
+            let oy = other_maybe.get(i).copied().unwrap_or(0);
+            // Truth table for join_move_state(a, b) with mutually exclusive (moved, maybe):
+            //   Moved + Moved           -> Moved        (sm & om)
+            //   Any mismatch or Maybe   -> MaybeMoved   (sy | oy | (sm ^ om))
+            //   Available + Available   -> Available    (0, 0)
+            moved_words.push(sm & om);
+            maybe_words.push(sy | oy | (sm ^ om));
         }
 
-        let field_places = self
-            .moved_fields
-            .iter()
-            .chain(&self.maybe_moved_fields)
-            .chain(&other.moved_fields)
-            .chain(&other.maybe_moved_fields);
-        for place in field_places {
-            if joined.has_exact_field(place) {
-                continue;
+        let mut joined = Self {
+            moved: BitSet::from_words(moved_words),
+            maybe_moved: BitSet::from_words(maybe_words),
+            moved_fields: SmallVec::new(),
+            maybe_moved_fields: SmallVec::new(),
+        };
+
+        if !self.moved_fields.is_empty()
+            || !self.maybe_moved_fields.is_empty()
+            || !other.moved_fields.is_empty()
+            || !other.maybe_moved_fields.is_empty()
+        {
+            let field_places = self
+                .moved_fields
+                .iter()
+                .chain(&self.maybe_moved_fields)
+                .chain(&other.moved_fields)
+                .chain(&other.maybe_moved_fields);
+            for place in field_places {
+                if joined.has_exact_field(place) {
+                    continue;
+                }
+                let state =
+                    join_move_state(self.field_fact_state(place), other.field_fact_state(place));
+                joined.push_field_state(place.clone(), state);
             }
-            let state =
-                join_move_state(self.field_fact_state(place), other.field_fact_state(place));
-            joined.push_field_state(place.clone(), state);
         }
         joined
     }
 
-    fn root_state(&self, local: LocalId) -> LocalMoveState {
+    pub(crate) fn root_state(&self, local: LocalId) -> LocalMoveState {
         if self.moved.contains(local) {
             LocalMoveState::Moved
         } else if self.maybe_moved.contains(local) {
@@ -163,11 +199,27 @@ impl MoveState {
         }
     }
 
+    /// Every place moved on some path into this point and not on others:
+    /// whole locals first, then projected places, in a fixed order.
+    pub(crate) fn maybe_moved_places(&self) -> Vec<AmirPlace> {
+        let mut places: Vec<AmirPlace> = self
+            .maybe_moved
+            .iter()
+            .map(|local| AmirPlace {
+                local,
+                projections: SmallVec::new(),
+            })
+            .collect();
+        places.extend(self.maybe_moved_fields.iter().cloned());
+        places
+    }
+
+    #[cfg(test)]
     pub(crate) fn place_itself_is_available(&self, place: &AmirPlace) -> bool {
         self.field_fact_state(place) == LocalMoveState::Available
     }
 
-    fn has_moved_descendant(&self, place: &AmirPlace) -> bool {
+    pub(crate) fn has_moved_descendant(&self, place: &AmirPlace) -> bool {
         let tracked = tracked_move_place(place);
         let is_descendant = |moved: &AmirPlace| {
             moved.local == tracked.local
@@ -233,7 +285,7 @@ impl MoveState {
         }
     }
 
-    fn field_fact_state(&self, place: &AmirPlace) -> LocalMoveState {
+    pub(crate) fn field_fact_state(&self, place: &AmirPlace) -> LocalMoveState {
         // Writes and moves store canonical paths. Reads (including the
         // drop-on-assignment query) must use exactly the same representation.
         // Comparing `Deref.Field` against a stored `Field` loses the move and
@@ -254,6 +306,32 @@ impl MoveState {
             .maybe_moved_fields
             .iter()
             .any(|moved| place_is_prefix(moved, place))
+        {
+            LocalMoveState::MaybeMoved
+        } else {
+            LocalMoveState::Available
+        }
+    }
+
+    /// Exact ownership state for drop elaboration: prefers definite `Moved`
+    /// facts on a specific descendant field even when the enclosing root is
+    /// `MaybeMoved` (e.g. `(Moved(p), Moved(p.a))`).
+    pub(crate) fn drop_fact_state(&self, place: &AmirPlace) -> LocalMoveState {
+        let tracked = tracked_move_place(place);
+        let place = &tracked;
+        let root = self.root_state(place.local);
+        if root == LocalMoveState::Moved
+            || self
+                .moved_fields
+                .iter()
+                .any(|moved| place_is_prefix(moved, place))
+        {
+            LocalMoveState::Moved
+        } else if root == LocalMoveState::MaybeMoved
+            || self
+                .maybe_moved_fields
+                .iter()
+                .any(|moved| place_is_prefix(moved, place))
         {
             LocalMoveState::MaybeMoved
         } else {
@@ -330,7 +408,7 @@ fn join_move_state(left: LocalMoveState, right: LocalMoveState) -> LocalMoveStat
     }
 }
 
-fn tracked_move_place(place: &AmirPlace) -> AmirPlace {
+pub(crate) fn tracked_move_place(place: &AmirPlace) -> AmirPlace {
     // Dereference is an access route, not an ownership path component. Keep
     // named fields beneath `&mut self` distinct so replacing one field restores
     // just that field instead of marking the receiver binding itself moved.
@@ -363,7 +441,7 @@ fn tracked_move_place(place: &AmirPlace) -> AmirPlace {
     }
 }
 
-fn place_is_prefix(prefix: &AmirPlace, place: &AmirPlace) -> bool {
+pub(crate) fn place_is_prefix(prefix: &AmirPlace, place: &AmirPlace) -> bool {
     prefix.local == place.local
         && prefix.projections.len() <= place.projections.len()
         && prefix
@@ -381,7 +459,7 @@ fn places_overlap(left: &AmirPlace, right: &AmirPlace) -> bool {
 #[must_use]
 pub fn moved_in_counts(func: &AmirFunc) -> Vec<u32> {
     let bump = bumpalo::Bump::new();
-    let Some(block_in) = compute_move_in(func, &bump) else {
+    let Some((block_in, _)) = compute_move_in(func, &bump) else {
         return vec![0; func.blocks.len()];
     };
     block_in
@@ -397,8 +475,12 @@ pub fn moved_in_counts(func: &AmirFunc) -> Vec<u32> {
         .collect()
 }
 
-pub fn check_moves(func: &AmirFunc, symbols: &SymbolTable) -> Vec<Diagnostic> {
-    check_moves_by_block(func, symbols)
+pub fn check_moves(
+    func: &AmirFunc,
+    symbols: &SymbolTable,
+    types: &dyn arandu_middle::type_context::AmirTypeContext,
+) -> Vec<Diagnostic> {
+    check_moves_by_block(func, symbols, types)
         .into_iter()
         .map(|(_, d)| d)
         .collect()
@@ -409,15 +491,14 @@ pub fn check_moves(func: &AmirFunc, symbols: &SymbolTable) -> Vec<Diagnostic> {
 pub fn check_moves_by_block(
     func: &AmirFunc,
     symbols: &SymbolTable,
+    types: &dyn arandu_middle::type_context::AmirTypeContext,
 ) -> Vec<(crate::amir::BlockId, Diagnostic)> {
     let bump = bumpalo::Bump::new();
-    let Some(block_in) = compute_move_in(func, &bump) else {
+    let Some((mut block_in, temp_origins)) = compute_move_in(func, &bump) else {
         return Vec::new();
     };
 
-    let temp_origins = temp_origins(func, &bump);
     let mut diagnostics = Vec::new();
-    let mut block_in = block_in;
     for block in &func.blocks {
         // Take ownership of each IN set — only used once during the check walk.
         let mut state = std::mem::take(&mut block_in[block.id.as_usize()]);
@@ -426,7 +507,12 @@ pub fn check_moves_by_block(
             func,
             &temp_origins,
             &mut state,
-            Some((symbols, block.id, &mut diagnostics)),
+            Some(walk::MoveDiagnostics {
+                symbols,
+                types,
+                block: block.id,
+                out: &mut diagnostics,
+            }),
         );
     }
 

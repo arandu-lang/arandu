@@ -52,11 +52,6 @@ public func ExitStatus.new(code: int): ExitStatus {
     return ExitStatus { code: code }
 }
 
-/// Wraps `code` in an `ExitStatus` value without launching a process.
-public func ExitStatus.from(code: int): ExitStatus {
-    return ExitStatus { code: code }
-}
-
 /// Returns `true` if the process terminated successfully (exit code 0).
 public func ExitStatus.success(self: ref ExitStatus): bool {
     return self.code == 0

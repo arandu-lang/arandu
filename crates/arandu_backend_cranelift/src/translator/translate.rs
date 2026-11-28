@@ -49,7 +49,7 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             AmirStmt::Call { lhs, callee, .. } => lhs
                 .map(|temp| self.temp_span(temp))
                 .unwrap_or_else(|| self.operand_span(callee)),
-            AmirStmt::Free(operand) => self.operand_span(operand),
+            AmirStmt::Free(operand) | AmirStmt::ArenaRewind(operand) => self.operand_span(operand),
             AmirStmt::StorageLive(local)
             | AmirStmt::StorageDead(local)
             | AmirStmt::Destroy(arandu_middle::amir::AmirPlace { local, .. }) => {
@@ -95,6 +95,23 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
         self.builder
             .append_block_params_for_function_params(entry_clif);
 
+        // A pointer-sized value held in a local whose own address is taken
+        // (`ref r` with `r: mut ref T`, `ref f` with `f: (A) -> R`) needs a
+        // home; otherwise it stays in a register.
+        let mut address_taken = rustc_hash::FxHashSet::default();
+        for statement in self.current_func.stmts.payloads.iter() {
+            if let arandu_middle::amir::AmirStmt::Assign {
+                rhs:
+                    arandu_middle::amir::AmirRvalue::Borrow(place)
+                    | arandu_middle::amir::AmirRvalue::BorrowMut(place),
+                ..
+            } = statement
+                && place.projections.is_empty()
+            {
+                address_taken.insert(place.local);
+            }
+        }
+
         for local in &self.current_func.locals {
             let lty = self.resolve_ty(local.ty);
             if matches!(lty, ArType::Primitive(Primitive::Str)) {
@@ -118,7 +135,17 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                 let var = self.builder.declare_var(clif_ty);
                 self.local_map.insert(local.id, var);
                 // F2.0: address-taken scalars get a real stack slot so `&x` is valid.
-                if local.is_memory && Self::needs_scalar_stack_home(&lty) {
+                if local.is_memory
+                    && (Self::needs_scalar_stack_home(&lty)
+                        || (address_taken.contains(&local.id)
+                            && matches!(
+                                lty,
+                                ArType::Ref(_)
+                                    | ArType::RefMut(_)
+                                    | ArType::Ptr(_)
+                                    | ArType::Func(..)
+                            )))
+                {
                     let layout = self.checked_layout(&lty);
                     let size = u32::try_from(layout.size.max(1)).unwrap_or_else(|_| {
                         self.record_ice(

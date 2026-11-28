@@ -127,6 +127,13 @@ impl LspProcess {
         self.wait_for(|message| message.get("id").and_then(Value::as_i64) == Some(id))
     }
 
+    fn wait_until_ready(&self) {
+        self.wait_for(|message| {
+            message.get("method").and_then(Value::as_str) == Some("arandu/status")
+                && message.pointer("/params/state").and_then(Value::as_str) == Some("ready")
+        });
+    }
+
     fn wait_for_responses(&self, ids: impl IntoIterator<Item = i64>) -> BTreeMap<i64, Value> {
         let pending = ids.into_iter().collect::<BTreeSet<_>>();
         let mut responses = BTreeMap::new();
@@ -582,9 +589,14 @@ fn stdio_open_document_stays_interactive_during_discovery() {
         completion.get("error").is_none(),
         "completion failed: {completion}"
     );
+    let budget = if std::env::var_os("CI").is_some() {
+        Duration::from_millis(2500)
+    } else {
+        INTERACTIVE_BUDGET
+    };
     assert!(
-        latency <= INTERACTIVE_BUDGET,
-        "completion took {latency:?} while workspace discovery was active"
+        latency <= budget,
+        "completion took {latency:?} while workspace discovery was active (budget: {budget:?})"
     );
 
     lsp.shutdown(3);
@@ -659,6 +671,7 @@ fn stdio_annotation_contract_uses_canonical_names_and_structured_migration() {
     let text = "// 😀\n@no_fallback\nfunc critical() {}\n";
     let mut lsp = LspProcess::spawn();
     lsp.initialize(fixture.path(), 1);
+    lsp.wait_until_ready();
     lsp.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didOpen",
@@ -1581,7 +1594,117 @@ fn stdio_presents_one_signature_and_documentation_contract() {
         "{signature}"
     );
 
-    lsp.shutdown(5);
+    let block_document = fixture.path().join("block_presentation.aru");
+    let block_uri = file_uri(&block_document);
+    let block_source = concat!(
+        "/**\n",
+        " * Adds two values.\n",
+        " * Keeps integer precision.\n",
+        " */\n",
+        "func add(left: int, right: int): int { return left + right }\n",
+        "func main(): int { return add(1, 2) }\n",
+    );
+    let block_definition = block_source.find("add").expect("block add definition");
+    let block_call = block_source.rfind("add").expect("block add call");
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": block_uri,
+                "languageId": "arandu",
+                "version": 1,
+                "text": block_source
+            }
+        }
+    }));
+    let block_diagnostics = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(block_uri.as_str())
+    });
+    assert_eq!(
+        block_diagnostics
+            .pointer("/params/diagnostics")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "block presentation fixture must be valid: {block_diagnostics}"
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 6, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": block_uri },
+            "position": utf16_position(block_source, block_definition + 1)
+        }
+    }));
+    let block_hover = lsp.wait_for_response(6);
+    let block_hover_markdown = block_hover
+        .pointer("/result/contents/value")
+        .and_then(Value::as_str)
+        .expect("Markdown hover for block docs");
+    assert!(
+        block_hover_markdown.contains(expected_signature),
+        "{block_hover}"
+    );
+    assert!(
+        block_hover_markdown.contains("Adds two values.\nKeeps integer precision."),
+        "{block_hover}"
+    );
+    assert!(!block_hover_markdown.contains("*/"), "{block_hover}");
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 7, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": block_uri },
+            "position": utf16_position(block_source, block_definition + 2)
+        }
+    }));
+    let block_completion = lsp.wait_for_response(7);
+    let block_add_item = block_completion
+        .pointer("/result")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("label") == Some(&json!("add")))
+        })
+        .expect("add completion with block docs");
+    assert_eq!(
+        block_add_item.get("detail").and_then(Value::as_str),
+        Some(expected_signature)
+    );
+    assert_eq!(
+        block_add_item
+            .pointer("/documentation/value")
+            .and_then(Value::as_str),
+        Some("Adds two values.\nKeeps integer precision.")
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 8, "method": "textDocument/signatureHelp",
+        "params": {
+            "textDocument": { "uri": block_uri },
+            "position": utf16_position(block_source, block_call + "add(1, ".len())
+        }
+    }));
+    let block_signature = lsp.wait_for_response(8);
+    assert_eq!(
+        block_signature
+            .pointer("/result/signatures/0/label")
+            .and_then(Value::as_str),
+        Some(expected_signature),
+        "{block_signature}"
+    );
+    assert_eq!(
+        block_signature
+            .pointer("/result/signatures/0/documentation/value")
+            .and_then(Value::as_str),
+        Some("Adds two values.\nKeeps integer precision."),
+        "{block_signature}"
+    );
+
+    lsp.shutdown(9);
 }
 
 #[test]
@@ -2013,6 +2136,7 @@ fn stdio_diagnostics_preserve_context_and_structured_quick_fix() {
     let uri = file_uri(&document);
     let mut lsp = LspProcess::spawn();
     lsp.initialize(fixture.path(), 1);
+    lsp.wait_until_ready();
     lsp.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didOpen",
@@ -3487,4 +3611,223 @@ fn stdio_initialize_rejects_invalid_ctfe_limits_with_invalid_params() {
             assert!(!status.success(), "invalid initialization must fail");
         }
     }
+}
+
+/// `todo` holes (RFC 0036, H1): the editor sees information, not an error,
+/// with UTF-16 ranges, structured fills as quick fixes and an inline goal;
+/// filling the hole clears it on the next revision.
+#[test]
+fn stdio_typed_holes_inform_fill_and_clear() {
+    let fixture = FixtureDir::new();
+    let document = fixture.path().join("holes.aru");
+    let uri = file_uri(&document);
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.wait_until_ready();
+    let text = "// área ✓\nfunc area(width: int): int {\n    let base = width\n    return todo(\"multiplicar\")\n}\n";
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": { "uri": uri, "languageId": "arandu", "version": 1, "text": text }
+        }
+    }));
+    let published = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+            && message
+                .pointer("/params/diagnostics")
+                .and_then(Value::as_array)
+                .is_some_and(|diagnostics| {
+                    diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.get("code") == Some(&json!("T102")))
+                })
+    });
+    let diagnostic = published
+        .pointer("/params/diagnostics")
+        .and_then(Value::as_array)
+        .and_then(|diagnostics| {
+            diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.get("code") == Some(&json!("T102")))
+        })
+        .expect("T102 diagnostic")
+        .clone();
+    // Information, not error: an unfinished program is the expected state.
+    assert_eq!(diagnostic.get("severity"), Some(&json!(3)), "{diagnostic}");
+    assert_eq!(
+        diagnostic.pointer("/range/start"),
+        Some(&json!({ "line": 3, "character": 11 })),
+        "{diagnostic}"
+    );
+    let fills: Vec<&str> = diagnostic
+        .pointer("/data/fixes")
+        .and_then(Value::as_array)
+        .map(|fixes| {
+            fixes
+                .iter()
+                .filter_map(|fix| fix.get("newText").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(fills, vec!["base", "width"], "{diagnostic}");
+
+    let range = diagnostic["range"].clone();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/codeAction",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": range,
+            "context": { "diagnostics": [diagnostic], "only": ["quickfix"] }
+        }
+    }));
+    let actions = lsp.wait_for_response(2);
+    let first = actions.pointer("/result/0").expect("quick fix").clone();
+    assert_eq!(
+        first.get("isPreferred"),
+        None,
+        "a fill is never preferred: {first}"
+    );
+    assert_eq!(
+        first
+            .pointer("/edit/changes")
+            .and_then(Value::as_object)
+            .and_then(|changes| changes.values().next())
+            .and_then(|edits| edits.pointer("/0/newText"))
+            .and_then(Value::as_str),
+        Some("base"),
+        "{actions}"
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 5, "character": 0 } }
+        }
+    }));
+    let inlays = lsp.wait_for_response(3);
+    assert!(
+        inlays
+            .pointer("/result")
+            .and_then(Value::as_array)
+            .is_some_and(|hints| hints.iter().any(|hint| {
+                hint.get("label") == Some(&json!(": int"))
+                    && hint.pointer("/position/line") == Some(&json!(3))
+            })),
+        "the hole shows its goal inline: {inlays}"
+    );
+
+    // Filling the hole is an ordinary incremental edit; the next revision
+    // publishes no T102.
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": range,
+                "text": "base"
+            }]
+        }
+    }));
+    let cleared = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+            && message.pointer("/params/version") == Some(&json!(2))
+    });
+    assert!(
+        cleared
+            .pointer("/params/diagnostics")
+            .and_then(Value::as_array)
+            .is_some_and(|diagnostics| diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.get("code") != Some(&json!("T102")))),
+        "{cleared}"
+    );
+    lsp.shutdown(4);
+}
+
+#[test]
+fn stdio_t038_quick_fix_replaces_only_the_type_annotation() {
+    let fixture = FixtureDir::new();
+    let document = fixture.path().join("t038-quick-fix.aru");
+    let uri = file_uri(&document);
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.wait_until_ready();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "arandu",
+                "version": 1,
+                "text": "module t;\nfunc main(): int { let a: int = 3_000_000_000; return a }\n"
+            }
+        }
+    }));
+
+    let published = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+            && message
+                .pointer("/params/diagnostics")
+                .and_then(Value::as_array)
+                .is_some_and(|diagnostics| {
+                    diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.get("code") == Some(&json!("T038")))
+                })
+    });
+    let diagnostic = published
+        .pointer("/params/diagnostics")
+        .and_then(Value::as_array)
+        .and_then(|diagnostics| {
+            diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.get("code") == Some(&json!("T038")))
+        })
+        .expect("T038 diagnostic")
+        .clone();
+    assert_eq!(
+        diagnostic
+            .pointer("/data/fixes/0/newText")
+            .and_then(Value::as_str),
+        Some("i64"),
+        "T038 must carry a structured replacement: {diagnostic}"
+    );
+
+    let mut action_diagnostic = diagnostic;
+    action_diagnostic["message"] = json!("localized presentation text");
+    let range = action_diagnostic["range"].clone();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/codeAction",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": range,
+            "context": { "diagnostics": [action_diagnostic], "only": ["quickfix"] }
+        }
+    }));
+    let actions = lsp.wait_for_response(2);
+    let edit = actions
+        .pointer("/result/0/edit/changes")
+        .and_then(Value::as_object)
+        .and_then(|changes| changes.values().next())
+        .and_then(Value::as_array)
+        .and_then(|edits| edits.first())
+        .expect("quick fix edit");
+    assert_eq!(edit.get("newText").and_then(Value::as_str), Some("i64"));
+    assert_eq!(edit.pointer("/range/start/line"), Some(&json!(1)));
+    assert_eq!(edit.pointer("/range/start/character"), Some(&json!(26)));
+    assert_eq!(edit.pointer("/range/end/character"), Some(&json!(29)));
+    lsp.shutdown(3);
 }

@@ -290,6 +290,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirTerminator::Unreachable => {
                 self.builder.ins().trap(TrapCode::unwrap_user(1));
             }
+            AmirTerminator::Trap(kind) => self.trap_with_message(*kind),
         }
     }
 }

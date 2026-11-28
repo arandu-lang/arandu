@@ -42,7 +42,7 @@ pub(crate) fn ensure_host_jit_layout(data_layout: DataLayout) -> Result<(), CliF
     }
     Err(CliFailure::usage(format!(
         "JIT execution requires the host layout (got pointer width {}, host is {}-bit); \
-         use `--layout=by-host` or the `build`/`emit-c` commands for non-host layouts",
+         use `--layout=host` or the `build`/`emit-c` commands for non-host layouts",
         data_layout.pointer_width(),
         host_width * 8,
     )))
@@ -219,25 +219,24 @@ pub fn render_pipeline_failure(
     finish(Err(pipeline_failure(db, diagnostics, filepath)))
 }
 
-/// The failure of a pipeline whose diagnostics hold an error, rendered against
-/// the file of the first error.
+/// The failure of a pipeline whose diagnostics hold an error, rendered with
+/// each diagnostic mapped to its own `Span::file_id` source path.
 pub fn pipeline_failure(
     db: &dyn arandu_query::db::ArandCompilerDb,
     diagnostics: Vec<arandu_middle::Diagnostic>,
     filepath: &str,
 ) -> CliFailure {
-    let target_path = diagnostics
-        .iter()
-        .find(|diagnostic| matches!(diagnostic.severity, arandu_middle::Severity::Error))
-        .and_then(|diagnostic| {
-            (diagnostic.span.file_id != 0).then(|| {
-                db.file_path(diagnostic.span.file_id)
-                    .to_string_lossy()
-                    .to_string()
-            })
-        })
-        .unwrap_or_else(|| filepath.to_string());
-    diagnostics_failure(diagnostics, &target_path)
+    let mut file_paths = std::collections::BTreeMap::new();
+    for diagnostic in &diagnostics {
+        let fid = diagnostic.span.file_id;
+        if fid != 0 {
+            file_paths
+                .entry(fid)
+                .or_insert_with(|| db.file_path(fid).to_path_buf());
+        }
+    }
+    let fallback = (!filepath.is_empty()).then(|| PathBuf::from(filepath));
+    CliFailure::diagnostics_with_files(diagnostics, fallback, file_paths)
 }
 
 /// Render non-fatal Salsa diagnostics or terminate through the typed diagnostic path.
@@ -245,11 +244,17 @@ pub fn handle_accumulated_diags(
     db: &dyn arandu_query::db::ArandCompilerDb,
     diags: &[impl std::ops::Deref<Target = arandu_middle::db::DiagnosticsAccumulator>],
     filepath: &str,
+    warnings_as_errors: bool,
 ) {
     if diags.is_empty() {
         return;
     }
-    let deduped = dedupe_accumulated_diags(diags);
+    let mut deduped = dedupe_accumulated_diags(diags);
+    if warnings_as_errors {
+        for diagnostic in &mut deduped {
+            diagnostic.promote_warning_to_error();
+        }
+    }
     if deduped
         .iter()
         .any(|d| matches!(d.severity, arandu_middle::Severity::Error))
@@ -265,6 +270,7 @@ pub fn handle_accumulated_diags(
 pub fn pipeline_lower_checked(
     db: &dyn arandu_query::db::ArandCompilerDb,
     file: arandu_query::db::SourceFile,
+    warnings_as_errors: bool,
 ) -> Result<PipelineLowerOutcome, Vec<arandu_middle::Diagnostic>> {
     {
         arandu_base::time_pass!("parse");
@@ -282,6 +288,11 @@ pub fn pipeline_lower_checked(
         arandu_middle::db::DiagnosticsAccumulator,
     >(db, file);
     let mut diagnostics = dedupe_accumulated_diags(&type_accumulated);
+    if warnings_as_errors {
+        for diagnostic in &mut diagnostics {
+            diagnostic.promote_warning_to_error();
+        }
+    }
     if diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, arandu_middle::Severity::Error))
@@ -296,7 +307,10 @@ pub fn pipeline_lower_checked(
     let lower_accumulated = arandu_query::passes::lower_amir::accumulated::<
         arandu_middle::db::DiagnosticsAccumulator,
     >(db, file);
-    for diagnostic in dedupe_accumulated_diags(&lower_accumulated) {
+    for mut diagnostic in dedupe_accumulated_diags(&lower_accumulated) {
+        if warnings_as_errors {
+            diagnostic.promote_warning_to_error();
+        }
         if !diagnostics.contains(&diagnostic) {
             diagnostics.push(diagnostic);
         }
@@ -321,8 +335,9 @@ pub fn pipeline_lower(
     db: &dyn arandu_query::db::ArandCompilerDb,
     file: arandu_query::db::SourceFile,
     filepath: &str,
+    warnings_as_errors: bool,
 ) -> std::sync::Arc<arandu_query::LowerAmirArtifacts> {
-    lower(db, file, filepath).unwrap_or_else(|failure| finish(Err(failure)))
+    lower(db, file, filepath, warnings_as_errors).unwrap_or_else(|failure| finish(Err(failure)))
 }
 
 /// [`pipeline_lower`] that returns the failure instead of exiting.
@@ -330,8 +345,9 @@ pub fn lower(
     db: &dyn arandu_query::db::ArandCompilerDb,
     file: arandu_query::db::SourceFile,
     filepath: &str,
+    warnings_as_errors: bool,
 ) -> Result<std::sync::Arc<arandu_query::LowerAmirArtifacts>, CliFailure> {
-    match pipeline_lower_checked(db, file) {
+    match pipeline_lower_checked(db, file, warnings_as_errors) {
         Ok(outcome) => {
             render_nonfatal_diagnostics(db, &outcome.diagnostics, filepath);
             Ok(outcome.artifacts)
@@ -345,6 +361,7 @@ pub fn parse_and_check(
     db: &dyn arandu_query::db::ArandCompilerDb,
     file: arandu_query::db::SourceFile,
     filepath: &str,
+    warnings_as_errors: bool,
 ) -> CheckedProgram {
     let program_res = {
         arandu_base::time_pass!("parse");
@@ -363,7 +380,7 @@ pub fn parse_and_check(
     let diagnostics = arandu_query::passes::type_check::accumulated::<
         arandu_middle::db::DiagnosticsAccumulator,
     >(db, file);
-    handle_accumulated_diags(db, &diagnostics, filepath);
+    handle_accumulated_diags(db, &diagnostics, filepath, warnings_as_errors);
 
     // TypeCheckResult is Arc-heavy (symbols/resolved/type_info) — clone is O(1) for IR.
     CheckedProgram {

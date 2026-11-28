@@ -5,6 +5,11 @@ pub(super) fn is_soft_from_tok(source: &str, tok: &Token) -> bool {
     tok.kind == TokenKind::IdentValue && tok.lexeme(source) == "from"
 }
 
+/// True when `tok` is a soft top-level item keyword (`union`, `static`) lexed as an identifier.
+pub(super) fn is_soft_item_tok(source: &str, tok: &Token) -> bool {
+    tok.kind == TokenKind::IdentValue && matches!(tok.lexeme(source), "union" | "static")
+}
+
 pub(super) fn is_item_start_keyword(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -47,7 +52,11 @@ pub fn find_top_level_item_spans(
         // Keyword check at current depth (before this token modifies depth).
         // Item openers: module/import/from/func/struct/… — not `async`/`public` alone
         // (those are prefixes). Leading `@attr` / `public` / `async` are folded left.
-        if depth == 0 && (is_item_start_keyword(tok.kind) || is_soft_from_tok(source, tok)) {
+        if depth == 0
+            && (is_item_start_keyword(tok.kind)
+                || is_soft_from_tok(source, tok)
+                || is_soft_item_tok(source, tok))
+        {
             if matches!(tok.kind, TokenKind::KwImport)
                 && matches!(last_item_kw, Some(TokenKind::KwFrom))
             {

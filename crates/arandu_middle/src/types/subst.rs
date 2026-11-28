@@ -55,12 +55,6 @@ pub fn substitute_type(ty: &ArType, subst: &GenericSubst, interner: &TypeInterne
                 .collect();
             ArType::named(*id, &new_args, interner)
         }
-        ArType::Nullable(inner) => {
-            let resolved = interner.resolve(*inner);
-            let substituted = substitute_type(&resolved, subst, interner);
-            let id = interner.intern(substituted);
-            ArType::Nullable(id)
-        }
         ArType::Option(inner) => {
             let resolved = interner.resolve(*inner);
             let substituted = substitute_type(&resolved, subst, interner);
@@ -261,20 +255,6 @@ mod tests {
             result,
             ArType::named(SymbolId::new(0, 3), &[expected_inner], &i)
         );
-    }
-
-    #[test]
-    fn substitute_nullable() {
-        let i = new_interner();
-        let inner = i.intern(ArType::named(SymbolId::new(0, 1), &[], &i));
-        let ty = ArType::Nullable(inner);
-        let subst = build_subst(
-            &[SymbolId::new(0, 1)],
-            &[ArType::Primitive(super::super::Primitive::Int)],
-        );
-        let result = substitute_type(&ty, &subst, &i);
-        let expected_inner = i.intern(ArType::Primitive(super::super::Primitive::Int));
-        assert_eq!(result, ArType::Nullable(expected_inner));
     }
 
     #[test]

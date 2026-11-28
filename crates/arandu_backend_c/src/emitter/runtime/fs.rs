@@ -291,9 +291,68 @@ static void ar_fs_read_all(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_len, 
     *err = 0;
 }}
 
+static size_t ar_utf8_sequence_len(const uint8_t *bytes, size_t len, size_t at) {{
+    uint8_t lead = bytes[at];
+    if (lead <= 0x7f) return 1;
+    if (lead >= 0xc2 && lead <= 0xdf) {{
+        return at + 1 < len && (bytes[at + 1] & 0xc0) == 0x80 ? 2 : 0;
+    }}
+    if (lead >= 0xe0 && lead <= 0xef) {{
+        if (at + 2 >= len || (bytes[at + 2] & 0xc0) != 0x80) return 0;
+        uint8_t second = bytes[at + 1];
+        if ((second & 0xc0) != 0x80 || (lead == 0xe0 && second < 0xa0) ||
+            (lead == 0xed && second >= 0xa0)) return 0;
+        return 3;
+    }}
+    if (lead >= 0xf0 && lead <= 0xf4) {{
+        if (at + 3 >= len || (bytes[at + 2] & 0xc0) != 0x80 ||
+            (bytes[at + 3] & 0xc0) != 0x80) return 0;
+        uint8_t second = bytes[at + 1];
+        if ((second & 0xc0) != 0x80 || (lead == 0xf0 && second < 0x90) ||
+            (lead == 0xf4 && second > 0x8f)) return 0;
+        return 4;
+    }}
+    return 0;
+}}
+
+static bool ar_utf8_valid(const uint8_t *bytes, size_t len) {{
+    size_t at = 0;
+    while (at < len) {{
+        size_t sequence = ar_utf8_sequence_len(bytes, len, at);
+        if (sequence == 0) return false;
+        at += sequence;
+    }}
+    return true;
+}}
+
+static uint8_t *ar_utf8_lossy(const uint8_t *bytes, size_t len, size_t *out_len) {{
+    if (!out_len || len > SIZE_MAX / 3) return NULL;
+    uint8_t *out = (uint8_t *)malloc(len * 3);
+    if (!out && len != 0) return NULL;
+    size_t at = 0;
+    size_t written = 0;
+    while (at < len) {{
+        size_t sequence = ar_utf8_sequence_len(bytes, len, at);
+        if (sequence != 0) {{
+            memcpy(out + written, bytes + at, sequence);
+            at += sequence;
+            written += sequence;
+        }} else {{
+            out[written++] = 0xef;
+            out[written++] = 0xbf;
+            out[written++] = 0xbd;
+            at++;
+        }}
+    }}
+    *out_len = written;
+    return out;
+}}
+
 typedef struct {{
     char *name;
     size_t len;
+    uint8_t *name_str;
+    size_t name_str_len;
     uint8_t is_dir;
 }} ArHostDirEntry;
 
@@ -339,9 +398,37 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
             break;
         }}
         size_t nlen = ent.name_len;
-        if (nlen == SIZE_MAX || count == SIZE_MAX || names_total_len > SIZE_MAX - nlen) {{
+        size_t name_str_len = nlen;
+        uint8_t *name_str = NULL;
+        if (!ar_utf8_valid((const uint8_t *)ent.name, nlen)) {{
+            name_str = ar_utf8_lossy((const uint8_t *)ent.name, nlen, &name_str_len);
+            if (!name_str) {{
+                free(ent.name);
+                for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
+                free(entries);
+                ar_pal_readdir_close(d);
+                if (c_path != stack_buf) free(c_path);
+                *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
+                return;
+            }}
+        }}
+        size_t additional_names = nlen;
+        if (name_str) {{
+            if (name_str_len > SIZE_MAX - additional_names) {{
+                free(ent.name); free(name_str);
+                for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
+                free(entries);
+                ar_pal_readdir_close(d);
+                if (c_path != stack_buf) free(c_path);
+                *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
+                return;
+            }}
+            additional_names += name_str_len;
+        }}
+        if (nlen == SIZE_MAX || count == SIZE_MAX || names_total_len > SIZE_MAX - additional_names) {{
             free(ent.name);
-            for (size_t j = 0; j < count; j++) free(entries[j].name);
+            free(name_str);
+            for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
             free(entries);
             ar_pal_readdir_close(d);
             if (c_path != stack_buf) free(c_path);
@@ -352,7 +439,8 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
             if (entries_cap > SIZE_MAX / 2 ||
                 entries_cap * 2 > SIZE_MAX / sizeof(ArHostDirEntry)) {{
                 free(ent.name);
-                for (size_t j = 0; j < count; j++) free(entries[j].name);
+                free(name_str);
+                for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
                 free(entries);
                 ar_pal_readdir_close(d);
                 if (c_path != stack_buf) free(c_path);
@@ -363,7 +451,8 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
             ArHostDirEntry *grown = (ArHostDirEntry *)realloc(entries, new_cap * sizeof(ArHostDirEntry));
             if (!grown) {{
                 free(ent.name);
-                for (size_t j = 0; j < count; j++) free(entries[j].name);
+                free(name_str);
+                for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
                 free(entries);
                 ar_pal_readdir_close(d);
                 if (c_path != stack_buf) free(c_path);
@@ -375,14 +464,16 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
         }}
         entries[count].name = ent.name;
         entries[count].len = nlen;
+        entries[count].name_str = name_str;
+        entries[count].name_str_len = name_str_len;
         entries[count].is_dir = ent.is_dir ? 1 : 0;
         count++;
-        names_total_len += nlen;
+        names_total_len += additional_names;
     }}
     ar_pal_readdir_close(d);
     if (c_path != stack_buf) free(c_path);
     if (readdir_error != 0) {{
-        for (size_t j = 0; j < count; j++) free(entries[j].name);
+        for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
         free(entries);
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = ar_map_errno(readdir_error);
         return;
@@ -396,7 +487,7 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
 
     if (count > (SIZE_MAX - 8) / (16 + descriptor_size) ||
         names_total_len > SIZE_MAX - 8 - count * (16 + descriptor_size)) {{
-        for (size_t j = 0; j < count; j++) free(entries[j].name);
+        for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
         free(entries);
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
@@ -410,14 +501,14 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
     if (count > UINT32_MAX || blob_len > UINT32_MAX || blob_len > INT32_MAX ||
         count > (size_t)(({uint_c_ty})-1) ||
         blob_len > (size_t)(({uint_c_ty})-1)) {{
-        for (size_t j = 0; j < count; j++) free(entries[j].name);
+        for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
         free(entries);
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
     }}
     uint8_t *blob = (uint8_t *)ar_vec_malloc(({uint_c_ty})blob_len);
     if (!blob) {{
-        for (size_t j = 0; j < count; j++) free(entries[j].name);
+        for (size_t j = 0; j < count; j++) {{ free(entries[j].name); free(entries[j].name_str); }}
         free(entries);
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
@@ -433,15 +524,20 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
         blob[base + 8] = entries[i].is_dir;
         memset(blob + base + 9, 0, 7);
         size_t descriptor = descriptor_base + i * descriptor_size;
-        uint8_t *name_ptr = blob + cursor;
-        {uint_c_ty} name_len = ({uint_c_ty})entries[i].len;
+        uint8_t *raw_name_ptr = blob + cursor;
+        if (entries[i].len > 0) memcpy(blob + cursor, entries[i].name, entries[i].len);
+        cursor += entries[i].len;
+        uint8_t *name_ptr = entries[i].name_str ? blob + cursor : raw_name_ptr;
+        size_t name_str_len = entries[i].name_str ? entries[i].name_str_len : entries[i].len;
+        {uint_c_ty} name_len = ({uint_c_ty})name_str_len;
         memcpy(blob + descriptor, &name_ptr, sizeof(name_ptr));
         memcpy(blob + descriptor + sizeof(name_ptr), &name_len, sizeof(name_len));
-        if (entries[i].len > 0) {{
-            memcpy(blob + cursor, entries[i].name, entries[i].len);
-            cursor += entries[i].len;
+        if (entries[i].name_str) {{
+            memcpy(blob + cursor, entries[i].name_str, entries[i].name_str_len);
+            cursor += entries[i].name_str_len;
         }}
         free(entries[i].name);
+        free(entries[i].name_str);
     }}
     free(entries);
     *out_buf = blob;
@@ -711,7 +807,7 @@ static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, in
 }}
 
 static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
-    if (id < 0 || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
+    if (id < 0 || (!buf && len != 0) || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
     intptr_t fd = ar_udp_duplicate_fd(id);
     if (fd == (intptr_t)-1) return -1;
 
@@ -720,21 +816,26 @@ static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} le
     memcpy(host_buf, host_ptr, (size_t)host_len);
     host_buf[host_len] = '\0';
 
-    intptr_t sent = ar_pal_udp_send(fd, buf, (size_t)len, host_buf, port);
+    uint8_t empty_buf = 0;
+    const uint8_t *payload = buf ? buf : &empty_buf;
+    intptr_t sent = ar_pal_udp_send(fd, payload, (size_t)len, host_buf, port);
     ar_pal_udp_close(fd);
     return sent < 0 ? -1 : (int32_t)sent;
 }}
 
 static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, int32_t *port_out) {{
-    if (id < 0 || !buf || len == 0) return -1;
+    if (id < 0 || (!buf && len != 0)) return -1;
     intptr_t fd = ar_udp_duplicate_fd(id);
     if (fd == (intptr_t)-1) return -1;
     int port = 0;
-    intptr_t recvd = ar_pal_udp_recv(fd, buf, (size_t)len, &port);
+    uint8_t scratch = 0;
+    intptr_t recvd = len == 0
+        ? ar_pal_udp_recv(fd, &scratch, 1, &port)
+        : ar_pal_udp_recv(fd, buf, (size_t)len, &port);
     ar_pal_udp_close(fd);
     if (recvd < 0) return -1;
     if (port_out) *port_out = port;
-    return (int32_t)recvd;
+    return len == 0 ? 0 : (int32_t)recvd;
 }}
 
 static void ar_net_udp_close(int32_t id) {{

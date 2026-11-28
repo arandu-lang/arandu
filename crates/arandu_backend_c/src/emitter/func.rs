@@ -28,10 +28,16 @@ impl<'a> CEmitter<'a> {
             super::rotations::plan(func, &self.program.literal_pool, self.interner);
         let name = self.c_function_name(func.symbol);
         let linkage = self.c_function_linkage(func.symbol);
+        let cold = self.c_function_cold_prefix(func.symbol);
         let ret_ty = self.c_func_return_type(func);
-        let _ = write!(&mut self.output, "{linkage}{} {}(", ret_ty, name);
+        let _ = write!(&mut self.output, "{linkage}{cold}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ") {{");
+        if !self.static_relocations.is_empty()
+            && self.symbols.host_func_name(self.symbols.get(func.symbol)) == "main"
+        {
+            let _ = writeln!(&mut self.output, "    ar_static_relocate();");
+        }
 
         // Declare locals and temps strictly at the top
         let mut used_locals = rustc_hash::FxHashSet::default();
@@ -66,6 +72,7 @@ impl<'a> CEmitter<'a> {
                 AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)
                 | AmirStmt::Free(_)
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::Nop => {}
             }
         }
@@ -86,7 +93,10 @@ impl<'a> CEmitter<'a> {
         for (i, local) in func.locals.iter().enumerate() {
             if used_locals.contains(&i) {
                 let ty = self.interner.resolve(local.ty);
-                if matches!(ty, arandu_middle::types::ArType::Void) {
+                if matches!(
+                    ty,
+                    arandu_middle::types::ArType::Void | arandu_middle::types::ArType::Never
+                ) {
                     continue;
                 }
                 let ty_str = self.format_type(&ty);
@@ -101,7 +111,10 @@ impl<'a> CEmitter<'a> {
         for (i, temp) in func.temps.iter().enumerate() {
             if self.temp_slots[i] == i && used_slots.contains(&i) {
                 let ty = self.interner.resolve(temp.ty);
-                if matches!(ty, arandu_middle::types::ArType::Void) {
+                if matches!(
+                    ty,
+                    arandu_middle::types::ArType::Void | arandu_middle::types::ArType::Never
+                ) {
                     continue;
                 }
                 if let Some(kind) = self.integer_concat_temps[i] {
@@ -125,7 +138,7 @@ impl<'a> CEmitter<'a> {
             if func.params.iter().any(|&p| p.as_usize() == i) {
                 if matches!(
                     self.interner.resolve(func.temps[i].ty),
-                    arandu_middle::types::ArType::Void
+                    arandu_middle::types::ArType::Void | arandu_middle::types::ArType::Never
                 ) {
                     continue;
                 }

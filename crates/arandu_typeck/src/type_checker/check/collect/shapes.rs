@@ -58,7 +58,7 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                         checker.type_info.interior_mutable_types.insert(symbol_id);
                     }
                     let is_repr_c = struct_decl.attrs.iter().any(|attr| {
-                        if attr.name == "Repr" || attr.name == "repr" {
+                        if attr.name == "Repr" {
                             attr.args
                                 .first()
                                 .is_some_and(|arg| match checker.pool.expr(*arg) {
@@ -82,8 +82,41 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                             false
                         }
                     });
+                    let is_union = struct_decl.attrs.iter().any(|attr| attr.name == "Union");
+                    if is_union {
+                        checker.type_info.struct_unions.insert(symbol_id);
+                        checker.type_info.struct_repr_c.insert(symbol_id);
+                    }
                     if is_repr_c {
                         checker.type_info.struct_repr_c.insert(symbol_id);
+                    }
+                    if checker.symbols.get(symbol_id).lang_item
+                        == Some(arandu_middle::symbol_table::LangItem::NonNull)
+                    {
+                        checker.type_info.non_null_types.insert(symbol_id);
+                    }
+                    if struct_decl.attrs.iter().any(|attr| attr.name == "NoCopy") {
+                        checker.type_info.non_copy_types.insert(symbol_id);
+                    }
+                    if struct_decl.attrs.iter().any(|attr| attr.name == "NoSend") {
+                        checker.type_info.non_send_types.insert(symbol_id);
+                    }
+                    if struct_decl.attrs.iter().any(|attr| attr.name == "NoSync") {
+                        checker.type_info.non_sync_types.insert(symbol_id);
+                    }
+                    if struct_decl
+                        .attrs
+                        .iter()
+                        .any(|attr| attr.name == "UnsafeSend")
+                    {
+                        checker.type_info.unsafe_send_types.insert(symbol_id);
+                    }
+                    if struct_decl
+                        .attrs
+                        .iter()
+                        .any(|attr| attr.name == "UnsafeSync")
+                    {
+                        checker.type_info.unsafe_sync_types.insert(symbol_id);
                     }
                     checker.type_info.struct_fields.insert(
                         symbol_id,
@@ -117,6 +150,21 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                 else {
                     return;
                 };
+                if enum_decl.attrs.iter().any(|attr| attr.name == "NoCopy") {
+                    checker.type_info.non_copy_types.insert(enum_symbol_id);
+                }
+                if enum_decl.attrs.iter().any(|attr| attr.name == "NoSend") {
+                    checker.type_info.non_send_types.insert(enum_symbol_id);
+                }
+                if enum_decl.attrs.iter().any(|attr| attr.name == "NoSync") {
+                    checker.type_info.non_sync_types.insert(enum_symbol_id);
+                }
+                if enum_decl.attrs.iter().any(|attr| attr.name == "UnsafeSend") {
+                    checker.type_info.unsafe_send_types.insert(enum_symbol_id);
+                }
+                if enum_decl.attrs.iter().any(|attr| attr.name == "UnsafeSync") {
+                    checker.type_info.unsafe_sync_types.insert(enum_symbol_id);
+                }
                 let params = super::super::super::types::extract_generic_param_symbols(
                     checker,
                     &enum_decl.generic_params,
@@ -302,6 +350,8 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                 // type. Publish it with signatures so sibling function bodies
                 // can type-check references before the constant's body shard is
                 // merged (e.g. a `uint` capacity bound used in a condition).
+                let const_key = crate::NodeKey::from(const_decl.span);
+                let symbol_opt = checker.resolved.definitions.get(&const_key).copied();
                 let declared_ty =
                     const_decl
                         .ty
@@ -311,11 +361,27 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                         });
                 if let Some(ty_expr) = declared_ty {
                     let const_ty = checker.lower_type_expr(ty_expr, checker.symbols.global_scope());
-                    let const_key = crate::NodeKey::from(const_decl.span);
-                    if let Some(symbol_id) = checker.resolved.definitions.get(&const_key).copied() {
+                    if let Some(symbol_id) = symbol_opt {
                         let const_id = checker.intern(const_ty);
                         checker.record_decl_type(symbol_id, const_id);
                     }
+                } else if let Some(symbol_id) = symbol_opt
+                    && checker.symbols.get(symbol_id).kind == crate::SymbolKind::StaticMut
+                {
+                    let diag_len = checker.diagnostics.len();
+                    let val_ty = super::super::super::synth::synth_expr_expected(
+                        checker,
+                        const_decl.value,
+                        None,
+                    );
+                    if !checker.resolve(val_ty).is_error() {
+                        checker.record_decl_type(symbol_id, val_ty);
+                        if let Some(var_id) = checker.literal_table.var_for_expr(const_decl.value) {
+                            checker.literal_table.bind_symbol(symbol_id, var_id);
+                        }
+                    }
+                    checker.finalize_literal_vars();
+                    checker.diagnostics.truncate(diag_len);
                 }
             }
             TopLevelDecl::TypeAlias(alias_decl) => {

@@ -90,6 +90,16 @@ impl super::SymbolTable {
         self.iter_own().chain(self.imported_symbols.values())
     }
 
+    /// The symbol carrying `item`, own or imported. Several import aliases can
+    /// reach it; select a stable ID rather than hash-table order.
+    #[must_use]
+    pub fn lang_item_symbol(&self, item: LangItem) -> Option<SymbolId> {
+        self.iter()
+            .filter(|symbol| symbol.lang_item == Some(item))
+            .map(|symbol| symbol.id)
+            .min_by_key(|id| (id.file_id, id.local_id.0))
+    }
+
     /// A copy in which `f` gives the span of every symbol of this table's own
     /// file; imported symbols keep theirs.
     #[must_use]
@@ -137,6 +147,12 @@ impl super::SymbolTable {
     #[must_use]
     pub fn is_exported(&self, symbol: SymbolId) -> bool {
         self.exported_functions.contains(&symbol)
+    }
+
+    /// Whether `@Cold` marked this function as infrequently executed.
+    #[must_use]
+    pub fn is_cold(&self, symbol: SymbolId) -> bool {
+        self.cold_functions.contains(&symbol)
     }
 
     /// First pair of distinct `@Export`s that claim the same linker symbol,
@@ -212,6 +228,30 @@ impl super::SymbolTable {
         self.associated_members
             .get(&(parent_id, SmolStr::new(member)))
             .copied()
+    }
+
+    /// The inherent `ptr` method `member` when `receiver` is a pointer (or
+    /// a nullable one). A pointer reaches the methods of what it points at
+    /// first; callers use this when that type has no such member.
+    #[must_use]
+    pub fn pointer_method(
+        &self,
+        receiver: &crate::types::ArType,
+        interner: &crate::types::TypeInterner,
+        member: &str,
+    ) -> Option<SymbolId> {
+        use crate::types::ArType;
+        let pointer = match receiver {
+            ArType::Ptr(_) => true,
+            ArType::Option(inner) => {
+                matches!(interner.resolve(*inner), ArType::Ptr(_))
+            }
+            _ => false,
+        };
+        pointer
+            .then_some(self.builtins.ptr_type)
+            .flatten()
+            .and_then(|owner| self.lookup_associated_member(owner, member))
     }
 
     fn lookup_with(

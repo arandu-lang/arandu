@@ -64,8 +64,7 @@ pub(super) fn instance_args_fully_concrete(tc: &TypeCheckResult, type_args: &[Ty
                 args.iter().any(|arg| unresolved(tc, arg)) || unresolved(tc, ret)
             }
             TypeShape::Tuple(args) => args.iter().any(|arg| unresolved(tc, arg)),
-            TypeShape::Nullable(inner)
-            | TypeShape::Slice(inner)
+            TypeShape::Slice(inner)
             | TypeShape::MutSlice(inner)
             | TypeShape::Array(_, inner)
             | TypeShape::Ptr(inner)
@@ -82,7 +81,8 @@ pub(super) fn instance_args_fully_concrete(tc: &TypeCheckResult, type_args: &[Ty
             | TypeShape::Const(_)
             | TypeShape::GenRef
             | TypeShape::Err
-            | TypeShape::Void => false,
+            | TypeShape::Void
+            | TypeShape::Never => false,
         }
     }
     type_args.iter().all(|&tid| {

@@ -24,7 +24,8 @@ fn temporary_module_path() -> std::path::PathBuf {
 
 fn compile_src(src: &str) -> (AmirProgram, TypeCheckResult) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    std::sync::Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -269,20 +270,95 @@ func main(): int {
 }
 
 #[test]
+fn lowers_float_literal_division_as_fdiv() {
+    let ir = emit(
+        r#"
+func nan_value(): f64 {
+    return 0.0 / 0.0
+}
+
+func main(): int {
+    let v = nan_value()
+    if v != v {
+        return 0
+    }
+    return 1
+}
+"#,
+    );
+    assert!(ir.contains("fdiv double"));
+    assert!(!ir.contains("udiv double"));
+    assert!(!ir.contains("icmp eq double"));
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0);
+    }
+}
+
+#[test]
+fn temp_slot_join_between_call_and_enum_payload_preserves_aggregate_value() {
+    let ir = emit(
+        r#"
+struct Payload {
+    a: i64
+    b: i64
+    c: i64
+}
+
+func make_payload(v: i64): Payload {
+    return Payload { a: v, b: v + 1, c: v + 2 }
+}
+
+func wrap_payload(v: i64): Result<Payload, i64> {
+    return Result.Ok(make_payload(v))
+}
+
+func pick(flag: bool): Result<Payload, i64> {
+    let p = if flag {
+        make_payload(10)
+    } else {
+        wrap_payload(20)?
+    }
+    return Result.Ok(p)
+}
+
+func main(): int {
+    let ok1 = match pick(true) {
+        Ok(p) => p.a == 10 && p.c == 12,
+        Err(_) => false,
+    }
+    let ok2 = match pick(false) {
+        Ok(p) => p.a == 20 && p.c == 22,
+        Err(_) => false,
+    }
+    if ok1 && ok2 {
+        return 0
+    }
+    return 1
+}
+"#,
+    );
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0);
+    }
+}
+
+#[test]
 fn emits_atomic_intrinsics() {
     let ir = emit(
         r#"
 module std.core.atomicTest
 
 extern "arandu-intrinsic" {
-    func atomicFetchAdd32(value: mut ref u32, operand: u32): u32
+    func atomicFetchAdd32(value: ref u32, operand: u32): u32
     func atomicLoad32(value: ref u32): u32
-    func atomicCompareExchange32(value: mut ref u32, expected: u32, desired: u32): u32
+    func atomicCompareExchange32(value: ref u32, expected: u32, desired: u32): u32
 }
 
 public func increment(counter: ptr[u32]): u32 {
     unsafe {
-        return atomicFetchAdd32(mut ref *counter, 1 as u32)
+        return atomicFetchAdd32(ref *counter, 1 as u32)
     }
 }
 
@@ -293,6 +369,43 @@ func main(): int {
     );
     assert!(ir.contains("atomicrmw add ptr"));
     assert!(ir.contains("seq_cst"));
+    verify(&ir);
+}
+
+#[test]
+fn emits_atomic_intrinsics_with_explicit_orderings() {
+    let ir = emit(
+        r#"
+module std.core.atomicOrderingTest
+
+extern "arandu-intrinsic" {
+    func atomicLoadRelaxed32(value: ref u32): u32
+    func atomicStoreRelease32(value: ref u32, replacement: u32): void
+    func atomicFetchAddAcqRel32(value: ref u32, operand: u32): u32
+    func atomicFenceAcquire(): void
+}
+
+public func test_orders(p: ptr[u32]): u32 {
+    unsafe {
+        let v = atomicLoadRelaxed32(ref *p)
+        atomicStoreRelease32(ref *p, v + 1 as u32)
+        atomicFenceAcquire()
+        return atomicFetchAddAcqRel32(ref *p, 2 as u32)
+    }
+}
+
+func main(): int {
+    return 0
+}
+"#,
+    );
+    assert!(
+        ir.contains("monotonic, align 4"),
+        "expected monotonic: {ir}"
+    );
+    assert!(ir.contains("release, align 4"), "expected release: {ir}");
+    assert!(ir.contains("fence acquire"), "expected fence acquire: {ir}");
+    assert!(ir.contains("acq_rel"), "expected acq_rel: {ir}");
     verify(&ir);
 }
 
@@ -810,5 +923,492 @@ func main(): int {
     if let Some(code) = run(&ir) {
         assert_eq!(code, 42, "lli must agree with Cranelift");
     }
+    verify(&ir);
+}
+
+#[test]
+fn rotate_and_swap_intrinsics_lower_to_funnel_shifts_and_bswap() {
+    let src = include_str!("../../arandu_backend_c/tests/rotate_swap_intrinsics.aru");
+    let ir = emit(src);
+    for intrinsic in [
+        "@llvm.fshl.i32",
+        "@llvm.fshr.i32",
+        "@llvm.fshl.i64",
+        "@llvm.fshr.i64",
+        "@llvm.bswap.i32",
+        "@llvm.bswap.i64",
+    ] {
+        assert!(ir.contains(intrinsic), "missing {intrinsic}:\n{ir}");
+    }
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    assert_eq!(run_cranelift(src), 0);
+}
+
+#[test]
+fn count_and_reverse_bit_intrinsics_emit_typed_calls() {
+    let src = include_str!("../../arandu_backend_c/tests/bit_intrinsics.aru");
+    let ir = emit(src);
+    assert!(ir.contains("@llvm.ctpop.i32(i32 "), "typed operand:\n{ir}");
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+}
+
+#[test]
+fn fma_and_spin_intrinsics_lower_to_llvm_fma_and_pause() {
+    let src = r#"
+module std.core.fma_test
+
+extern "arandu-intrinsic" {
+    func fma32(a: f32, b: f32, c: f32): f32
+    func fma64(a: f64, b: f64, c: f64): f64
+    func spinLoopHint(): void
+}
+
+func test_math(a: f32, b: f32, c: f32): f32 {
+    spinLoopHint()
+    return fma32(a, b, c)
+}
+
+func test_math64(a: f64, b: f64, c: f64): f64 {
+    return fma64(a, b, c)
+}
+
+func main(): int {
+    let r32 = test_math(2.0, 3.0, 4.0)
+    if r32 != 10.0 { return 1 }
+    let r64 = test_math64(2.0, 3.0, 4.0)
+    if r64 != 10.0 { return 2 }
+    return 0
+}
+"#;
+    let ir = emit(src);
+    assert!(ir.contains("@llvm.fma.f32"), "missing fma32:\n{ir}");
+    assert!(ir.contains("@llvm.fma.f64"), "missing fma64:\n{ir}");
+    assert!(
+        ir.contains("call void asm sideeffect"),
+        "missing pause:\n{ir}"
+    );
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    assert_eq!(run_cranelift(src), 0);
+}
+
+#[test]
+fn extern_c_variadic_emits_ellipsis_and_executes_cleanly() {
+    let src = r#"
+module std.core.variadic_test
+
+extern "C" {
+    func snprintf(buf: ptr[u8], size: usize, fmt: ptr[u8], args: any...): i32
+    func malloc(size: usize): ptr[u8]
+    func free(p: ptr[u8]): void
+}
+
+func main(): int {
+    unsafe {
+        let buf = malloc(64 as usize)
+        let n1 = snprintf(buf, 64 as usize, c"ok")
+        let n2 = snprintf(buf, 64 as usize, c"%d:%d", 10 as i32, 25 as i8)
+        let b0 = *(buf as ptr[u8])
+        free(buf)
+        if n1 != (2 as i32) { return 1 }
+        if n2 != (5 as i32) { return 2 }
+        if b0 != b'1' { return 3 }
+    }
+    return 0
+}
+"#;
+    let ir = emit(src);
+    assert!(
+        ir.contains("declare i32 @snprintf(ptr, i64, ptr, ...)"),
+        "expected variadic LLVM decl:\n{ir}"
+    );
+    assert!(
+        ir.contains("call i32 (ptr, i64, ptr, ...) @snprintf("),
+        "expected variadic LLVM call:\n{ir}"
+    );
+    assert!(
+        ir.contains("i32 25") || ir.contains("sext i8"),
+        "expected C default promotion of i8 to i32 in variadic call:\n{ir}"
+    );
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    assert_eq!(run_cranelift(src), 0);
+}
+
+#[test]
+fn overflow_saturating_intrinsics_lower_to_llvm_ops_and_execute() {
+    let src = include_str!("../../arandu_backend_c/tests/overflow_saturating_intrinsics.aru");
+    let ir = emit(src);
+    for intrinsic in [
+        "@llvm.sadd.with.overflow.i32",
+        "@llvm.uadd.with.overflow.i64",
+        "@llvm.smul.with.overflow.i64",
+        "@llvm.sadd.sat.i32",
+        "@llvm.usub.sat.i64",
+    ] {
+        assert!(ir.contains(intrinsic), "missing {intrinsic}:\n{ir}");
+    }
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    assert_eq!(run_cranelift(src), 0);
+}
+
+#[test]
+fn diamond_if_lowers_to_select_and_matches_cranelift() {
+    let src = r#"
+func pickInt(cond: bool, a: int, b: int): int {
+    let r = if cond { a } else { b }
+    return r
+}
+
+func pickEarly(cond: bool, a: int, b: int): int {
+    if cond {
+        return a + 1
+    } else {
+        return b + 2
+    }
+}
+
+func pickFloat(cond: bool, a: f64, b: f64): f64 {
+    return if cond { a } else { b }
+}
+
+func main(): int {
+    if pickInt(true, 10, 20) != 10 { return 1 }
+    if pickInt(false, 10, 20) != 20 { return 2 }
+    if pickEarly(true, 10, 20) != 11 { return 3 }
+    if pickEarly(false, 10, 20) != 22 { return 4 }
+    if pickFloat(true, 1.5, 2.5) != 1.5 { return 5 }
+    if pickFloat(false, 1.5, 2.5) != 2.5 { return 6 }
+    return 0
+}
+"#;
+    let (mut amir, tc) = compile_src(src);
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimization failed");
+    let ir = emit_llvm_ir(&amir, &tc.symbols, &*tc.type_info).expect("LLVM emission failed");
+    assert!(
+        ir.contains("select i1 "),
+        "expected select i1 in LLVM IR:\n{ir}"
+    );
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}
+
+#[test]
+fn cold_likely_unlikely_and_tail_call_ir() {
+    let source = r#"
+module std.core.branch_hint_test
+
+extern "arandu-intrinsic" {
+    func likely(cond: bool): bool
+    func unlikely(cond: bool): bool
+}
+
+@Cold
+func slow_path(x: int): int {
+    return x + 100
+}
+
+func step_b(n: int, acc: int): int {
+    if n <= 0 {
+        return acc
+    }
+    return step_a(n - 1, acc + 2)
+}
+
+func step_a(n: int, acc: int): int {
+    if n <= 0 {
+        return acc
+    }
+    return step_b(n - 1, acc + 1)
+}
+
+func classify(x: int): int {
+    if unlikely(x < 0) {
+        return slow_path(x)
+    }
+    if likely(x >= 0) {
+        return step_a(x, 0)
+    }
+    return -1
+}
+
+func main(): int {
+    if classify(-5) != 95 { return 1 }
+    if classify(4) != 6 { return 2 }
+    return 0
+}
+"#;
+    let (mut amir, tc) = compile_src(source);
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimization failed");
+    let ir = emit_llvm_ir(&amir, &tc.symbols, &*tc.type_info).expect("LLVM emission failed");
+    assert!(
+        ir.contains("@llvm.expect.i1"),
+        "expected @llvm.expect.i1 in LLVM IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("cold nounwind"),
+        "expected cold function attribute on @Cold function in LLVM IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("tail call "),
+        "expected tail call on mutual tail-recursive calls in LLVM IR:\n{ir}"
+    );
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}
+
+#[test]
+fn simd_bitmask_and_load_unaligned_ir_and_execute() {
+    let source = r#"
+module std.core.simd
+
+extern "arandu-intrinsic" {
+    func addressOfShared<T>(value: ref T): ptr[T]
+    func sliceFromRaw<Owner, T>(owner: ref Owner, data: ptr[T], len: usize): []T
+    func simdU8x16Bitmask(vector: U8x16): u32
+    func simdU8x16LoadUnaligned(source: []u8): U8x16
+}
+
+public struct U8x16 {}
+
+func main(): int {
+    let buf: [17]u8 = [
+        0 as u8,
+        0x80 as u8, 0x01 as u8, 0xFF as u8, 0x7F as u8,
+        0x00 as u8, 0x85 as u8, 0x10 as u8, 0x90 as u8,
+        0x00 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8,
+        0x00 as u8, 0x00 as u8, 0x00 as u8, 0x81 as u8,
+    ]
+    let unaligned = unsafe {
+        let p = addressOfShared<u8>(ref buf[1])
+        sliceFromRaw<[17]u8, u8>(ref buf, p, 16 as usize)
+    }
+    let loaded = unsafe { simdU8x16LoadUnaligned(unaligned) }
+    let mask = simdU8x16Bitmask(loaded)
+    if mask != (32933 as u32) { return 1 }
+    return 0
+}
+"#;
+    let (mut amir, tc) = compile_src(source);
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimization failed");
+    let ir = emit_llvm_ir(&amir, &tc.symbols, &*tc.type_info).expect("LLVM emission failed");
+    assert!(
+        ir.contains("load <16 x i8>, ptr ") && ir.contains(", align 1"),
+        "expected unaligned align 1 vector load in LLVM IR:\n{ir}"
+    );
+    assert!(
+        !ir.contains("load <16 x i8>, ptr ") || !ir.contains(", align 16"),
+        "must not emit align 16 on unaligned vector load:\n{ir}"
+    );
+    assert!(
+        ir.contains("icmp slt <16 x i8>") && ir.contains("bitcast <16 x i1>"),
+        "expected vector bitmask lowering in LLVM IR:\n{ir}"
+    );
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}
+
+#[test]
+fn option_none_branch_does_not_drop_uninitialized_payload() {
+    let source = r#"
+struct Resource {
+    closed: int
+}
+@Destructor
+func Resource.close(own self): void {
+    // If called on an uninitialized payload, this would trap or access garbage
+}
+
+func testNone(): int {
+    let opt: Option<Resource> = Option.None
+    if opt is Option.Some(s) {
+        return 1
+    } else {
+        return 0
+    }
+}
+func main(): int {
+    return testNone()
+}
+"#;
+    let ir = emit(source);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli failed on None branch:\n{ir}");
+    }
+    let (amir, tc) = compile_src(source);
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}
+
+#[test]
+fn mut_ref_pattern_binding_in_if_is_compiles_and_runs() {
+    let source = r#"
+struct Node {
+    value: int
+}
+
+func update(node: mut ref Node): int {
+    let opt: Option<mut ref Node> = Option.Some(node)
+    if opt is Option.Some(r) {
+        r.value = 42
+        return r.value
+    }
+    return 0
+}
+
+func main(): int {
+    let mut n = Node { value: 10 }
+    if update(mut ref n) != 42 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let ir = emit(source);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli failed on mut ref pattern binding:\n{ir}");
+    }
+    let (amir, tc) = compile_src(source);
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}
+
+#[test]
+fn float_to_from_bits_direct_ir() {
+    let source = r#"
+module std.core.floatBitsTest
+
+extern "arandu-intrinsic" {
+    func f64ToBits(value: f64): u64
+    func f64FromBits(bits: u64): f64
+    func f32ToBits(value: f32): u32
+    func f32FromBits(bits: u32): f32
+}
+
+func main(): int {
+    let original: f64 = 42.5
+    let bits: u64 = f64ToBits(original)
+    let back: f64 = f64FromBits(bits)
+    if back != 42.5 {
+        return 1
+    }
+
+    let orig32: f32 = 13.25
+    let bits32: u32 = f32ToBits(orig32)
+    let back32: f32 = f32FromBits(bits32)
+    if back32 != 13.25 {
+        return 2
+    }
+    return 0
+}
+"#;
+    let ir = emit(source);
+    assert!(ir.contains("bitcast double"));
+    assert!(ir.contains("to i64"));
+    assert!(ir.contains("bitcast i64"));
+    assert!(ir.contains("to double"));
+    assert!(ir.contains("bitcast float"));
+    assert!(ir.contains("to i32"));
+    assert!(ir.contains("bitcast i32"));
+    assert!(ir.contains("to float"));
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli failed on float bitcasts:\n{ir}");
+    }
+}
+
+#[test]
+fn cold_trap_branch_weights_direct_ir() {
+    let source = r#"
+module std.core.trapWeightTest
+
+func check_index(xs: []int, idx: int): int {
+    return xs[idx]
+}
+
+func main(): int {
+    return 0
+}
+"#;
+    let ir = emit(source);
+    assert!(
+        ir.contains("!prof !"),
+        "expected !prof on trap branch in IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("!\"branch_weights\", i32 1, i32 1048576"),
+        "expected cold weights in IR:\n{ir}"
+    );
     verify(&ir);
 }

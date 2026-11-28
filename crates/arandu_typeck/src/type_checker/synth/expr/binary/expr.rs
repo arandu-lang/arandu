@@ -123,20 +123,43 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
         | BinaryOp::Gt
         | BinaryOp::LtEqual
         | BinaryOp::GtEqual => {
-            let mut l_id = synth_expr(checker, left_id);
-            let l_ty = checker.resolve(l_id);
-            // A generic constructor such as `Option.None` takes its type
-            // arguments from the other operand.
-            let r_expected = if (!l_ty.is_literal() && l_ty.is_numeric())
-                || matches!(
-                    l_ty,
-                    ArType::Option(_) | ArType::Result(..) | ArType::Nullable(_)
-                ) {
-                Some(l_id)
+            let left_is_nil = matches!(
+                checker.pool.expr(left_id),
+                arandu_parser::ast_pool::ExprKind::Nil
+            );
+            let right_is_nil = matches!(
+                checker.pool.expr(right_id),
+                arandu_parser::ast_pool::ExprKind::Nil
+            );
+            let (mut l_id, mut r_id) = if left_is_nil && !right_is_nil {
+                let r_id = synth_expr(checker, right_id);
+                let r_ty = checker.resolve(r_id);
+                let l_expected =
+                    if matches!(r_ty, ArType::Option(_) | ArType::Ptr(_) | ArType::GenRef) {
+                        Some(r_id)
+                    } else {
+                        None
+                    };
+                let l_id = synth_expr_expected(checker, left_id, l_expected);
+                (l_id, r_id)
             } else {
-                None
+                let l_id = synth_expr(checker, left_id);
+                let l_ty = checker.resolve(l_id);
+                // A generic constructor such as `Option.None` takes its type
+                // arguments from the other operand.
+                let r_expected = if (!l_ty.is_literal() && l_ty.is_numeric())
+                    || matches!(
+                        l_ty,
+                        ArType::Option(_) | ArType::Result(..) | ArType::Ptr(_) | ArType::GenRef
+                    ) {
+                    Some(l_id)
+                } else {
+                    None
+                };
+                let r_id = synth_expr_expected(checker, right_id, r_expected);
+                (l_id, r_id)
             };
-            let mut r_id = synth_expr_expected(checker, right_id, r_expected);
+            let l_ty = checker.resolve(l_id);
             let r_ty = checker.resolve(r_id);
 
             if l_ty.is_literal() && !r_ty.is_literal() && r_ty.is_numeric() {
@@ -181,12 +204,12 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
                 (None, None) => {}
             }
 
-            (l_id, r_id)
+            view_compared_text(checker, (left_id, right_id), (l_id, r_id))
         }
         BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
-            let range_elem_expected = expected.and_then(|exp_id| match checker.resolve(exp_id) {
-                ArType::Range(inner) => Some(inner),
-                _ => None,
+            let range_elem_expected = expected.and_then(|exp_id| {
+                super::super::range::range_parts(checker, &checker.resolve(exp_id))
+                    .map(|(element, _)| element)
             });
             let mut l_id = synth_expr_expected(checker, left_id, range_elem_expected);
             let l_ty = checker.resolve(l_id);
@@ -255,5 +278,31 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
         }
     };
 
+    let left_ty_id = checker.settle_operand(left_ty_id, Some(right_ty_id));
+    let right_ty_id = checker.settle_operand(right_ty_id, Some(left_ty_id));
     super::result::synth_binary_result(checker, op, operands, (left_ty_id, right_ty_id), span)
+}
+
+/// A `String` compared with text is compared as its `str` view, as Rust's
+/// `String == &str`; the value outlives the comparison.
+fn view_compared_text(
+    checker: &mut TypeChecker<'_>,
+    operands: (ExprId, ExprId),
+    types: (TypeId, TypeId),
+) -> (TypeId, TypeId) {
+    use super::super::text::{adjust_text_view, is_text};
+    let left = checker.resolve(types.0);
+    let right = checker.resolve(types.1);
+    if !is_text(checker, &left) || !is_text(checker, &right) {
+        return types;
+    }
+    let str_id = checker.intern(ArType::Primitive(Primitive::Str));
+    let view = |checker: &mut TypeChecker<'_>, expr: ExprId, ty: TypeId| {
+        checker.text_view_sites.insert(expr);
+        adjust_text_view(checker, expr, ty, str_id).unwrap_or(ty)
+    };
+    (
+        view(checker, operands.0, types.0),
+        view(checker, operands.1, types.1),
+    )
 }

@@ -19,11 +19,12 @@ pub(super) fn llvm_type(
         ArType::Ptr(_)
         | ArType::Ref(_)
         | ArType::RefMut(_)
-        | ArType::Nullable(_)
         | ArType::GenRef
         | ArType::Coroutine(_)
-        | ArType::Err => Ok("ptr".to_owned()),
-        ArType::Void => Ok("void".to_owned()),
+        | ArType::Err
+        // A function value is a code pointer (RFC 0032, L2).
+        | ArType::Func(..) => Ok("ptr".to_owned()),
+        ArType::Void | ArType::Never => Ok("void".to_owned()),
         ArType::Tuple(args) => {
             let items = interner.type_args(*args);
             let fields = items

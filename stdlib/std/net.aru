@@ -41,39 +41,39 @@ import std.core.slice as slice
 
 extern "C" {
     /// Host TCP listener creation for a port.
-    func ar_rt_tcp_listen(port: int): int
+    func ar_rt_tcp_listen(port: i64): i64
     /// Host TCP accept operation on a listener handle.
-    func ar_rt_tcp_accept(listener: int): int
+    func ar_rt_tcp_accept(listener: i64): i64
     /// Host TCP connection operation.
-    func ar_rt_tcp_connect(port: int): int
+    func ar_rt_tcp_connect(port: i64): i64
     /// Host TCP read into a caller-provided buffer.
-    func ar_rt_tcp_read(sock: int, buf: ptr[u8], len: int): int
+    func ar_rt_tcp_read(sock: i64, buf: ptr[u8], len: i64): i64
     /// Host TCP write from a caller-provided buffer.
-    func ar_rt_tcp_write(sock: int, buf: ptr[u8], len: int): int
+    func ar_rt_tcp_write(sock: i64, buf: ptr[u8], len: i64): i64
     /// Host close operation for a TCP handle.
-    func ar_rt_tcp_close(sock: int): void
+    func ar_rt_tcp_close(sock: i64): void
     /// Host control for nonblocking TCP mode.
-    func ar_rt_tcp_set_nonblocking(sock: int, flag: int): int
+    func ar_rt_tcp_set_nonblocking(sock: i64, flag: i64): i64
     /// Host wait for TCP readiness or timeout.
-    func ar_rt_tcp_wait(sock: int, events: int, timeout_ms: int): int
+    func ar_rt_tcp_wait(sock: i64, events: i64, timeout_ms: i64): i64
     /// Host readiness wait that signals a waker.
-    func ar_rt_tcp_wait_wake(sock: int, events: int, timeout_ms: int, waker_id: int): int
+    func ar_rt_tcp_wait_wake(sock: i64, events: i64, timeout_ms: i64, waker_id: i64): i64
     /// Host asynchronous TCP read bridge.
-    func ar_rt_tcp_read_async(sock: int, buf: ptr[u8], len: int): int
+    func ar_rt_tcp_read_async(sock: i64, buf: ptr[u8], len: i64): i64
     /// Host asynchronous TCP write bridge.
-    func ar_rt_tcp_write_async(sock: int, buf: ptr[u8], len: int): int
+    func ar_rt_tcp_write_async(sock: i64, buf: ptr[u8], len: i64): i64
 }
 
 /// experimental — not Minimal 0.1
 public struct RawTcpListener {
     /// Opaque host handle.
-    id: int
+    id: i64
 }
 
 /// experimental — not Minimal 0.1
 public struct RawTcpStream {
     /// Opaque host handle.
-    id: int
+    id: i64
 }
 
 /// Wait flags for `tcpWait` / `tcpWaitWake` (bit0=read, bit1=write).
@@ -96,7 +96,7 @@ public func RawTcpListener.listen(port: int): RawTcpListener {
 
 func tcpListen(port: int): RawTcpListener {
     unsafe {
-        return RawTcpListener { id: ar_rt_tcp_listen(port) }
+        return RawTcpListener { id: ar_rt_tcp_listen(port as i64) }
     }
 }
 
@@ -129,7 +129,7 @@ public func RawTcpStream.connect(port: int): RawTcpStream {
 
 func tcpConnect(port: int): RawTcpStream {
     unsafe {
-        return RawTcpStream { id: ar_rt_tcp_connect(port) }
+        return RawTcpStream { id: ar_rt_tcp_connect(port as i64) }
     }
 }
 
@@ -154,7 +154,7 @@ func tcpRead(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
         return 0
     }
     unsafe {
-        return ar_rt_tcp_read(s.id, buf, len)
+        return ar_rt_tcp_read(s.id, buf, len as i64) as int
     }
 }
 
@@ -177,7 +177,7 @@ func tcpWrite(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
         return 0
     }
     unsafe {
-        return ar_rt_tcp_write(s.id, buf, len)
+        return ar_rt_tcp_write(s.id, buf, len as i64) as int
     }
 }
 
@@ -201,7 +201,7 @@ func tcpReadAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
         return 0
     }
     unsafe {
-        return ar_rt_tcp_read_async(s.id, buf, len)
+        return ar_rt_tcp_read_async(s.id, buf, len as i64) as int
     }
 }
 
@@ -224,7 +224,7 @@ func tcpWriteAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
         return 0
     }
     unsafe {
-        return ar_rt_tcp_write_async(s.id, buf, len)
+        return ar_rt_tcp_write_async(s.id, buf, len as i64) as int
     }
 }
 
@@ -238,7 +238,7 @@ public func RawTcpStream.setNonblocking(self: ref RawTcpStream, flag: int): int 
 
 func tcpSetNonblocking(s: ref RawTcpStream, flag: int): int {
     unsafe {
-        return ar_rt_tcp_set_nonblocking(s.id, flag)
+        return ar_rt_tcp_set_nonblocking(s.id, flag as i64) as int
     }
 }
 
@@ -252,7 +252,7 @@ public func RawTcpStream.wait(self: ref RawTcpStream, events: int, timeoutMs: in
 
 func tcpWait(s: ref RawTcpStream, events: int, timeoutMs: int): int {
     unsafe {
-        return ar_rt_tcp_wait(s.id, events, timeoutMs)
+        return ar_rt_tcp_wait(s.id, events as i64, timeoutMs as i64) as int
     }
 }
 
@@ -266,7 +266,7 @@ public func RawTcpStream.waitWake(self: ref RawTcpStream, events: int, timeoutMs
 
 func tcpWaitWake(s: ref RawTcpStream, events: int, timeoutMs: int, w: ref waker.Waker): int {
     unsafe {
-        return ar_rt_tcp_wait_wake(s.id, events, timeoutMs, w.id)
+        return ar_rt_tcp_wait_wake(s.id, events as i64, timeoutMs as i64, w.id) as int
     }
 }
 
@@ -399,8 +399,8 @@ public func TcpStream.read(self: mut ref TcpStream, buf: mut []u8): Result<usize
     return Result.Ok(n as usize)
 }
 
-/// Reads up to the buffer slice length without double indirection.
-public func TcpStream.readSlice(self: mut ref TcpStream, buf: []u8): Result<usize, io.IoError> {
+/// Reads up to the mutable buffer slice length without double indirection.
+public func TcpStream.readSlice(self: mut ref TcpStream, buf: mut []u8): Result<usize, io.IoError> {
     let len = slice.len<u8>(buf)
     if len == (0 as usize) {
         return Result.Ok(0 as usize)
@@ -521,7 +521,7 @@ public struct UdpPacket {
 }
 
 /// Receives a single datagram message on the socket into `buf`.
-public func UdpSocket.recvFrom(self: mut ref UdpSocket, buf: []u8): Result<usize, io.IoError> {
+public func UdpSocket.recvFrom(self: mut ref UdpSocket, buf: mut []u8): Result<usize, io.IoError> {
     let len = slice.len<u8>(buf)
     let mut senderPort: int = 0
     unsafe {
@@ -529,7 +529,7 @@ public func UdpSocket.recvFrom(self: mut ref UdpSocket, buf: []u8): Result<usize
             self.id,
             slice.asPtr<u8>(buf),
             len,
-            &mut senderPort
+            mut ref senderPort
         )
         if recvd < 0 {
             return Result.Err(io.IoError.new(io.IoErrorKind.Other, recvd))
@@ -545,7 +545,7 @@ public func UdpSocket.lastPeerPort(self: ref UdpSocket): int {
 }
 
 /// Receives a datagram into `buf`, returning a structured `UdpPacket` with bytes read and peer port.
-public func UdpSocket.recvPacket(self: mut ref UdpSocket, buf: []u8): Result<UdpPacket, io.IoError> {
+public func UdpSocket.recvPacket(self: mut ref UdpSocket, buf: mut []u8): Result<UdpPacket, io.IoError> {
     match self.recvFrom(buf) {
         Result.Ok(n) => {
             return Result.Ok(UdpPacket {
@@ -579,7 +579,8 @@ func UdpSocket.destroy(self: own UdpSocket): void {
     }
 }
 
-/// Resolves a hostname into an IP address string via host system DNS.
+/// Validates a host through system DNS and preserves its input text in the
+/// returned address. Socket operations resolve hostnames when they use them.
 public func resolveHost(name: str): Result<SocketAddr, io.IoError> {
     let bytes = intrinsics.strBytes(name)
     unsafe {
@@ -593,15 +594,6 @@ public func resolveHost(name: str): Result<SocketAddr, io.IoError> {
         if ret < 0 {
             return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, ret))
         }
-        if ret == 9 {
-            return Result.Ok(SocketAddr.new("127.0.0.1", 0))
-        }
-        if ret == 3 {
-            return Result.Ok(SocketAddr.new("::1", 0))
-        }
-        if ret == 7 {
-            return Result.Ok(SocketAddr.new("0.0.0.0", 0))
-        }
-        return Result.Ok(SocketAddr.new("127.0.0.1", 0))
+        return Result.Ok(SocketAddr.new(name, 0))
     }
 }

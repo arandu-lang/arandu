@@ -60,6 +60,22 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             4,
         );
 
+        // Zero the 8-byte payload slot at +8 whenever the payload is smaller than
+        // 8 bytes (including `void`) so `ar_co_poll_i64` never reads uninitialized
+        // heap/stack bytes from +12..+16.
+        if layout.size < 8 {
+            let zero_payload = self
+                .builder
+                .ins()
+                .iconst(cranelift_codegen::ir::types::I64, 0);
+            self.builder.ins().store(
+                cranelift_codegen::ir::MemFlagsData::new(),
+                zero_payload,
+                ptr_val,
+                8,
+            );
+        }
+
         let clif_ty = match crate::types::clif_type(&payload_ar, self.ptr_type) {
             crate::types::ClifType::Concrete(t) => t,
             crate::types::ClifType::Void => {

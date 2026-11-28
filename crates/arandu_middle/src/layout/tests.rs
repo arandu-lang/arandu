@@ -421,16 +421,16 @@ fn test_func_layout() {
 }
 
 #[test]
-fn test_nullable_layout_is_pointer_handle() {
+fn test_option_ptr_layout_uses_direct_tag_because_ptr_can_be_null() {
     let engine = LayoutEngine::new(8);
     let interner = TypeInterner::new();
     let provider = MockProvider;
     let inner = interner.intern(ArType::Primitive(Primitive::I32));
-    let nullable = ArType::Nullable(inner);
-    let tid = interner.intern(nullable);
+    let ptr_inner = interner.intern(ArType::Ptr(inner));
+    let opt = ArType::Option(ptr_inner);
+    let tid = interner.intern(opt);
     let layout = engine.layout_of(tid, &interner, &provider);
-    // Handle ABI: always pointer-sized (null vs box/object ptr).
-    assert_eq!(layout.size, 8);
+    assert_eq!(layout.size, 16);
     assert_eq!(layout.align, 8);
 }
 
@@ -1081,6 +1081,26 @@ fn test_niche_layout_option_ref_vs_val() {
             tagged_variant: 0,
         })
     );
+
+    // Option<mut ref i32> and Option<(i32) -> i32> also get 1-word null-niche layout.
+    let ref_mut_i32_tid = interner.intern(ArType::RefMut(i32_tid));
+    let opt_ref_mut_tid = interner.intern(ArType::Option(ref_mut_i32_tid));
+    let layout_ref_mut = engine_64.layout_of(opt_ref_mut_tid, &interner, &provider);
+    assert_eq!(layout_ref_mut.size, 8);
+    assert!(matches!(
+        layout_ref_mut.tag_encoding,
+        Some(TagEncoding::Niche { .. })
+    ));
+
+    let fn_ty = ArType::func(&[i32_tid], i32_tid, &interner);
+    let fn_tid = interner.intern(fn_ty);
+    let opt_fn_tid = interner.intern(ArType::Option(fn_tid));
+    let layout_fn = engine_64.layout_of(opt_fn_tid, &interner, &provider);
+    assert_eq!(layout_fn.size, 8);
+    assert!(matches!(
+        layout_fn.tag_encoding,
+        Some(TagEncoding::Niche { .. })
+    ));
 }
 
 #[test]
@@ -1397,4 +1417,70 @@ fn hardware_vectors_keep_16_byte_layout_in_32_bit_and_packed_scalar_abis() {
             assert_eq!((layout.size, layout.align), (48, 16));
         }
     }
+}
+
+#[test]
+fn non_null_wrapper_grants_one_word_null_niche_recursively() {
+    struct NonNullProvider {
+        non_null_sym: SymbolId,
+        box_sym: SymbolId,
+        non_null_fields: StructFields,
+        box_fields: StructFields,
+    }
+    impl StructLayoutProvider for NonNullProvider {
+        fn get_struct_fields(&self, struct_id: SymbolId) -> Option<&StructFields> {
+            if struct_id == self.non_null_sym {
+                Some(&self.non_null_fields)
+            } else if struct_id == self.box_sym {
+                Some(&self.box_fields)
+            } else {
+                None
+            }
+        }
+        fn get_generic_params(&self, _struct_id: SymbolId) -> Option<&[SymbolId]> {
+            None
+        }
+        fn get_enum_variants(&self, _enum_id: SymbolId) -> Option<Vec<EnumPayloadShape>> {
+            None
+        }
+        fn is_non_null_type(&self, sym: SymbolId) -> bool {
+            sym == self.non_null_sym
+        }
+    }
+
+    let engine = LayoutEngine::new(8);
+    let interner = TypeInterner::new();
+    let non_null_sym = SymbolId::new(0, 10);
+    let box_sym = SymbolId::new(0, 11);
+    let u8_ty = interner.intern(ArType::Primitive(Primitive::U8));
+    let raw_ptr = interner.intern(ArType::Ptr(u8_ty));
+    let non_null_ty = ArType::named(non_null_sym, &[], &interner);
+    let non_null_id = interner.intern(non_null_ty.clone());
+    let provider = NonNullProvider {
+        non_null_sym,
+        box_sym,
+        non_null_fields: StructFields::from_entries([StructFieldInfo {
+            name: "pointer".into(),
+            symbol: None,
+            ty: raw_ptr,
+            index: 0,
+        }]),
+        box_fields: StructFields::from_entries([StructFieldInfo {
+            name: "data".into(),
+            symbol: None,
+            ty: non_null_id,
+            index: 0,
+        }]),
+    };
+
+    let box_ty = ArType::named(box_sym, &[], &interner);
+    let box_id = interner.intern(box_ty.clone());
+    assert!(engine.0.has_null_niche(&non_null_ty, &interner, &provider));
+    assert!(engine.0.has_null_niche(&box_ty, &interner, &provider));
+    let opt_box = engine.layout_of(
+        interner.intern(ArType::Option(box_id)),
+        &interner,
+        &provider,
+    );
+    assert_eq!((opt_box.size, opt_box.align), (8, 8));
 }

@@ -49,6 +49,9 @@ impl super::LayoutEngine {
             },
             ArType::Vector(_) => TypeLayout::simple(16, 16),
             ArType::IntLiteral => TypeLayout::simple(4, 4),
+            // An unresolved inference variable has no layout; type checking
+            // resolves every one before layout is asked for.
+            ArType::Infer(_) => return Err(LayoutError::UnknownType),
             ArType::FloatLiteral => {
                 let f = self.data_layout.float;
                 TypeLayout::simple(f.size, f.abi_align)
@@ -62,7 +65,7 @@ impl super::LayoutEngine {
             }
             // Error has a recovery-only zero layout for existing IDE callers;
             // executable lowering rejects erroneous type-check results first.
-            ArType::Void | ArType::Error => TypeLayout::simple(0, 1),
+            ArType::Void | ArType::Never | ArType::Error => TypeLayout::simple(0, 1),
             ArType::Ref(inner) | ArType::RefMut(inner)
                 if interner.with_type(*inner, |inner| {
                     matches!(inner, ArType::Slice(_) | ArType::MutSlice(_))
@@ -84,13 +87,6 @@ impl super::LayoutEngine {
                 field_offsets: vec![0, 4],
                 tag_encoding: None,
             },
-            ArType::Nullable(_) => {
-                // Nullable is always a null-or-pointer handle (box for scalars;
-                // heap object pointer for Named/etc.). Never stores the payload
-                // inline — avoids `int? = 0` colliding with `nil`.
-                let p = self.data_layout.pointer;
-                TypeLayout::simple(p.size, p.abi_align)
-            }
             ArType::Slice(_) | ArType::MutSlice(_) => self.fat_pointer_layout(),
             ArType::Array(len, inner) => {
                 let inner_layout = self.layout_of_type_inner(
@@ -184,52 +180,69 @@ impl super::LayoutEngine {
                         });
                     }
 
-                    if provider.is_repr_c(*symbol_id) {
-                        items.sort_by_key(|item| item.orig_index);
-                    } else {
-                        // A4.0: Sort by descending alignment, then descending size,
-                        // with original declaration index as a deterministic tie-breaker.
-                        items.sort_by_key(|item| {
-                            (
-                                std::cmp::Reverse(item.layout.align),
-                                std::cmp::Reverse(item.layout.size),
-                                item.orig_index,
-                            )
-                        });
-                    }
-
-                    let mut current_offset = 0;
-                    let mut max_align = 1;
-                    let mut field_offsets = vec![0u64; items.len()];
-
-                    for item in items {
-                        max_align = max_align.max(item.layout.align);
-                        current_offset = self.align_up(
-                            current_offset,
-                            item.layout.align,
-                            LayoutOperation::FieldOffset,
-                        )?;
-                        if item.orig_index < field_offsets.len() {
-                            field_offsets[item.orig_index] = current_offset;
+                    if provider.is_union(*symbol_id) {
+                        let mut max_align = 1;
+                        let mut max_size = 0;
+                        for item in &items {
+                            max_align = max_align.max(item.layout.align);
+                            max_size = max_size.max(item.layout.size);
                         }
-                        current_offset = self.checked_add(
+                        let total_size =
+                            self.align_up(max_size, max_align, LayoutOperation::AggregatePadding)?;
+                        TypeLayout {
+                            size: total_size,
+                            align: max_align,
+                            field_offsets: vec![0u64; items.len()],
+                            tag_encoding: None,
+                        }
+                    } else {
+                        if provider.is_repr_c(*symbol_id) {
+                            items.sort_by_key(|item| item.orig_index);
+                        } else {
+                            // A4.0: Sort by descending alignment, then descending size,
+                            // with original declaration index as a deterministic tie-breaker.
+                            items.sort_by_key(|item| {
+                                (
+                                    std::cmp::Reverse(item.layout.align),
+                                    std::cmp::Reverse(item.layout.size),
+                                    item.orig_index,
+                                )
+                            });
+                        }
+
+                        let mut current_offset = 0;
+                        let mut max_align = 1;
+                        let mut field_offsets = vec![0u64; items.len()];
+
+                        for item in items {
+                            max_align = max_align.max(item.layout.align);
+                            current_offset = self.align_up(
+                                current_offset,
+                                item.layout.align,
+                                LayoutOperation::FieldOffset,
+                            )?;
+                            if item.orig_index < field_offsets.len() {
+                                field_offsets[item.orig_index] = current_offset;
+                            }
+                            current_offset = self.checked_add(
+                                current_offset,
+                                item.layout.size,
+                                LayoutOperation::FieldOffset,
+                            )?;
+                        }
+
+                        let total_size = self.align_up(
                             current_offset,
-                            item.layout.size,
-                            LayoutOperation::FieldOffset,
+                            max_align,
+                            LayoutOperation::AggregatePadding,
                         )?;
-                    }
 
-                    let total_size = self.align_up(
-                        current_offset,
-                        max_align,
-                        LayoutOperation::AggregatePadding,
-                    )?;
-
-                    TypeLayout {
-                        size: total_size,
-                        align: max_align,
-                        field_offsets,
-                        tag_encoding: None,
+                        TypeLayout {
+                            size: total_size,
+                            align: max_align,
+                            field_offsets,
+                            tag_encoding: None,
+                        }
                     }
                 } else if let Some(mut variants) = provider.get_enum_variants_for_type(ty, interner)
                 {

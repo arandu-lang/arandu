@@ -114,8 +114,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 if is_float {
                     self.builder.ins().fdiv(lhs, rhs)
                 } else if is_unsigned {
+                    self.check_divisor(lhs, rhs, false, true);
                     self.builder.ins().udiv(lhs, rhs)
                 } else {
+                    self.check_divisor(lhs, rhs, true, true);
                     self.builder.ins().sdiv(lhs, rhs)
                 }
             }
@@ -128,8 +130,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let call_inst = self.builder.ins().call(local_ref, &[lhs, rhs]);
                     self.builder.inst_results(call_inst)[0]
                 } else if is_unsigned {
+                    self.check_divisor(lhs, rhs, false, false);
                     self.builder.ins().urem(lhs, rhs)
                 } else {
+                    self.check_divisor(lhs, rhs, true, false);
                     self.builder.ins().srem(lhs, rhs)
                 }
             }

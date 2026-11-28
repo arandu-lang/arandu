@@ -185,15 +185,20 @@ pub enum ExprKind {
     Try {
         expr: ExprId,
     },
+    /// `f(a) { body }` is `f(a, () => { body })`: a trailing block is the
+    /// last argument, a closure without parameters (Kotlin, Swift).
     Call {
         callee: ExprId,
         args: IndexRange,
-        trailing_block: Option<BlockId>,
     }, // expr_ids range
     StructLiteral {
         ty: TypeExprId,
         fields: IndexRange,
     }, // field_init_ids range
+    /// `(a, b)`: two or more values.
+    Tuple {
+        items: IndexRange,
+    },
     Array {
         items: IndexRange,
     }, // expr_ids range
@@ -269,6 +274,9 @@ pub enum ExprKind {
         value: u8,
     },
     ByteString {
+        bytes: std::sync::Arc<[u8]>,
+    },
+    CString {
         bytes: std::sync::Arc<[u8]>,
     },
     InterpolatedString {
@@ -403,6 +411,20 @@ impl AstPool {
         self.type_exprs.push(ty);
         self.type_expr_spans.push(span);
         id
+    }
+
+    /// The closure `() => { block }` a trailing block call passes last.
+    pub fn alloc_trailing_lambda(&mut self, block: Block) -> ExprId {
+        let span = block.span;
+        let params = self.alloc_lambda_param_list(&[]);
+        self.alloc_expr(
+            ExprKind::Lambda {
+                params,
+                body: super::LambdaBody::Block { span, block },
+                is_move: false,
+            },
+            span,
+        )
     }
 
     pub fn alloc_block(&mut self, block: Block) -> BlockId {

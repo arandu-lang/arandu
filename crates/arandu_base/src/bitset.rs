@@ -38,6 +38,12 @@ impl<I: IdIndex> BitSet<I> {
         }
     }
 
+    /// Returns the underlying 64-bit word slice.
+    #[must_use]
+    pub fn words(&self) -> &[u64] {
+        &self.words
+    }
+
     /// Creates a new `BitSet` with all bits from 0 to `capacity` set to 1.
     #[must_use]
     pub fn all_set(capacity: usize) -> Self {

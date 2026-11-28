@@ -4,10 +4,10 @@ use crate::{ArandCompilerDb, SourceFile, StableHash};
 use arandu_middle::types::FunctionInstance;
 use arandu_middle::SymbolId;
 
-/// A synthesized `ThreadJob.run` has no AST declaration. Its body is the
-/// closure, rewritten so each capture is `self.field`. Ordinary functions
-/// never enter this query path.
-pub(super) fn thread_capture_function_hir(
+/// A synthesized closure method (`run` or `call`) has no AST declaration.
+/// Its body is the lambda, wrapped in one destructuring of `self`.
+/// Ordinary functions never enter this query path.
+pub(super) fn closure_function_hir(
     db: &dyn ArandCompilerDb,
     file: SourceFile,
     symbol: SymbolId,
@@ -15,22 +15,20 @@ pub(super) fn thread_capture_function_hir(
     let typed = crate::passes::type_check(db, file);
     let parsed = parse(db, file);
     let mut fingerprint = blake3::Hasher::new();
-    fingerprint.update(b"FunctionHir/v1-thread-capture");
+    fingerprint.update(b"FunctionHir/v2-closure");
     fingerprint.update(&symbol.file_id.to_le_bytes());
     fingerprint.update(&symbol.local_id.0.to_le_bytes());
     fingerprint.update(typed.stable_hash().as_bytes());
     let mut checked = (**typed).clone();
     let mut diagnostics = Vec::new();
     let hir = match parsed.as_ref() {
-        Ok(program) => {
-            match arandu_semantics::lower_thread_capture_hir(&mut checked, program, symbol) {
-                Ok(hir) => Some(hir),
-                Err(errors) => {
-                    diagnostics = errors;
-                    None
-                }
+        Ok(program) => match arandu_semantics::lower_closure_hir(&mut checked, program, symbol) {
+            Ok(hir) => Some(hir),
+            Err(errors) => {
+                diagnostics = errors;
+                None
             }
-        }
+        },
         Err(_) => None,
     };
     HashEq::new(PreparedHir {
@@ -64,6 +62,6 @@ pub(super) fn import_synthetic_captures(
         let typed = crate::passes::type_check(db, source);
         fingerprint.update(&file_id.to_le_bytes());
         fingerprint.update(crate::StableHash::stable_hash(typed).as_bytes());
-        arandu_typeck::type_checker::info::import_thread_captures(checked, typed);
+        arandu_typeck::type_checker::info::import_closures(checked, typed);
     }
 }

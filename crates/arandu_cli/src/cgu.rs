@@ -133,6 +133,16 @@ pub fn compile_partitioned(
             })
             .collect::<Vec<_>>()
     };
+    // `static mut` data lives in one unit of its own.
+    let mut units = units;
+    if !program.statics.is_empty() {
+        units.push(arandu_backend_cranelift::statics_unit(
+            program,
+            type_info,
+            target,
+            toolchain_fingerprint,
+        ));
+    }
     let mut object_files = Vec::with_capacity(units.len());
     let mut recompiled_units = Vec::new();
     let mut cached_count = 0;

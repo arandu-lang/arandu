@@ -1,4 +1,9 @@
-# Arandu
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/arandu-lockup-escuro.svg">
+    <img src=".github/assets/arandu-lockup-claro.svg" alt="Arandu" width="360">
+  </picture>
+</h1>
 
 <p align="center">
   <strong>A safe, fast, and ergonomic systems programming language.</strong>
@@ -327,7 +332,8 @@ Every change to the compiler must satisfy the canonical validation suite:
 cargo fmt --all -- --check
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --locked
+cargo nextest run --workspace --locked --profile verification --test-threads 2
+# CI usa `cargo test --workspace --locked`; nextest é o gate local.
 cargo run --locked -p xtask -- check-diag-docs
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo run --locked -p xtask -- check-architecture

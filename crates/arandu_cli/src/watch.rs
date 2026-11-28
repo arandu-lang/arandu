@@ -224,7 +224,7 @@ fn print_check(
     flags: &ProjectFlags,
 ) {
     let filepath = entry.path(db).to_string_lossy().into_owned();
-    let diags = match crate::pipeline::pipeline_lower_checked(db, entry) {
+    let diags = match crate::pipeline::pipeline_lower_checked(db, entry, flags.warnings_as_errors) {
         Ok(outcome) => outcome.diagnostics,
         Err(diagnostics) => diagnostics,
     };

@@ -98,12 +98,15 @@ pub(super) fn independent_string_result(function: &AmirFunc, interner: &TypeInte
                                 )
                         }
                         AmirRvalue::VectorSelect { .. }
+                        | AmirRvalue::Select { .. }
                         | AmirRvalue::VectorCompare { .. }
                         | AmirRvalue::VectorOp { .. }
                         | AmirRvalue::VectorSplat { .. }
                         | AmirRvalue::VectorShuffle { .. }
                         | AmirRvalue::VectorExtractLane { .. }
                         | AmirRvalue::VectorInsertLane { .. }
+                        | AmirRvalue::VectorBitmask { .. }
+                        | AmirRvalue::VectorLoadUnaligned { .. }
                         | AmirRvalue::Binary { .. }
                         | AmirRvalue::Unary { .. }
                         | AmirRvalue::FieldAccess { .. }
@@ -132,7 +135,10 @@ pub(super) fn independent_string_result(function: &AmirFunc, interner: &TypeInte
                         | AmirRvalue::GenGet { .. }
                         | AmirRvalue::GenSet { .. }
                         | AmirRvalue::GenUpsert { .. }
-                        | AmirRvalue::GenRemove { .. } => false,
+                        | AmirRvalue::GenRemove { .. }
+                        | AmirRvalue::ArenaAlloc { .. }
+                        | AmirRvalue::ArenaCheckpoint
+                        | AmirRvalue::StaticAddr(_) => false,
                     };
                     if !proven {
                         return false;
@@ -160,6 +166,7 @@ pub(super) fn independent_string_result(function: &AmirFunc, interner: &TypeInte
                 }
                 Some(
                     AmirStmt::Free(_)
+                    | AmirStmt::ArenaRewind(_)
                     | AmirStmt::StorageLive(_)
                     | AmirStmt::StorageDead(_)
                     | AmirStmt::Nop,

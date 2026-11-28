@@ -24,7 +24,7 @@ use tracing::trace;
 use crate::artifact;
 use crate::cli_error::CliFailure;
 
-const ELF_LAYOUT_SCHEMA: u32 = 3;
+const ELF_LAYOUT_SCHEMA: u32 = 4;
 
 #[cfg(target_os = "linux")]
 struct PreparedPatch {
@@ -59,6 +59,8 @@ pub struct ElfSlot {
     pub code_size: u64,
     pub capacity: u64,
     pub cgu_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eh_frame_hash: Option<String>,
 }
 
 /// Returns whether an untrusted recorded layout proves the exact current CGU
@@ -152,23 +154,27 @@ pub fn record_elf_layout(
             return Ok(());
         }
         let cgu_hash = cgu_hash_from_path(object_path).unwrap_or_default();
+        let eh_frame_hash = eh_frame_hash(&object);
         for symbol in object.symbols() {
             if symbol.is_definition()
                 && symbol.is_global()
                 && symbol.kind() == SymbolKind::Text
                 && let Ok(name) = symbol.name()
             {
-                cgu_info.insert(name.to_owned(), (symbol.size(), cgu_hash.clone()));
+                cgu_info.insert(
+                    name.to_owned(),
+                    (symbol.size(), cgu_hash.clone(), eh_frame_hash.clone()),
+                );
             }
         }
     }
 
     let cgu_hashes = cgu_info
         .iter()
-        .map(|(name, (_, hash))| (name.clone(), hash.clone()))
+        .map(|(name, (_, hash, _))| (name.clone(), hash.clone()))
         .collect();
     let mut function_slots = BTreeMap::new();
-    for (name, (code_size, cgu_hash)) in cgu_info {
+    for (name, (code_size, cgu_hash, eh_frame_hash)) in cgu_info {
         let Some(&vaddr) = global_symbols.get(&name) else {
             continue;
         };
@@ -194,6 +200,7 @@ pub fn record_elf_layout(
                 // Exact-size patches preserve unwind/symbol/layout metadata.
                 capacity: code_size,
                 cgu_hash,
+                eh_frame_hash,
             },
         );
     }
@@ -420,6 +427,7 @@ fn prepare_patches(
         return Ok(None);
     }
 
+    let is_pie = old_elf.kind() == object::ObjectKind::Dynamic;
     let mut prepared = Vec::with_capacity(recompiled_cgus.len());
     for (unit, object_bytes) in recompiled_cgus {
         let Some(slot) = layout.function_slots.get(&unit.name) else {
@@ -438,6 +446,15 @@ fn prepare_patches(
             }
             _ => return Ok(None),
         };
+        // Cranelift AOT emits no unwind tables today; a CGU that gains or
+        // changes them would leave the executable's FDEs stale.
+        if eh_frame_hash(&object) != slot.eh_frame_hash {
+            trace!(
+                "[in-process-elf] unwind metadata (.eh_frame) changed for '{}'",
+                unit.name
+            );
+            return Ok(None);
+        }
         let Some(function) = object.symbols().find(|symbol| {
             symbol.is_definition()
                 && symbol.kind() == SymbolKind::Text
@@ -480,6 +497,13 @@ fn prepare_patches(
                 || relocation_address >= function.address().saturating_add(function.size())
             {
                 continue;
+            }
+            if is_pie && relocation.kind() == RelocationKind::Absolute {
+                trace!(
+                    "[in-process-elf] absolute relocation rejected on PIE executable for '{}'",
+                    unit.name
+                );
+                return Ok(None);
             }
             let Some(relative_offset) = relocation_address.checked_sub(function.address()) else {
                 return Ok(None);
@@ -528,13 +552,19 @@ fn prepare_patches(
                 RelocationTarget::Section(_) | RelocationTarget::Absolute => return Ok(None),
                 _ => return Ok(None),
             };
-            apply_relocation(
+            if !apply_relocation(
                 &mut patch,
                 relocation_offset,
                 slot.vaddr,
                 target_vaddr,
                 relocation,
-            )?;
+            )? {
+                trace!(
+                    "[in-process-elf] unsupported or out-of-range relocation for '{}'",
+                    unit.name
+                );
+                return Ok(None);
+            }
         }
 
         let Some(slot_relative) = slot.vaddr.checked_sub(layout.text_vaddr) else {
@@ -573,18 +603,17 @@ fn apply_relocation(
     function_vaddr: u64,
     target_vaddr: u64,
     relocation: object::Relocation,
-) -> Result<(), CliFailure> {
-    let place_vaddr = function_vaddr
-        .checked_add(u64::try_from(offset).map_err(|_| {
-            CliFailure::operational(
-                "apply ELF relocation",
-                None,
-                "relocation offset does not fit u64",
-            )
-        })?)
-        .ok_or_else(|| {
-            CliFailure::operational("apply ELF relocation", None, "relocation address overflow")
-        })?;
+) -> Result<bool, CliFailure> {
+    let place_vaddr = match function_vaddr.checked_add(u64::try_from(offset).map_err(|_| {
+        CliFailure::operational(
+            "apply ELF relocation",
+            None,
+            "relocation offset does not fit u64",
+        )
+    })?) {
+        Some(vaddr) => vaddr,
+        None => return Ok(false),
+    };
     let value = i128::from(target_vaddr) + i128::from(relocation.addend());
     match relocation.kind() {
         RelocationKind::Relative | RelocationKind::PltRelative | RelocationKind::GotRelative
@@ -592,32 +621,19 @@ fn apply_relocation(
         {
             let displacement = value - i128::from(place_vaddr);
             let Ok(displacement) = i32::try_from(displacement) else {
-                return Err(CliFailure::operational(
-                    "apply ELF relocation",
-                    None,
-                    "32-bit PC-relative relocation is out of range",
-                ));
+                return Ok(false);
             };
-            write_relocation(patch, offset, &displacement.to_le_bytes())
+            write_relocation(patch, offset, &displacement.to_le_bytes())?;
+            Ok(true)
         }
         RelocationKind::Absolute if relocation.size() == 64 => {
             let Ok(value) = u64::try_from(value) else {
-                return Err(CliFailure::operational(
-                    "apply ELF relocation",
-                    None,
-                    "absolute relocation is negative or overflows u64",
-                ));
+                return Ok(false);
             };
-            write_relocation(patch, offset, &value.to_le_bytes())
+            write_relocation(patch, offset, &value.to_le_bytes())?;
+            Ok(true)
         }
-        kind => Err(CliFailure::operational(
-            "apply ELF relocation",
-            None,
-            format!(
-                "unsupported relocation kind {kind:?} with {} bits",
-                relocation.size()
-            ),
-        )),
+        _ => Ok(false),
     }
 }
 
@@ -701,6 +717,11 @@ impl Drop for SharedMapping {
     }
 }
 
+fn eh_frame_hash(object: &object::File<'_>) -> Option<String> {
+    let data = object.section_by_name(".eh_frame")?.data().ok()?;
+    Some(blake3::hash(data).to_hex().to_string())
+}
+
 fn cgu_hash_from_path(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     let (_, hash) = stem.rsplit_once('-')?;
@@ -709,4 +730,35 @@ fn cgu_hash_from_path(path: &Path) -> Option<String> {
 
 fn failure(operation: &'static str, path: &Path, source: impl Into<String>) -> CliFailure {
     CliFailure::operational(operation, Some(path.to_path_buf()), source)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_is_v4_and_records_eh_frame_hash() {
+        assert_eq!(ELF_LAYOUT_SCHEMA, 4);
+
+        let slot = ElfSlot {
+            symbol_name: "test_fn".to_owned(),
+            vaddr: 0x1000,
+            file_offset: 0x1000,
+            code_size: 64,
+            capacity: 64,
+            cgu_hash: "hash".to_owned(),
+            eh_frame_hash: Some("eh_hash".to_owned()),
+        };
+        let encoded = serde_json::to_string(&slot).unwrap();
+        assert!(encoded.contains("eh_frame_hash"));
+        let decoded: ElfSlot = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.eh_frame_hash.as_deref(), Some("eh_hash"));
+    }
+
+    #[test]
+    fn schema_deserializes_missing_eh_frame_hash_as_none() {
+        let json = r#"{"symbol_name":"test","vaddr":4096,"file_offset":4096,"code_size":32,"capacity":32,"cgu_hash":"abc"}"#;
+        let decoded: ElfSlot = serde_json::from_str(json).unwrap();
+        assert_eq!(decoded.eh_frame_hash, None);
+    }
 }

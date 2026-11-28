@@ -80,6 +80,24 @@ fn parse_primary_dispatch(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option
                 ctx.token_span(t),
             ))
         }
+        // `own (x) => …` / `move (x) => …` (see the RD parser).
+        TokenKind::IdentValue | TokenKind::KwOwn
+            if (t.kind == TokenKind::KwOwn || ctx.text(t) == Some("move"))
+                && cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::LParen)
+                && {
+                    let mut probe = *cur;
+                    probe.bump();
+                    probe.bump();
+                    looks_like_lambda(&probe)
+                } =>
+        {
+            cur.bump();
+            let id = parse_group_or_lambda(ctx, cur)?;
+            if let ExprKind::Lambda { is_move, .. } = &mut ctx.pool.exprs[id.as_usize()] {
+                *is_move = true;
+            }
+            Some(id)
+        }
         TokenKind::IdentValue
             if ctx.text(t) == Some("move")
                 && cur
@@ -278,7 +296,11 @@ fn parse_layout_expression(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Optio
 
 fn ident_type_starts_type_led_expr(cur: &Cursor<'_>) -> bool {
     match cur.peek_at(1).map(|token| token.kind) {
-        Some(TokenKind::Dot) => true,
+        // `PAIR.0` reads an element of a value (a `static mut`); a type has
+        // no member named by a number.
+        Some(TokenKind::Dot) => !cur
+            .peek_at(2)
+            .is_some_and(|token| matches!(token.kind, TokenKind::IntDec | TokenKind::Float)),
         Some(TokenKind::LBrace) => match cur.peek_at(2).map(|token| token.kind) {
             Some(TokenKind::RBrace) => true,
             Some(TokenKind::IdentValue | TokenKind::IdentType) => {
@@ -382,6 +404,22 @@ fn parse_group_or_lambda(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
         return parse_lambda(ctx, cur, start);
     }
     let inner = try_hand_lower_expr(ctx, cur, 0)?;
+    if cur.peek_kind() == Some(TokenKind::Comma) {
+        // `(a, b)`: a tuple; a trailing comma is allowed.
+        let mut items = vec![inner];
+        while cur.eat(TokenKind::Comma) {
+            if cur.peek_kind() == Some(TokenKind::RParen) {
+                break;
+            }
+            items.push(try_hand_lower_expr(ctx, cur, 0)?);
+        }
+        let close = cur.expect(TokenKind::RParen)?;
+        let items = ctx.pool.alloc_expr_list(&items);
+        return Some(ctx.pool.alloc_expr(
+            ExprKind::Tuple { items },
+            ctx.span(start, close.start + close.len),
+        ));
+    }
     let close = cur.expect(TokenKind::RParen)?;
     Some(ctx.pool.alloc_expr(
         ExprKind::Group { expr: inner },

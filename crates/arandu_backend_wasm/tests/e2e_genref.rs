@@ -57,6 +57,7 @@ fn emit_one(func: AmirFunc, interner: &TypeInterner, pool: &mut AmirLiteralPool)
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     emit_wasm(
         &program,

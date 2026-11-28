@@ -15,8 +15,11 @@ mod contracts;
 mod decl;
 mod program;
 mod shape;
+mod slice;
+mod sym_surface;
 pub use contracts::{instance_contracts, runtime_unit, InstanceContracts};
-pub use program::{runtime_program, RuntimeProgram};
+pub use program::{file_composed_units, runtime_program, FileComposedArtifacts, RuntimeProgram};
+pub use sym_surface::{symbol_surface, SymbolSurface};
 
 #[derive(Debug)]
 pub struct DeclarationHir {
@@ -33,6 +36,14 @@ pub struct Instance<'db> {
     pub file: SourceFile,
     #[returns(ref)]
     pub key: FunctionInstance,
+}
+
+#[salsa::interned]
+#[derive(Debug)]
+pub struct FileUnits<'db> {
+    pub file: SourceFile,
+    #[returns(ref)]
+    pub instances: Vec<FunctionInstance>,
 }
 
 #[derive(Debug)]
@@ -366,8 +377,40 @@ pub fn declaration_hir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Dec
 ))]
 pub fn declaration_surface(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<DeclarationHir> {
     let declarations = declaration_hir(db, file);
+    // The surface identity covers the importable view only (INC.3a), so the
+    // content importers link is that view: a fact this file merged from its
+    // own imports and does not expose must not reach them unidentified.
+    let checked = &declarations.artifacts.type_check;
+    let Some(reached) = crate::passes::importable_symbols(db, file, checked) else {
+        return HashEq::with_identity(
+            std::sync::Arc::clone(&declarations.value),
+            declarations.surface,
+        );
+    };
+    let mut type_check = checked.clone();
+    type_check.type_info =
+        std::sync::Arc::new(checked.type_info.view_of(|symbol| reached.contains(symbol)));
+    let symbols = std::sync::Arc::make_mut(&mut type_check.symbols);
+    std::sync::Arc::make_mut(&mut symbols.imported_symbols)
+        .retain(|symbol, _| reached.contains(symbol));
     HashEq::with_identity(
-        std::sync::Arc::clone(&declarations.value),
+        std::sync::Arc::new(DeclarationHir {
+            artifacts: PreparedHir {
+                hir: declarations.artifacts.hir.as_ref().map(|source| {
+                    arandu_middle::hir::HirProgram {
+                        span: source.span,
+                        module: source.module.clone(),
+                        decls: source.decls.clone(),
+                        pool: source.pool.clone(),
+                    }
+                }),
+                type_check,
+                diagnostics: declarations.artifacts.diagnostics.clone(),
+                source_fingerprint: declarations.artifacts.source_fingerprint,
+            },
+            fingerprint: declarations.fingerprint,
+            surface: declarations.surface,
+        }),
         declarations.surface,
     )
 }
@@ -461,6 +504,7 @@ fn declaration_context_from(
     let mut diagnostics = Vec::new();
     let mut visited = rustc_hash::FxHashSet::default();
     let mut pending = vec![file];
+    let narrowed = !trusted_stdlib(db, file);
     while let Some(context_file) = pending.pop() {
         db.unwind_if_revision_cancelled();
         if !visited.insert(*context_file.file_id(db)) {
@@ -483,11 +527,23 @@ fn declaration_context_from(
                 source,
             );
         }
+        // A unit names the declarations of its file's direct imports and the
+        // types their surfaces mention. The stdlib enters with its whole
+        // closure: lowering also reaches its lang items unnamed.
+        let follow_all = !narrowed || context_file == file || trusted_stdlib(db, context_file);
+        let surface = if follow_all {
+            None
+        } else {
+            surface_files(db, context_file).as_ref()
+        };
         for (_, imported) in crate::passes::module_import_edges(db, context_file)
             .iter()
             .rev()
         {
-            if let Some(imported) = imported.and_then(|id| db.source_file_by_id(id)) {
+            if let Some(imported) = imported
+                .filter(|id| surface.is_none_or(|files| files.contains(id)))
+                .and_then(|id| db.source_file_by_id(id))
+            {
                 pending.push(imported);
             }
         }
@@ -506,6 +562,48 @@ fn declaration_context_from(
     })
 }
 
+fn trusted_stdlib(db: &dyn ArandCompilerDb, file: SourceFile) -> bool {
+    db.as_db_impl()
+        .is_some_and(|db| db.is_trusted_stdlib_source(file))
+}
+
+/// The files an importer of `file` reaches through its surface, besides it;
+/// `None` when they cannot be bounded and every import must be followed.
+#[salsa::tracked(returns(ref))]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "surface_files", file = ?file.file_id(db),
+))]
+pub(crate) fn surface_files(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+) -> Option<std::collections::BTreeSet<crate::db::FileId>> {
+    let own = *file.file_id(db);
+    let signatures = declaration_signatures(db, file);
+    let reachable = crate::passes::importable_symbols(db, file, signatures)?;
+    Some(
+        reachable
+            .into_iter()
+            .map(|symbol| symbol.file_id)
+            .filter(|&id| id != own)
+            .collect(),
+    )
+}
+
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "is_derived_method", file = ?file.file_id(db), function = ?symbol,
+))]
+pub(crate) fn is_derived_method(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    symbol: SymbolId,
+) -> bool {
+    declaration_signatures(db, file)
+        .type_info
+        .derived_methods
+        .contains_key(&symbol)
+}
+
 #[salsa::tracked]
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
     query = "function_hir", file = ?file.file_id(db), function = ?symbol,
@@ -515,10 +613,66 @@ pub fn function_hir(
     file: SourceFile,
     symbol: SymbolId,
 ) -> FingerprintEq<PreparedHir> {
+    if let Some(target) = symbol.export_thunk_target() {
+        let declared = declaration_signatures(db, file);
+        let mut checked = (**declared).clone();
+        let mut diagnostics = Vec::new();
+        let hir = match arandu_semantics::lower_export_thunk_hir(&mut checked, target) {
+            Ok(hir) => hir,
+            Err(errors) => {
+                diagnostics = errors;
+                None
+            }
+        };
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"ExportThunkHir/v1");
+        identity.update(declared.identity().as_bytes());
+        identity.update(&symbol.file_id.to_le_bytes());
+        identity.update(&symbol.local_id.0.to_le_bytes());
+        let source_fingerprint = identity.finalize();
+        return FingerprintEq::fingerprinted(
+            db,
+            "function_hir",
+            PreparedHir {
+                hir,
+                type_check: checked,
+                diagnostics,
+                source_fingerprint,
+            },
+            source_fingerprint,
+        );
+    }
     if symbol.is_synthetic() {
-        return FingerprintEq::from_content(&capture::thread_capture_function_hir(
-            db, file, symbol,
-        ));
+        return FingerprintEq::from_content(&capture::closure_function_hir(db, file, symbol));
+    }
+    if *is_derived_method(db, file, symbol) {
+        let declared = declaration_signatures(db, file);
+        let mut checked = (**declared).clone();
+        let mut diagnostics = Vec::new();
+        let hir = match arandu_semantics::lower_derived_method_hir(&mut checked, symbol) {
+            Ok(hir) => hir,
+            Err(errors) => {
+                diagnostics = errors;
+                None
+            }
+        };
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"DerivedFunctionHir/v1");
+        identity.update(declared.identity().as_bytes());
+        identity.update(&symbol.file_id.to_le_bytes());
+        identity.update(&symbol.local_id.0.to_le_bytes());
+        let source_fingerprint = identity.finalize();
+        return FingerprintEq::fingerprinted(
+            db,
+            "function_hir",
+            PreparedHir {
+                hir,
+                type_check: checked,
+                diagnostics,
+                source_fingerprint,
+            },
+            source_fingerprint,
+        );
     }
     if let Some(local) = local_function_hir(db, file, symbol) {
         return local;
@@ -733,10 +887,32 @@ pub(crate) fn placed_unit_body<'db>(
 }
 
 /// Whether [`function_hir`] of `symbol` is lowered in its item's coordinates.
+/// A query of its own: the file-wide reads behind it change with any
+/// signature of the file, the answer almost never does.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "lowers_locally", file = ?file.file_id(db), item = ?symbol,
+))]
 pub(crate) fn lowers_locally(db: &dyn ArandCompilerDb, file: SourceFile, symbol: SymbolId) -> bool {
     !symbol.is_synthetic()
         && crate::passes::item_context(db, file, symbol).is_some()
         && declaration_shape(db, file).artifacts.hir.is_some()
+}
+
+/// Whether the header of `symbol` waits for its instance arguments.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "deferred_header", file = ?file.file_id(db), item = ?symbol,
+))]
+pub(crate) fn deferred_header(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    symbol: SymbolId,
+) -> bool {
+    declaration_signatures(db, file)
+        .type_info
+        .deferred_headers
+        .contains(&symbol)
 }
 
 /// [`function_hir`] lowered from the item AST against its
@@ -747,7 +923,7 @@ fn local_function_hir(
     file: SourceFile,
     symbol: SymbolId,
 ) -> Option<FingerprintEq<PreparedHir>> {
-    if !lowers_locally(db, file, symbol) {
+    if !*lowers_locally(db, file, symbol) {
         return None;
     }
     let (context, id) = crate::passes::item_context(db, file, symbol).as_ref()?;

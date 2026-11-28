@@ -2,7 +2,7 @@ use arandu_lexer::Span;
 
 use super::super::ast_pool::AstPool;
 use super::super::{
-    Block, CatchHandler, ExprId, ExprKind, LambdaBody, MatchArm, MatchArmBody, Pattern, StringPart,
+    CatchHandler, ExprId, ExprKind, LambdaBody, MatchArm, MatchArmBody, Pattern, StringPart,
 };
 use super::decl::{dump_type, dump_type_name};
 use super::stmt::{dump_block_inline, dump_condition, dump_inline_block};
@@ -77,15 +77,7 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
             )
         }
         ExprKind::Try { expr } => format!("Try {}({})", dump_span(span), dump_expr(pool, *expr)),
-        ExprKind::Call {
-            callee,
-            args,
-            trailing_block,
-        } => {
-            let arg_ids = pool.expr_list(*args);
-            let block = trailing_block.map(|block_id| pool.block(block_id));
-            dump_call(pool, span, *callee, arg_ids, block)
-        }
+        ExprKind::Call { callee, args } => dump_call(pool, span, *callee, pool.expr_list(*args)),
         ExprKind::StructLiteral { ty, fields } => {
             let field_init_ids = pool.field_init_list(*fields);
             let fields_str = field_init_ids
@@ -106,6 +98,15 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
                 dump_span(span),
                 dump_type(pool.type_expr(*ty), pool)
             )
+        }
+        ExprKind::Tuple { items } => {
+            let items_str = pool
+                .expr_list(*items)
+                .iter()
+                .map(|item| dump_expr(pool, *item))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Tuple {}([{items_str}])", dump_span(span))
         }
         ExprKind::Array { items } => {
             let item_ids = pool.expr_list(*items);
@@ -260,6 +261,13 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
                 String::from_utf8_lossy(bytes)
             )
         }
+        ExprKind::CString { bytes } => {
+            format!(
+                "CString {}(c\"{}\")",
+                dump_span(span),
+                String::from_utf8_lossy(bytes)
+            )
+        }
         ExprKind::InterpolatedString { parts } => {
             let part_ids = pool.string_part_list(*parts);
             let parts_resolved: Vec<StringPart> = part_ids
@@ -273,31 +281,17 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
     }
 }
 
-fn dump_call(
-    pool: &AstPool,
-    span: Span,
-    callee: ExprId,
-    args: &[ExprId],
-    trailing_block: Option<&Block>,
-) -> String {
+fn dump_call(pool: &AstPool, span: Span, callee: ExprId, args: &[ExprId]) -> String {
     let args_str = args
         .iter()
         .map(|arg| dump_expr(pool, *arg))
         .collect::<Vec<_>>()
         .join(", ");
-    match trailing_block {
-        Some(block) => format!(
-            "Call {}({}, [{args_str}], {})",
-            dump_span(span),
-            dump_expr(pool, callee),
-            dump_block_inline(pool, block)
-        ),
-        None => format!(
-            "Call {}({}, [{args_str}])",
-            dump_span(span),
-            dump_expr(pool, callee)
-        ),
-    }
+    format!(
+        "Call {}({}, [{args_str}])",
+        dump_span(span),
+        dump_expr(pool, callee)
+    )
 }
 
 fn dump_lambda_body(pool: &AstPool, body: &LambdaBody) -> String {

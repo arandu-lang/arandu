@@ -18,9 +18,9 @@ orientam a stdlib v0.1.10; `std.core.mem.sizeOf<T>()` e `alignOf<T>()` são APIs
 existentes. Isso não implementa automaticamente toda a proposta desta RFC.
 Os lints de migração e `arandu fix` continuam propostas, não comandos públicos.
 
-O contrato uniforme `close(): Result<void, IoError>` ainda não cobre todos os
-recursos: `std.fs.File.close` e `DirListing.close` atualmente retornam `void`.
-Destruição automática genérica de payloads não triviais, política uniforme de
+O contrato uniforme `close(): Result<void, IoError>` cobre `std.fs.File.close`,
+`DirListing.close` e `Dir.close`; sockets e handles de runtime ainda retornam
+`void`. Destruição automática genérica de payloads não triviais, política uniforme de
 OOM e idempotência verificável por tipo devem ser avaliadas separadamente da
 renomeação. Esta RFC permanece `Draft`; a fila executiva vive no roadmap mestre.
 O smoke público do SDK v0.1.10 não comprova essas garantias para toda a stdlib.

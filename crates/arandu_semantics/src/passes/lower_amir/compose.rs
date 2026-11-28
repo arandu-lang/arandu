@@ -165,6 +165,11 @@ pub fn compose_function_units(
                         aggregate
                             .symbols_mut()
                             .register_synthetic(input.placed(source));
+                    } else if matches!(
+                        source.kind,
+                        arandu_middle::SymbolKind::Local | arandu_middle::SymbolKind::Param
+                    ) {
+                        continue;
                     } else {
                         return Err(vec![ice(
                             "composition is missing an entry-file source symbol",
@@ -262,6 +267,7 @@ pub fn compose_function_units(
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let mut proven_summaries = Vec::with_capacity(units.len());
     for input in units {
@@ -500,9 +506,14 @@ fn merge_imported_marks(
             aggregate.symbols_mut().exported_functions.insert(symbol);
         }
     }
+    for &symbol in &context.cold_functions {
+        if imported(symbol) {
+            aggregate.symbols_mut().cold_functions.insert(symbol);
+        }
+    }
 }
 
-/// Copies `symbol`'s host name, tooling root and `@Export` marks from
+/// Copies `symbol`'s host name, tooling root, `@Cold`, and `@Export` marks from
 /// `context` into the aggregate.
 fn merge_symbol_marks(
     aggregate: &mut TypeCheckResult,
@@ -522,6 +533,9 @@ fn merge_symbol_marks(
     // alone would keep it internal and hide name clashes.
     if context.is_exported(symbol) {
         aggregate.symbols_mut().exported_functions.insert(symbol);
+    }
+    if context.is_cold(symbol) {
+        aggregate.symbols_mut().cold_functions.insert(symbol);
     }
 }
 

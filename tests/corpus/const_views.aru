@@ -1,0 +1,40 @@
+// A `const` holding a view of elements lives in static storage: every use
+// reads the same elements, and a function may return it.
+struct Entry {
+    name: str,
+    code: int,
+}
+
+struct Catalog {
+    title: str,
+    entries: []Entry,
+}
+
+const TABLE: [3]Entry = [Entry { name: "a", code: 1 }, Entry { name: "bb", code: 2 }, Entry { name: "ccc", code: 3 }]
+const VIEW: []Entry = TABLE[0..2]
+const WORDS: []str = ["x", "yy", "zzz"]
+const CATALOG: Catalog = Catalog { title: "main", entries: TABLE[1..3] }
+
+func sum(view: []Entry): int {
+    let mut total = 0
+    for e in view {
+        total = total + e.code + e.name.len() as int
+    }
+    return total
+}
+
+func words(): []str {
+    return WORDS
+}
+
+func main(): int {
+    if sum(VIEW) != 6 { return 1 }
+    if WORDS.len() != 3 || WORDS[2].len() != 3 { return 2 }
+    let v = comptime TABLE[1..3]
+    if sum(v) != 10 { return 3 }
+    if words()[1] != "yy" { return 4 }
+    if CATALOG.title.len() != 4 || sum(CATALOG.entries) != 10 { return 5 }
+    let tail = WORDS[1..3]
+    if tail.len() != 2 || tail[0] != "yy" { return 6 }
+    return 0
+}

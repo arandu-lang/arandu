@@ -1,6 +1,6 @@
 mod ctor;
 mod expr;
-mod field;
+pub(crate) mod field;
 mod match_exhaust;
 pub(crate) mod method;
 mod pattern;
@@ -10,7 +10,10 @@ pub(crate) use field::{
     resolve_field, resolve_field_type, resolve_index, resolve_namespace_field,
     resolve_namespace_member_type,
 };
-pub(crate) use method::synth_method_call;
+pub(crate) use method::{Receiver, synth_method_call};
 
+pub(crate) use expr::check_call_arg;
+pub(crate) use expr::range as expr_range;
+pub(crate) use expr::text as expr_text;
 pub use expr::{synth_expr, synth_expr_expected};
 pub use pattern::check_pattern;

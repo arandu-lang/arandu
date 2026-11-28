@@ -238,12 +238,45 @@ pub fn item_doc(
             }
         });
 
+    let capabilities =
+        match kind {
+            DocItemKind::Struct | DocItemKind::Enum => {
+                if signatures.type_info.non_copy_types.contains(&item_sym) {
+                    vec!["Move (@NoCopy)".to_string()]
+                } else if signatures.type_info.destructors.contains_key(&item_sym) {
+                    vec!["Move (@Destructor)".to_string()]
+                } else if signatures
+                    .type_info
+                    .generic_params
+                    .get(&item_sym)
+                    .is_none_or(|params| params.is_empty())
+                {
+                    let ty_id = signatures.type_info.type_interner.intern(
+                        arandu_middle::types::ArType::named(
+                            item_sym,
+                            &[],
+                            &signatures.type_info.type_interner,
+                        ),
+                    );
+                    if signatures.type_info.is_copy(ty_id) {
+                        vec!["Copy".to_string()]
+                    } else {
+                        vec!["Move".to_string()]
+                    }
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        };
+
     Some(Arc::new(DocItem {
         symbol_id: item_sym,
         name: symbol.name.to_string(),
         kind,
         signature,
         effect_badges,
+        capabilities,
         summary,
         sections,
         fields,

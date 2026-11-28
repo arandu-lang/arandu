@@ -165,21 +165,21 @@ fn run_local_inferred_join() {
 module tests.cli.local_infer_join
 
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
 }
 
 struct SyncExecutor { flags: int }
-struct TaskHandle { id: int }
+struct TaskHandle { id: i64 }
 
-func spawn<T>(shared ex: SyncExecutor, job: Coroutine<T>): TaskHandle {
+func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle {
     unsafe {
         let id = ar_rt_spawn_i64(job as ptr[u8])
         return TaskHandle { id: id }
     }
 }
 
-func join<T>(shared ex: SyncExecutor, handle: TaskHandle): T {
+func join<T>(ex: ref SyncExecutor, handle: TaskHandle): T {
     unsafe {
         let v = ar_rt_join_i64(handle.id)
         return v as T
@@ -229,7 +229,7 @@ func main(): int {
     let h = ex.spawn(answer())
     let result = ex.join(h)
     ex.cancel(h)
-    if mem.sizeOf<rt.TaskHandle<int>>() != mem.sizeOf<int>() { return 1 }
+    if mem.sizeOf<rt.TaskHandle<int>>() != mem.sizeOf<i64>() { return 1 }
     return result
 }
 "#,
@@ -256,21 +256,21 @@ fn run_generic_spawn_join_explicit() {
 module tests.cli.generic_spawn
 
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
 }
 
 struct SyncExecutor { flags: int }
-struct TaskHandle { id: int }
+struct TaskHandle { id: i64 }
 
-func spawn<T>(shared ex: SyncExecutor, job: Coroutine<T>): TaskHandle {
+func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle {
     unsafe {
         let id = ar_rt_spawn_i64(job as ptr[u8])
         return TaskHandle { id: id }
     }
 }
 
-func join<T>(shared ex: SyncExecutor, handle: TaskHandle): T {
+func join<T>(ex: ref SyncExecutor, handle: TaskHandle): T {
     unsafe {
         let v = ar_rt_join_i64(handle.id)
         return v as T
@@ -345,11 +345,11 @@ import std.runtime.reactor as reactor
 func main(): int {
     let b = reactor.reactorBackend()
     // Portable fallback: 0; Linux: 1 = epoll, 2 = io_uring;
-    // macOS/BSD: 3 = kqueue; Windows: 4 = WSAPoll.
+    // macOS/BSD: 3 = kqueue; Windows: 4 = WSAPoll, 5 = ProcessSocketNotifications.
     if b < 0 {
         return 1
     }
-    if b > 4 {
+    if b > 5 {
         return 2
     }
     return 0
@@ -601,16 +601,17 @@ fn run_vec_and_string_try_reserve_try_push() {
 module tests.cli.vec_try_push
 import std.alloc.vec as vec
 import std.alloc.string as string
+import std.core.result as core_result
 
 func main(): int {
     let mut v = vec.Vec<int>.new()
-    if !v.tryReserve(16) {
+    if !v.tryReserve(16).isOk() {
         return 1
     }
-    if !v.tryPush(42) {
+    if !v.tryPush(42).isOk() {
         return 2
     }
-    if !v.tryPush(84) {
+    if !v.tryPush(84).isOk() {
         return 3
     }
     if v.len() != 2 {
@@ -618,10 +619,10 @@ func main(): int {
     }
 
     let mut s = string.String.new()
-    if !s.tryReserve(32) {
+    if !s.tryReserve(32).isOk() {
         return 5
     }
-    if !s.pushStr("hello") {
+    if !s.pushStr("hello").isOk() {
         return 6
     }
     if s.len() != 5 {

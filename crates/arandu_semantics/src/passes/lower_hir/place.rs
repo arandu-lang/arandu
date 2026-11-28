@@ -33,7 +33,24 @@ pub(crate) fn lower_place(
         .decl_type_id(root_symbol)
         .unwrap_or(error_id);
 
+    // A captured local is written through its closure environment field.
     let mut suffixes = Vec::new();
+    let mut root_symbol = root_symbol;
+    if let Some(alias) = hir_pool.capture_aliases.get(&root_symbol).cloned() {
+        root_symbol = alias.env;
+        suffixes.push(HirPlaceSuffix::Field {
+            span: place.span,
+            name: alias.field,
+            field_symbol: Some(alias.field_symbol),
+            ty: alias.field_ty,
+        });
+        if alias.through_ref {
+            suffixes.push(HirPlaceSuffix::Deref {
+                span: place.span,
+                ty: current_ty,
+            });
+        }
+    }
     for suffix in &place.suffixes {
         if current_ty == error_id {
             match suffix {
@@ -53,19 +70,31 @@ pub(crate) fn lower_place(
                         ty: error_id,
                     });
                 }
+                PlaceSuffix::Deref { span } => {
+                    suffixes.push(HirPlaceSuffix::Deref {
+                        span: *span,
+                        ty: error_id,
+                    });
+                }
             }
             continue;
         }
 
         let interner = &type_check.type_info.type_interner;
         match suffix {
-            PlaceSuffix::Field { span, name } => {
-                let base = interner.resolve(current_ty);
-                // Auto-deref: Nullable / & / &mut / ptr (shared|mut self places).
-                let mut actual_base_ty = match base {
-                    ArType::Nullable(inner) => interner.resolve(inner),
-                    other => other,
+            PlaceSuffix::Deref { span } => {
+                current_ty = match interner.resolve(current_ty) {
+                    ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => inner,
+                    _ => error_id,
                 };
+                suffixes.push(HirPlaceSuffix::Deref {
+                    span: *span,
+                    ty: current_ty,
+                });
+            }
+            PlaceSuffix::Field { span, name } => {
+                let mut actual_base_ty = interner.resolve(current_ty);
+                // Auto-deref: & / &mut / ptr (shared|mut self places).
                 for _ in 0..4 {
                     actual_base_ty = match actual_base_ty {
                         ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
@@ -88,7 +117,17 @@ pub(crate) fn lower_place(
                     },
                     _ => None,
                 };
-                let (field_ty, field_symbol) = if let Some(struct_id) = struct_id_opt
+                // `t.0`: an element of a tuple has a position, not a symbol.
+                let tuple_element = match &actual_base_ty {
+                    ArType::Tuple(items) => name
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| interner.type_args(*items).get(index).copied()),
+                    _ => None,
+                };
+                let (field_ty, field_symbol) = if let Some(element) = tuple_element {
+                    (element, None)
+                } else if let Some(struct_id) = struct_id_opt
                     && let Some(fields) = type_check.type_info.struct_fields.get(&struct_id)
                     && let Some(f) = fields.get(name.as_str())
                 {
@@ -106,16 +145,30 @@ pub(crate) fn lower_place(
                 });
             }
             PlaceSuffix::Index { span, expr } => {
-                let base = interner.resolve(current_ty);
-                let actual_base_ty = match base {
-                    ArType::Nullable(inner) => interner.resolve(inner),
-                    other => other,
-                };
+                let mut peeled_id = current_ty;
+                for _ in 0..4 {
+                    match interner.resolve(peeled_id) {
+                        ArType::Ref(inner) | ArType::RefMut(inner) => peeled_id = inner,
+                        _ => break,
+                    }
+                }
+                let actual_base_ty = interner.resolve(peeled_id);
                 let elem_ty = match &actual_base_ty {
                     ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)
-                    | ArType::Slice(inner) => *inner,
-                    _ => error_id,
+                    | ArType::Slice(inner)
+                    | ArType::MutSlice(inner)
+                    | ArType::Ptr(inner) => *inner,
+                    ArType::Named(_, args)
+                        if arandu_middle::types::is_vec_type(
+                            &actual_base_ty,
+                            &type_check.symbols,
+                        ) =>
+                    {
+                        interner.type_args(*args)[0]
+                    }
+                    _ => super::expr::access::resolve_trait_index_sig(type_check, peeled_id, true)
+                        .map_or(error_id, |(_, _, out_ty)| out_ty),
                 };
                 current_ty = elem_ty;
                 let eid = super::expr::lower_expr(type_check, pool, hir_pool, *expr)?;

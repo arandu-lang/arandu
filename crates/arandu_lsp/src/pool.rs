@@ -103,6 +103,7 @@ struct QueueState {
     interactive: VecDeque<Job>,
     background: VecDeque<Job>,
     active: FxHashMap<JobKey, CancellationToken>,
+    deferred: FxHashMap<JobKey, Job>,
     shutdown: bool,
 }
 
@@ -127,6 +128,9 @@ impl Drop for WorkerPool {
         for job in state.interactive.iter().chain(&state.background) {
             job.cancellation.cancel();
         }
+        for job in state.deferred.values() {
+            job.cancellation.cancel();
+        }
         drop(state);
         self.shared.ready.notify_all();
         for worker in std::mem::take(&mut self.workers) {
@@ -145,7 +149,7 @@ impl WorkerPool {
         Self::with_capacity(workers, DEFAULT_QUEUE_CAPACITY)
     }
 
-    fn with_capacity(workers: usize, capacity: usize) -> std::io::Result<Self> {
+    pub(crate) fn with_capacity(workers: usize, capacity: usize) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(QueueState::default()),
             ready: Condvar::new(),
@@ -189,10 +193,21 @@ impl WorkerPool {
         let cancellation = CancellationToken::new();
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(key) = key.as_ref() {
-            remove_queued_key(&mut state, key);
-            if let Some(previous) = state.active.insert(key.clone(), cancellation.clone()) {
-                previous.cancel();
+            if state.deferred.contains_key(key) {
+                let job = Job {
+                    key: Some(key.clone()),
+                    cancellation: cancellation.clone(),
+                    run: Box::new(f),
+                };
+                if let Some(previous) = state.deferred.insert(key.clone(), job) {
+                    previous.cancellation.cancel();
+                }
+                if let Some(previous) = state.active.insert(key.clone(), cancellation.clone()) {
+                    previous.cancel();
+                }
+                return Ok(cancellation);
             }
+            remove_queued_key(&mut state, key);
         }
         if state.interactive.len() + state.background.len() >= self.shared.capacity {
             if priority == Priority::Interactive {
@@ -200,19 +215,40 @@ impl WorkerPool {
                     retire_job(&mut state, &evicted);
                     evicted.cancellation.cancel();
                 } else {
-                    remove_active_token(&mut state, key.as_ref(), &cancellation);
                     return Err(QueueFull);
                 }
             } else {
-                remove_active_token(&mut state, key.as_ref(), &cancellation);
+                if let Some(key) = key.as_ref() {
+                    if state.active.contains_key(key) {
+                        state.deferred.insert(
+                            key.clone(),
+                            Job {
+                                key: Some(key.clone()),
+                                cancellation: cancellation.clone(),
+                                run: Box::new(f),
+                            },
+                        );
+                        if let Some(previous) =
+                            state.active.insert(key.clone(), cancellation.clone())
+                        {
+                            previous.cancel();
+                        }
+                        return Ok(cancellation);
+                    }
+                }
                 return Err(QueueFull);
             }
         }
         let job = Job {
-            key,
+            key: key.clone(),
             cancellation: cancellation.clone(),
             run: Box::new(f),
         };
+        if let Some(key) = key.as_ref() {
+            if let Some(previous) = state.active.insert(key.clone(), cancellation.clone()) {
+                previous.cancel();
+            }
+        }
         match priority {
             Priority::Interactive => state.interactive.push_back(job),
             Priority::Background => state.background.push_back(job),
@@ -220,6 +256,18 @@ impl WorkerPool {
         drop(state);
         self.shared.ready.notify_one();
         Ok(cancellation)
+    }
+
+    /// Whether a keyed job is queued, running, or waiting as a coalesced
+    /// replacement. Used by background refill scans to avoid superseding
+    /// already admitted work.
+    pub fn contains_key(&self, key: &JobKey) -> bool {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active
+            .contains_key(key)
     }
 
     #[cfg(test)]
@@ -233,8 +281,12 @@ impl WorkerPool {
         if let Some(job) = queued.as_ref() {
             retire_job(&mut state, job);
         }
+        let deferred = state.deferred.remove(key);
+        if let Some(job) = deferred.as_ref() {
+            retire_job(&mut state, job);
+        }
         drop(state);
-        if let Some(job) = queued {
+        if let Some(job) = queued.or(deferred) {
             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| (job.run)(token))) {
                 crate::logging::log_panic("synchronously cancelled job", &payload);
             }
@@ -252,6 +304,9 @@ impl WorkerPool {
         };
         token.cancel();
         if let Some(job) = take_queued_key(&mut state, key) {
+            retire_job(&mut state, &job);
+        }
+        if let Some(job) = state.deferred.remove(key) {
             retire_job(&mut state, &job);
         }
         drop(state);
@@ -304,13 +359,35 @@ fn worker_loop(shared: &Shared) {
             };
             job
         };
-        let token = job.cancellation.clone();
-        let key = job.key.clone();
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| (job.run)(token.clone()))) {
-            crate::logging::log_panic("worker job", &payload);
+        let mut job = job;
+        loop {
+            let token = job.cancellation.clone();
+            let key = job.key.clone();
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| (job.run)(token.clone()))) {
+                crate::logging::log_panic("worker job", &payload);
+            }
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            let deferred = if state.shutdown {
+                None
+            } else {
+                key.as_ref().and_then(|key| state.deferred.remove(key))
+            };
+            if let Some(deferred) = deferred {
+                job = deferred;
+                drop(state);
+                continue;
+            }
+            if state.shutdown {
+                if let Some(key) = key.as_ref() {
+                    if let Some(deferred) = state.deferred.remove(key) {
+                        deferred.cancellation.cancel();
+                        retire_job(&mut state, &deferred);
+                    }
+                }
+            }
+            remove_active_token(&mut state, key.as_ref(), &token);
+            break;
         }
-        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        remove_active_token(&mut state, key.as_ref(), &token);
     }
 }
 
@@ -418,6 +495,51 @@ mod tests {
         release_tx.send(()).expect("release worker");
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(2));
         assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn keyed_background_replacement_runs_after_queue_saturation() {
+        let pool = WorkerPool::with_capacity(1, 1).expect("test worker must start");
+        let key = JobKey::WorkspaceReload;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let first = pool
+            .spawn(Priority::Background, Some(key.clone()), move |token| {
+                started_tx.send(()).expect("signal running keyed job");
+                release_rx.recv().expect("release keyed job");
+                assert!(token.is_cancelled());
+            })
+            .expect("first keyed job must queue");
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first keyed job must be running");
+        pool.spawn(Priority::Background, None, |_| {})
+            .expect("fill the sole queued slot");
+
+        let second = pool
+            .spawn(Priority::Background, Some(key.clone()), {
+                let tx = result_tx.clone();
+                move |_| tx.send(2).expect("record deferred job")
+            })
+            .expect("replacement must be retained while the queue is full");
+        let third = pool
+            .spawn(Priority::Background, Some(key), move |_| {
+                result_tx.send(3).expect("record newest deferred job")
+            })
+            .expect("latest replacement must supersede the deferred job");
+
+        assert!(first.is_cancelled());
+        assert!(second.is_cancelled());
+        assert!(!third.is_cancelled());
+        release_tx.send(()).expect("release running job");
+        assert_eq!(
+            result_rx.recv_timeout(Duration::from_secs(2)),
+            Ok(3),
+            "only the newest coalesced job should run"
+        );
+        assert!(result_rx.recv_timeout(Duration::from_millis(50)).is_err());
     }
 
     #[test]

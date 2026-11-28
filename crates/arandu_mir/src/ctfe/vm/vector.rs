@@ -270,4 +270,76 @@ impl Frame {
         }
         Ok(ConstValue::Aggregate(agg))
     }
+
+    pub(super) fn rvalue_vector_bitmask<C: FnMut() -> bool>(
+        &self,
+        vector: &AmirOperand,
+        ty: ValueType,
+        meter: &mut Meter<'_, C>,
+    ) -> Result<ConstValue, EvalErrorKind> {
+        let ValueType::Integer(int_ty) = ty else {
+            return Err(EvalErrorKind::TypeMismatch);
+        };
+        let ConstValue::Aggregate(agg) = self.operand(*vector, None, meter)? else {
+            return Err(EvalErrorKind::TypeMismatch);
+        };
+        let bytes = vector_to_bytes(VectorType::U8x16, &agg)?;
+        let mut mask: u32 = 0;
+        for (i, &byte) in bytes.iter().enumerate() {
+            meter.step()?;
+            if (byte & 0x80) != 0 {
+                mask |= 1u32 << i;
+            }
+        }
+        arandu_middle::ctfe::ConstInt::new(int_ty, i128::from(mask))
+            .map(ConstValue::Integer)
+            .map_err(EvalErrorKind::Value)
+    }
+
+    pub(super) fn rvalue_vector_load_unaligned<C: FnMut() -> bool>(
+        &self,
+        source: &AmirOperand,
+        ty: ValueType,
+        meter: &mut Meter<'_, C>,
+    ) -> Result<ConstValue, EvalErrorKind> {
+        let ValueType::Aggregate(descriptor) = &ty else {
+            return Err(EvalErrorKind::TypeMismatch);
+        };
+        if descriptor.kind != AggregateKind::Vector(VectorType::U8x16) {
+            return Err(EvalErrorKind::TypeMismatch);
+        }
+        let val = self.operand(*source, None, meter)?;
+        let mut out_bytes = [0u8; 16];
+        match val {
+            ConstValue::Bytes(bytes) => {
+                let raw = bytes.as_bytes();
+                if raw.len() < 16 {
+                    return Err(EvalErrorKind::InvalidIr);
+                }
+                for (dst, &src) in out_bytes.iter_mut().zip(&raw[..16]) {
+                    meter.step()?;
+                    *dst = src;
+                }
+            }
+            ConstValue::Aggregate(agg) => {
+                if agg.values().len() < 16 {
+                    return Err(EvalErrorKind::InvalidIr);
+                }
+                for (dst, item) in out_bytes.iter_mut().zip(agg.values().iter().take(16)) {
+                    meter.step()?;
+                    let ConstValue::Integer(byte) = item else {
+                        return Err(EvalErrorKind::TypeMismatch);
+                    };
+                    *dst = byte.value() as u8;
+                }
+            }
+            _ => return Err(EvalErrorKind::TypeMismatch),
+        }
+        let agg = bytes_to_vector(VectorType::U8x16, &out_bytes, self.unit.layout)?;
+        meter.aggregate(&descriptor.shape, 16)?;
+        for v in agg.values() {
+            meter.frozen(v)?;
+        }
+        Ok(ConstValue::Aggregate(agg))
+    }
 }

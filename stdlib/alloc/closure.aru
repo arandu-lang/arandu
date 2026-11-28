@@ -1,0 +1,349 @@
+//! Owning, escaping closures: the values of `own (A) -> R` types.
+//!
+//! ## Overview
+//!
+//! `own (A) -> R` is a closure that owns its captures and may outlive the
+//! scope that created it. `own (A) -> R + Send` may also move to another
+//! thread; every capture of such a closure is proven `Send` when it is
+//! created. The compiler spells these types as `Closure<F>` and
+//! `SendClosure<F>`, where `F` is the code's own signature `(ptr[u8], A) -> R`
+//! taking the environment first.
+//!
+//! A closure value is three words: its code, its environment and the function
+//! that destroys the environment. Captures live in one heap allocation that the
+//! closure destroys exactly once. A named function converted to a closure has no
+//! environment and allocates nothing.
+//!
+//! A call may change the captures, so the owner of a closure and a `mut ref`
+//! to it can call it, and a shared `ref` cannot. Closures are neither `Copy`
+//! nor `Sync`; share one across threads behind a `Mutex`.
+//!
+//! `own once (A) -> R` (`OnceClosure<F>`, `SendOnceClosure<F>`) is called at
+//! most once: the call consumes the closure, so its body may consume the
+//! captures. Every `own (A) -> R` converts to the `once` form where one is
+//! expected, and a thread job runs a `once` closure.
+//!
+//! The associated functions below are the compiler's entry points for lambdas
+//! and function values; code does not call them directly.
+//!
+//! ## Allocations
+//! Creating a closure with captures allocates its environment and aborts when
+//! the allocation fails.
+//!
+//! ## Platform
+//! Native targets with the aligned allocator host, and wasm32.
+module std.alloc.closure
+
+import std.core.intrinsics as intrinsics
+import std.core.marker as marker
+import std.core.mem as mem
+
+extern "C" {
+    /// Allocates a buffer with the selected target's size and alignment.
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    /// Frees a buffer using the same layout with which it was allocated.
+    func ar_rt_free_aligned(data: ptr[u8], size: usize, align: usize): void
+}
+
+/// An owning closure, spelled `own (A) -> R`.
+public struct Closure<F> {
+    private code: F
+    private env: ptr[u8]
+    private drop: (ptr[u8]) -> void
+}
+
+/// An owning closure whose captures are all `Send`, spelled
+/// `own (A) -> R + Send`.
+public struct SendClosure<F> {
+    private code: F
+    private env: ptr[u8]
+    private drop: (ptr[u8]) -> void
+}
+
+func storageSize<E>(): usize {
+    let size = mem.sizeOf<E>()
+    if size == (0 as usize) { return 1 as usize }
+    return size
+}
+
+/// Moves `env` into its own aligned allocation, aborting on failure.
+func boxEnvironment<E>(env: E): ptr[u8] {
+    unsafe {
+        let data = ar_rt_alloc_aligned(storageSize<E>(), mem.alignOf<E>())
+        let nullp: ptr[u8] = nil
+        if data == nullp { intrinsics.abort() }
+        mem.ptrWrite<E>(data as ptr[E], env)
+        return data
+    }
+}
+
+/// Destroys the captures and frees the environment allocation.
+func dropEnvironment<E>(env: ptr[u8]): void {
+    unsafe {
+        mem.dropInPlace<E>(env as ptr[E])
+        ar_rt_free_aligned(env, storageSize<E>(), mem.alignOf<E>())
+    }
+}
+
+/// The environment destructor of a closure without captures.
+func keepEnvironment<F>(env: ptr[u8]): void {
+}
+
+/// Frees the environment allocation of captures the call already moved out.
+func freeEnvironment<E>(env: ptr[u8]): void {
+    unsafe {
+        ar_rt_free_aligned(env, storageSize<E>(), mem.alignOf<E>())
+    }
+}
+
+/// A closure over the captures `env`, run by `code`.
+public func Closure.make<E, F>(env: E, code: F): Closure<F> {
+    return Closure<F> { code: code, env: boxEnvironment<E>(env), drop: dropEnvironment<E> }
+}
+
+/// A `Send` closure over the captures `env`, run by `code`.
+public func SendClosure.make<E: marker.Send, F>(env: E, code: F): SendClosure<F> {
+    return SendClosure<F> { code: code, env: boxEnvironment<E>(env), drop: dropEnvironment<E> }
+}
+
+/// A closure without captures; `code` ignores its environment argument.
+public func Closure.fromFunction<F>(code: F): Closure<F> {
+    return Closure<F> { code: code, env: nil, drop: keepEnvironment<F> }
+}
+
+/// A `Send` closure without captures.
+public func SendClosure.fromFunction<F>(code: F): SendClosure<F> {
+    return SendClosure<F> { code: code, env: nil, drop: keepEnvironment<F> }
+}
+
+/// The three words of a closure, handed from one closure type to the other.
+struct Parts<F> {
+    code: F,
+    env: ptr[u8],
+    drop: (ptr[u8]) -> void,
+}
+
+/// A closure over an environment it now owns.
+func Closure.adopt<F>(parts: Parts<F>): Closure<F> {
+    return Closure<F> { code: parts.code, env: parts.env, drop: parts.drop }
+}
+
+/// The same closure without the `Send` guarantee; `own (A) -> R + Send`
+/// converts to `own (A) -> R` through this wherever one is expected.
+public func SendClosure.local<F>(self: own SendClosure<F>): Closure<F> {
+    let mut sent = self
+    let local = Closure.adopt<F>(Parts<F> { code: sent.code, env: sent.env, drop: sent.drop })
+    // The environment now belongs to `local`; `sent` is destroyed empty.
+    sent.env = nil
+    sent.drop = keepEnvironment<F>;
+    return local
+}
+
+/// An owning closure consumed by its call, spelled `own once (A) -> R`.
+///
+/// `drop` destroys captures that were never moved out; `finish` releases the
+/// environment after the call: only its storage when the code moved the
+/// captures out, or all of it when the code came from an `own (A) -> R`.
+public struct OnceClosure<F> {
+    private code: F
+    private env: ptr[u8]
+    private drop: (ptr[u8]) -> void
+    private finish: (ptr[u8]) -> void
+}
+
+/// `own once (A) -> R + Send`.
+public struct SendOnceClosure<F> {
+    private code: F
+    private env: ptr[u8]
+    private drop: (ptr[u8]) -> void
+    private finish: (ptr[u8]) -> void
+}
+
+/// The parts of a `once` closure being called: the compiler calls `code`
+/// with `env`; destroying the call afterwards runs `finish` with `env`.
+public struct OnceCall<F> {
+    code: F
+    env: ptr[u8]
+    finish: (ptr[u8]) -> void
+}
+
+/// The four words of a `once` closure, handed from one closure type to the
+/// other.
+struct OnceParts<F> {
+    code: F,
+    env: ptr[u8],
+    drop: (ptr[u8]) -> void,
+    finish: (ptr[u8]) -> void,
+}
+
+/// A `once` closure over an environment it now owns.
+func OnceClosure.adopt<F>(parts: OnceParts<F>): OnceClosure<F> {
+    return OnceClosure<F> { code: parts.code, env: parts.env, drop: parts.drop, finish: parts.finish }
+}
+
+/// A `Send` `once` closure over an environment it now owns.
+func SendOnceClosure.adopt<F>(parts: OnceParts<F>): SendOnceClosure<F> {
+    return SendOnceClosure<F> { code: parts.code, env: parts.env, drop: parts.drop, finish: parts.finish }
+}
+
+/// A `once` closure over the captures `env`; `code` moves them out.
+public func OnceClosure.make<E, F>(env: E, code: F): OnceClosure<F> {
+    return OnceClosure<F> {
+        code: code,
+        env: boxEnvironment<E>(env),
+        drop: dropEnvironment<E>,
+        finish: freeEnvironment<E>,
+    }
+}
+
+/// A `Send` `once` closure over the captures `env`.
+public func SendOnceClosure.make<E: marker.Send, F>(env: E, code: F): SendOnceClosure<F> {
+    return SendOnceClosure<F> {
+        code: code,
+        env: boxEnvironment<E>(env),
+        drop: dropEnvironment<E>,
+        finish: freeEnvironment<E>,
+    }
+}
+
+/// A `once` closure without captures.
+public func OnceClosure.fromFunction<F>(code: F): OnceClosure<F> {
+    return OnceClosure<F> { code: code, env: nil, drop: keepEnvironment<F>, finish: keepEnvironment<F> }
+}
+
+/// A `Send` `once` closure without captures.
+public func SendOnceClosure.fromFunction<F>(code: F): SendOnceClosure<F> {
+    return SendOnceClosure<F> { code: code, env: nil, drop: keepEnvironment<F>, finish: keepEnvironment<F> }
+}
+
+/// Moves the captures out of a `once` closure's environment; its code
+/// starts with this, and `finish` frees the storage after the call.
+public func OnceClosure.take<E>(env: ptr[u8]): E {
+    unsafe {
+        return mem.ptrRead<E>(env as ptr[E])
+    }
+}
+
+/// Consumes the closure for its call. The environment now belongs to the
+/// call; the closure left behind is destroyed empty.
+public func OnceClosure.release<F>(self: own OnceClosure<F>): OnceCall<F> {
+    let mut closure = self
+    let call = OnceCall<F> { code: closure.code, env: closure.env, finish: closure.finish }
+    closure.env = nil
+    closure.drop = keepEnvironment<F>;
+    return call
+}
+
+/// Consumes a `Send` `once` closure for its call.
+public func SendOnceClosure.release<F>(self: own SendOnceClosure<F>): OnceCall<F> {
+    let mut closure = self
+    let call = OnceCall<F> { code: closure.code, env: closure.env, finish: closure.finish }
+    closure.env = nil
+    closure.drop = keepEnvironment<F>;
+    return call
+}
+
+/// `own (A) -> R` as `own once (A) -> R`: the call runs the same code and
+/// then destroys the whole environment.
+public func Closure.once<F>(self: own Closure<F>): OnceClosure<F> {
+    let mut closure = self
+    let once = OnceClosure.adopt<F>(OnceParts<F> {
+        code: closure.code,
+        env: closure.env,
+        drop: closure.drop,
+        finish: closure.drop,
+    })
+    closure.env = nil
+    closure.drop = keepEnvironment<F>;
+    return once
+}
+
+/// `own (A) -> R + Send` as `own once (A) -> R + Send`.
+public func SendClosure.once<F>(self: own SendClosure<F>): SendOnceClosure<F> {
+    let mut closure = self
+    let once = SendOnceClosure.adopt<F>(OnceParts<F> {
+        code: closure.code,
+        env: closure.env,
+        drop: closure.drop,
+        finish: closure.drop,
+    })
+    closure.env = nil
+    closure.drop = keepEnvironment<F>;
+    return once
+}
+
+/// `own (A) -> R + Send` as `own once (A) -> R`.
+public func SendClosure.localOnce<F>(self: own SendClosure<F>): OnceClosure<F> {
+    let mut closure = self
+    let once = OnceClosure.adopt<F>(OnceParts<F> {
+        code: closure.code,
+        env: closure.env,
+        drop: closure.drop,
+        finish: closure.drop,
+    })
+    closure.env = nil
+    closure.drop = keepEnvironment<F>;
+    return once
+}
+
+/// The same `once` closure without the `Send` guarantee.
+public func SendOnceClosure.local<F>(self: own SendOnceClosure<F>): OnceClosure<F> {
+    let mut closure = self
+    let once = OnceClosure.adopt<F>(OnceParts<F> {
+        code: closure.code,
+        env: closure.env,
+        drop: closure.drop,
+        finish: closure.finish,
+    })
+    closure.env = nil
+    closure.drop = keepEnvironment<F>;
+    return once
+}
+
+@Destructor
+func OnceCall.destroy<F>(self: own OnceCall<F>): void {
+    (self.finish)(self.env)
+}
+
+@Destructor
+func OnceClosure.destroy<F>(self: own OnceClosure<F>): void {
+    (self.drop)(self.env)
+}
+
+@Destructor
+func SendOnceClosure.destroy<F>(self: own SendOnceClosure<F>): void {
+    (self.drop)(self.env)
+}
+
+@Destructor
+func Closure.destroy<F>(self: own Closure<F>): void {
+    (self.drop)(self.env)
+}
+
+@Destructor
+func SendClosure.destroy<F>(self: own SendClosure<F>): void {
+    (self.drop)(self.env)
+}
+
+/// A `Send` closure without parameters as a `std.thread.ThreadJob<void, R>`:
+/// `thread.spawn(job)` runs it once on the new thread, so it may consume
+/// its captures.
+public struct ClosureJob<R> {
+    private closure: own once () -> R + Send
+}
+
+/// Wraps `closure` as a thread job.
+public func ClosureJob.new<R>(closure: own once () -> R + Send): ClosureJob<R> {
+    return ClosureJob<R> { closure: closure }
+}
+
+/// Wraps a closure that could run more than once as a thread job.
+public func ClosureJob.fromClosure<R>(closure: own () -> R + Send): ClosureJob<R> {
+    let once: own once () -> R + Send = closure
+    return ClosureJob<R> { closure: once }
+}
+
+/// Runs the closure, consuming the job.
+public func ClosureJob.run<R>(self: own ClosureJob<R>, argument: void): R {
+    return (self.closure)()
+}

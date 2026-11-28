@@ -44,8 +44,8 @@ static int64_t ar_time_monotonic_ns(void) {{
 }}
 
 static void ar_process_exit({int_c_ty} code) {{
-    int status = code < 0 ? 255 : (code > 255 ? (int)(code & 0xff) : (int)code);
-    exit(status);
+    int32_t status = (int32_t)code;
+    exit((int)status);
 }}"#
         );
     }

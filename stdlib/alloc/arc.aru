@@ -117,7 +117,7 @@ func retainWeak<T>(inner: ptr[ArcBox<T>]): void {
 public func Arc.tryNew<T>(value: T): Result<Arc<T>, alloc.AllocError> {
     let size = boxSize<T>()
     let align = boxAlign<T>()
-    let maximum: usize = 2147483647 as usize
+    let maximum: usize = mem.maxAllocBytes()
     if size > maximum || align == (0 as usize) || align > maximum {
         return Result.Err(alloc.AllocError.InvalidLayout)
     }

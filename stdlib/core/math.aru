@@ -33,6 +33,8 @@
 //! - `std.core.decimal` — fixed-point decimal arithmetic for monetary computation
 module std.core.math
 
+import std.core.intrinsics as intrinsics
+
 // ── Mathematical Constants ──────────────────────────────────────────────────
 
 /// Archimedes' constant (π), the ratio of a circle's circumference to its diameter.
@@ -221,54 +223,9 @@ public func round(x: float): float {
 
 // ── Square Root & Hypotenuse ────────────────────────────────────────────────
 
-/// Computes the square root of `x` (√x) using high-precision Newton-Raphson.
+/// Computes the IEEE-754 square root of `x` (√x) via the hardware `sqrt` intrinsic.
 public func sqrt(x: float): float {
-    if isNan(x) { return x }
-    if x < 0.0 { return nan() }
-    if x == 0.0 { return x }
-    if isInfinite(x) { return x }
-
-    // Range reduction: scale into [1.0, 4.0)
-    let mut norm = x
-    let mut scale = 1.0
-
-    while norm >= 1.0e16 {
-        norm = norm * 1.0e-16
-        scale = scale * 1.0e8
-    }
-    while norm >= 10000.0 {
-        norm = norm * 0.0001
-        scale = scale * 100.0
-    }
-    while norm >= 4.0 {
-        norm = norm * 0.25
-        scale = scale * 2.0
-    }
-    while norm < 1.0e-16 {
-        norm = norm * 1.0e16
-        scale = scale * 1.0e-8
-    }
-    while norm < 0.0001 {
-        norm = norm * 10000.0
-        scale = scale * 0.01
-    }
-    while norm < 1.0 {
-        norm = norm * 4.0
-        scale = scale * 0.5
-    }
-
-    // Initial linear approximation in [1, 4]: y ≈ 0.41731 + 0.59016*norm
-    let mut y = 0.5 * norm + 0.5
-
-    // 6 iterations of Newton-Raphson: y = 0.5 * (y + norm / y)
-    y = 0.5 * (y + norm / y)
-    y = 0.5 * (y + norm / y)
-    y = 0.5 * (y + norm / y)
-    y = 0.5 * (y + norm / y)
-    y = 0.5 * (y + norm / y)
-    y = 0.5 * (y + norm / y)
-
-    return y * scale
+    return intrinsics.sqrt(x)
 }
 
 /// Computes √(x² + y²) without premature overflow or underflow.
@@ -726,4 +683,14 @@ public func float.acos(self: float): float {
 /// Cube root.
 public func float.cbrt(self: float): float {
     return cbrt(self)
+}
+
+/// Fused multiply-add: `(a * b) + c` computed as a single operation with a single rounding step.
+public func mulAdd(a: float, b: float, c: float): float {
+    unsafe { return intrinsics.fma(a, b, c) }
+}
+
+/// Fused multiply-add: `(self * b) + c` with a single rounding step.
+public func float.mulAdd(self: float, b: float, c: float): float {
+    return mulAdd(self, b, c)
 }

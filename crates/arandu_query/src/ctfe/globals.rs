@@ -96,7 +96,7 @@ pub(crate) fn global_const_value_in_context(
         Err(diagnostic) => {
             return HashEq::new(GlobalConstant {
                 result: Err(vec![diagnostic]),
-            })
+            });
         }
     };
     let build = || {
@@ -158,6 +158,7 @@ fn needs_staging(
             | arandu_parser::ExprKind::Group { .. }
             | arandu_parser::ExprKind::Cast { .. }
             | arandu_parser::ExprKind::Array { .. }
+            | arandu_parser::ExprKind::Index { .. }
             | arandu_parser::ExprKind::InterpolatedString { .. }
     ) {
         return true;

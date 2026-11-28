@@ -359,6 +359,12 @@ pub trait StructLayoutProvider {
         None
     }
 
+    /// Whether `sym` is the canonical `std.core.pointer.NonNull<T>` wrapper
+    /// whose first pointer field is guaranteed non-zero (enabling a null niche).
+    fn is_non_null_type(&self, _sym: SymbolId) -> bool {
+        false
+    }
+
     /// Explicit cleanup method associated with a nominal type by the
     /// language-level `@Destructor` contract. Backends must never infer this
     /// association from a function name or from the presence of pointers.
@@ -369,6 +375,11 @@ pub trait StructLayoutProvider {
     /// Whether the struct is marked with `#[repr(C)]` / `@Repr("C")` and must
     /// preserve declaration field order for ABI compatibility.
     fn is_repr_c(&self, _struct_id: SymbolId) -> bool {
+        false
+    }
+
+    /// Whether the nominal aggregate is an untagged `union` (all fields at offset 0).
+    fn is_union(&self, _struct_id: SymbolId) -> bool {
         false
     }
 }
@@ -446,12 +457,6 @@ fn substitute(ty: &ArType, subst: &FxHashMap<SymbolId, TypeId>, interner: &TypeI
             let new_ret = interner.lookup(&substituted_ret).unwrap_or(*ret);
             let range = interner.push_type_args(&new_params);
             ArType::Func(range, new_ret)
-        }
-        ArType::Nullable(inner) => {
-            let inner_ty = interner.resolve(*inner);
-            let substituted_inner = substitute(&inner_ty, subst, interner);
-            let new_inner = interner.lookup(&substituted_inner).unwrap_or(*inner);
-            ArType::Nullable(new_inner)
         }
         ArType::Slice(inner) => {
             let inner_ty = interner.resolve(*inner);

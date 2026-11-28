@@ -38,6 +38,9 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                 };
                 let name_key = crate::NodeKey::from(name_span);
                 if let Some(symbol_id) = checker.resolved.definitions.get(&name_key).copied() {
+                    if func_decl.params.last().is_some_and(|p| p.is_variadic) {
+                        checker.type_info.variadic_functions.insert(symbol_id);
+                    }
                     let method_params = super::super::super::types::extract_generic_param_symbols(
                         checker,
                         &func_decl.generic_params,
@@ -86,6 +89,29 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             *first_ty_id =
                                 apply_receiver_ownership(checker, bare_inst, effective_ownership);
                             struct_params_for_mono = Some(struct_params);
+                        } else if let ArType::Named(struct_id, _) = lowered_first_ty
+                            && let Some(struct_params) =
+                                checker.type_info.generic_params.get(&struct_id).cloned()
+                        {
+                            // `self: ref Pair<T>` names the struct's own `T`, which
+                            // is in scope for every method of `Pair` (as in a Swift
+                            // extension) whether or not the method restates it.
+                            // Parameters the method restates keep its declared order.
+                            let mentioned: Vec<_> = struct_params
+                                .iter()
+                                .copied()
+                                .filter(|param| !method_params.contains(param))
+                                .filter(|&param| {
+                                    crate::type_checker::synth::method::contains_generic_params(
+                                        &lowered_first_ty,
+                                        &[param],
+                                        &checker.type_info.type_interner,
+                                    )
+                                })
+                                .collect();
+                            if !mentioned.is_empty() {
+                                struct_params_for_mono = Some(std::sync::Arc::new(mentioned));
+                            }
                         }
                     }
                     // Mono key params = struct type params (if method) ++ method-only
@@ -101,6 +127,12 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             all_params.push(p);
                         }
                     }
+                    all_params.extend(super::callback::implicit_callback_params(
+                        checker,
+                        symbol_id,
+                        &func_decl.params,
+                        &mut param_types,
+                    ));
                     if !all_params.is_empty() {
                         checker
                             .type_info
@@ -148,19 +180,55 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                     let func_id = checker.intern(func_ty);
                     checker.record_decl_type(symbol_id, func_id);
 
+                    let mut seen_default = false;
+                    for (param_idx, param) in func_decl.params.iter().enumerate() {
+                        if let Some(def_expr) = param.default {
+                            seen_default = true;
+                            if let Some(&param_ty) = param_types.get(param_idx) {
+                                let param_default =
+                                    extract_param_default(checker.pool, def_expr, param_ty);
+                                checker
+                                    .type_info
+                                    .func_param_defaults
+                                    .insert((symbol_id, param_idx), param_default);
+                            }
+                        } else if seen_default {
+                            checker.diagnostics.push(
+                                arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::T012WrongArgCount,
+                                    format!(
+                                        "non-default parameter '{}' cannot follow a parameter with a default value",
+                                        param.name
+                                    ),
+                                    param.span,
+                                )
+                                .with_primary_label(
+                                    "move this parameter before parameters with `= default`",
+                                ),
+                            );
+                        }
+                    }
+
                     if func_decl
                         .attrs
                         .iter()
-                        .any(|attr| attr.name == "Unsafe" || attr.name == "unsafe")
+                        .any(|attr| attr.name == "Unsafe")
                     {
                         checker.type_info.unsafe_functions.insert(symbol_id);
                     }
+                    if func_decl.attrs.iter().any(|attr| attr.name == "Export") {
+                        checker.type_info.exported_functions.insert(symbol_id);
+                    }
+                    if func_decl.attrs.iter().any(|attr| attr.name == "Cold") {
+                        checker.type_info.cold_functions.insert(symbol_id);
+                    }
+
 
                     // Drop Elaboration: Check for @Destructor attribute
                     let has_destructor_attr = func_decl
                         .attrs
                         .iter()
-                        .any(|attr| attr.name == "Destructor" || attr.name == "destructor");
+                        .any(|attr| attr.name == "Destructor");
                     if has_destructor_attr
                         && let arandu_parser::FuncName::Method { .. } = &func_decl.name
                         && let Some(first_param) = func_decl.params.first()
@@ -212,6 +280,24 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             checker.type_info.function_effects.insert(symbol_id, flags);
                         }
                     }
+                    // `@NoSuspend` is `@Effects(NoSuspend)`, added to whatever
+                    // the function already declares.
+                    if func_decl
+                        .attrs
+                        .iter()
+                        .any(|attr| attr.name == "NoSuspend" || attr.name == "nosuspend")
+                    {
+                        let declared = checker
+                            .type_info
+                            .function_effects
+                            .get(&symbol_id)
+                            .copied()
+                            .unwrap_or(arandu_middle::EffectFlags::NONE);
+                        checker.type_info.function_effects.insert(
+                            symbol_id,
+                            declared.union(arandu_middle::EffectFlags::NO_SUSPEND),
+                        );
+                    }
                 }
             }
             TopLevelDecl::Extern(extern_decl) => {
@@ -231,40 +317,97 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                         // auto-ref lower (Borrow/BorrowMut) also applies to
                         // calls through extern declarations.
                         let bare = checker.intern(bare_ty);
+                        reject_foreign_owning_closure(checker, bare, param.span);
                         param_types.push(apply_receiver_ownership(checker, bare, param.ownership));
                     }
+                    let ret_id = checker.intern(ret_ty.clone());
+                    reject_foreign_owning_closure(checker, ret_id, member.span);
 
                     let name_key = crate::NodeKey::from(member.span);
                     if let Some(symbol_id) = checker.resolved.definitions.get(&name_key).copied() {
+                        if member.params.last().is_some_and(|p| p.is_variadic) {
+                            checker.type_info.variadic_functions.insert(symbol_id);
+                        }
                         let member_name = member.name.as_str();
                         let pure_bits = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
                             == arandu_parser::AbiKind::AranduIntrinsic
                             && arandu_middle::IntrinsicKind::from_name(member_name)
-                                .is_some_and(|kind| kind.is_pure_bit_operation());
-                        if pure_bits {
+                                .is_some_and(|kind| kind.is_pure_integer_bit_operation());
+                        if pure_bits
+                            && let Some(kind) = arandu_middle::IntrinsicKind::from_name(member_name)
+                        {
                             use arandu_middle::types::Primitive;
                             let input = ArType::Primitive(if member_name.ends_with("64") {
                                 Primitive::U64
                             } else {
                                 Primitive::U32
                             });
-                            let output = if arandu_middle::IntrinsicKind::from_name(member_name)
-                                == Some(arandu_middle::IntrinsicKind::ReverseBits)
-                            {
+                            let output = if kind.bit_result_is_input_width() {
                                 input.clone()
                             } else {
                                 ArType::Primitive(Primitive::U32)
                             };
+                            // Rotations take a trailing `u32` amount.
+                            let mut expected_params = vec![input.clone()];
+                            if kind.bit_operand_count() == Some(2) {
+                                expected_params.push(ArType::Primitive(Primitive::U32));
+                            }
                             let input_name = if member_name.ends_with("64") { "u64" } else { "u32" };
                             let output_name = if output == input { input_name } else { "u32" };
+                            let params_text = if expected_params.len() == 2 {
+                                format!("{input_name} and u32 parameters")
+                            } else {
+                                format!("one {input_name} parameter")
+                            };
+                            let actual_params: Vec<ArType> = param_types
+                                .iter()
+                                .map(|&ty| checker.type_info.type_interner.resolve(ty))
+                                .collect();
                             if !member.generic_params.is_empty()
-                                || param_types.len() != 1
-                                || checker.type_info.type_interner.resolve(param_types[0]) != input
+                                || actual_params != expected_params
                                 || ret_ty != output
                             {
                                 checker.diagnostics.push(arandu_middle::Diagnostic::error(
                                     arandu_middle::DiagCode::U001FeatureNotSupported,
-                                    format!("unsupported signature for bit intrinsic '{member_name}': expected one {input_name} parameter and {output_name} result without generics"),
+                                    format!("unsupported signature for bit intrinsic '{member_name}': expected {params_text} and {output_name} result without generics"),
+                                    member.span,
+                                ));
+                            }
+                        }
+                        let float_bitcast = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                .is_some_and(|kind| matches!(kind, arandu_middle::IntrinsicKind::FloatToBits(..) | arandu_middle::IntrinsicKind::FloatFromBits(..)));
+                        if float_bitcast
+                            && let Some(kind) = arandu_middle::IntrinsicKind::from_name(member_name)
+                        {
+                            use arandu_middle::types::Primitive;
+                            let (expected_param, expected_ret, param_name, ret_name) = match kind {
+                                arandu_middle::IntrinsicKind::FloatToBits(arandu_middle::intrinsics::FloatWidth::F64) => {
+                                    (ArType::Primitive(Primitive::F64), ArType::Primitive(Primitive::U64), "f64", "u64")
+                                }
+                                arandu_middle::IntrinsicKind::FloatToBits(arandu_middle::intrinsics::FloatWidth::F32) => {
+                                    (ArType::Primitive(Primitive::F32), ArType::Primitive(Primitive::U32), "f32", "u32")
+                                }
+                                arandu_middle::IntrinsicKind::FloatFromBits(arandu_middle::intrinsics::FloatWidth::F64) => {
+                                    (ArType::Primitive(Primitive::U64), ArType::Primitive(Primitive::F64), "u64", "f64")
+                                }
+                                arandu_middle::IntrinsicKind::FloatFromBits(arandu_middle::intrinsics::FloatWidth::F32) => {
+                                    (ArType::Primitive(Primitive::U32), ArType::Primitive(Primitive::F32), "u32", "f32")
+                                }
+                                _ => unreachable!(),
+                            };
+                            let actual_params: Vec<ArType> = param_types
+                                .iter()
+                                .map(|&ty| checker.type_info.type_interner.resolve(ty))
+                                .collect();
+                            if !member.generic_params.is_empty()
+                                || actual_params != vec![expected_param]
+                                || ret_ty != expected_ret
+                            {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for float bitcast intrinsic '{member_name}': expected one {param_name} parameter and {ret_name} result without generics"),
                                     member.span,
                                 ));
                             }
@@ -274,7 +417,8 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             .then(|| arandu_middle::intrinsics::SimdIntrinsic::from_name(member_name))
                             .flatten();
                         if let Some(simd) = simd {
-                            let (parameters, result) = simd.signature();
+                            let (parameters, result) =
+                                simd.signature(&checker.type_info.type_interner);
                             let actual: Vec<_> = param_types.iter().map(|&ty| checker.resolve(ty)).collect();
                             if !member.generic_params.is_empty() || actual != parameters || ret_ty != result {
                                 checker.diagnostics.push(arandu_middle::Diagnostic::error(
@@ -284,7 +428,168 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                                 ));
                             }
                         }
-                        let mut flags = if pure_bits || simd.is_some() {
+                        let is_fma = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                == Some(arandu_middle::IntrinsicKind::Fma);
+                        if is_fma {
+                            use arandu_middle::types::Primitive;
+                            let (float_ty, float_name) = if member_name == "fma" {
+                                (ArType::Primitive(Primitive::Float), "float")
+                            } else if member_name.ends_with("64") {
+                                (ArType::Primitive(Primitive::F64), "f64")
+                            } else {
+                                (ArType::Primitive(Primitive::F32), "f32")
+                            };
+                            let expected_params = vec![float_ty.clone(), float_ty.clone(), float_ty.clone()];
+                            let actual_params: Vec<ArType> = param_types
+                                .iter()
+                                .map(|&ty| checker.type_info.type_interner.resolve(ty))
+                                .collect();
+                            if !member.generic_params.is_empty()
+                                || actual_params != expected_params
+                                || ret_ty != float_ty
+                            {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for FMA intrinsic '{member_name}': expected three {float_name} parameters and {float_name} result without generics"),
+                                    member.span,
+                                ));
+                            }
+                        }
+                        let is_sqrt = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                == Some(arandu_middle::IntrinsicKind::Sqrt);
+                        if is_sqrt {
+                            use arandu_middle::types::Primitive;
+                            let (float_ty, float_name) = if member_name == "sqrt" {
+                                (ArType::Primitive(Primitive::Float), "float")
+                            } else if member_name.ends_with("64") {
+                                (ArType::Primitive(Primitive::F64), "f64")
+                            } else {
+                                (ArType::Primitive(Primitive::F32), "f32")
+                            };
+                            let actual_params: Vec<ArType> = param_types
+                                .iter()
+                                .map(|&ty| checker.type_info.type_interner.resolve(ty))
+                                .collect();
+                            if !member.generic_params.is_empty()
+                                || actual_params != [float_ty.clone()]
+                                || ret_ty != float_ty
+                            {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for sqrt intrinsic '{member_name}': expected one {float_name} parameter and {float_name} result without generics"),
+                                    member.span,
+                                ));
+                            }
+                        }
+                        let is_spin_hint = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                == Some(arandu_middle::IntrinsicKind::SpinLoopHint);
+                        if is_spin_hint
+                            && (!member.generic_params.is_empty()
+                                || !param_types.is_empty()
+                                || ret_ty != ArType::Void)
+                        {
+                            checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                arandu_middle::DiagCode::U001FeatureNotSupported,
+                                format!("unsupported signature for spin-loop hint intrinsic '{member_name}': expected no parameters and void result without generics"),
+                                member.span,
+                            ));
+                        }
+                        let is_branch_hint = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && matches!(
+                                arandu_middle::IntrinsicKind::from_name(member_name),
+                                Some(
+                                    arandu_middle::IntrinsicKind::Likely
+                                        | arandu_middle::IntrinsicKind::Unlikely
+                                )
+                            );
+                        if is_branch_hint {
+                            use arandu_middle::types::Primitive;
+                            let bool_ty = ArType::Primitive(Primitive::Bool);
+                            let actual_params: Vec<ArType> = param_types
+                                .iter()
+                                .map(|&ty| checker.type_info.type_interner.resolve(ty))
+                                .collect();
+                            if !member.generic_params.is_empty()
+                                || actual_params != [bool_ty.clone()]
+                                || ret_ty != bool_ty
+                            {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for branch-hint intrinsic '{member_name}': expected one bool parameter and bool result without generics"),
+                                    member.span,
+                                ));
+                            }
+                        }
+                        let pure_arith = (arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic)
+                            .then(|| arandu_middle::IntrinsicKind::from_name(member_name))
+                            .flatten()
+                            .filter(|kind| {
+                                matches!(
+                                    kind,
+                                    arandu_middle::intrinsics::IntrinsicKind::OverflowArithmetic(..)
+                                        | arandu_middle::intrinsics::IntrinsicKind::SaturatingArithmetic(..)
+                                )
+                            });
+                        if let Some(kind) = pure_arith {
+                            use arandu_middle::intrinsics::IntrinsicKind;
+                            let arith_int = match kind {
+                                IntrinsicKind::OverflowArithmetic(_, arith)
+                                | IntrinsicKind::SaturatingArithmetic(_, arith) => arith,
+                                _ => unreachable!(),
+                            };
+                            let int_prim = arith_int.primitive();
+                            let int_ty = ArType::Primitive(int_prim);
+                            let int_id = checker.intern(int_ty.clone());
+                            let bool_id = checker.intern(ArType::Primitive(arandu_middle::types::Primitive::Bool));
+                            let expected_ret = match kind {
+                                IntrinsicKind::OverflowArithmetic(..) => {
+                                    ArType::tuple(&[int_id, bool_id], &checker.type_info.type_interner)
+                                }
+                                _ => int_ty.clone(),
+                            };
+                            let expected_params = vec![int_ty.clone(), int_ty];
+                            let actual_params: Vec<ArType> = param_types
+                                .iter()
+                                .map(|&ty| checker.type_info.type_interner.resolve(ty))
+                                .collect();
+                            if !member.generic_params.is_empty()
+                                || actual_params != expected_params
+                                || ret_ty != expected_ret
+                            {
+                                let int_name = arith_int.ar_type_name();
+                                let expected_ret_text = if matches!(kind, IntrinsicKind::OverflowArithmetic(..)) {
+                                    format!("({int_name}, bool)")
+                                } else {
+                                    int_name.to_owned()
+                                };
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for arithmetic intrinsic '{member_name}': expected two {int_name} parameters and {expected_ret_text} result without generics"),
+                                    member.span,
+                                ));
+                            }
+                        }
+                        let is_forget = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                == Some(arandu_middle::IntrinsicKind::Forget);
+                        let mut flags = if pure_bits
+                            || float_bitcast
+                            || simd.is_some()
+                            || is_fma
+                            || is_spin_hint
+                            || is_branch_hint
+                            || is_forget
+                            || pure_arith.is_some()
+                        {
                             arandu_middle::EffectFlags::NONE
                         } else {
                             arandu_middle::EffectFlags::FOREIGN
@@ -295,23 +600,23 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                         {
                             use arandu_middle::intrinsics::{AtomicOp, IntrinsicKind};
                             let expected = match kind {
-                                IntrinsicKind::Atomic(op, width) => {
+                                IntrinsicKind::Atomic(op, width, _) => {
                                     let scalar_ty = if width == arandu_middle::intrinsics::AtomicWidth::Pointer {
                                         let byte = checker.intern(ArType::Primitive(arandu_middle::types::Primitive::U8));
                                         ArType::Ptr(byte)
                                     } else { ArType::Primitive(width.primitive()) };
                                     let scalar = checker.intern(scalar_ty.clone());
-                                    let reference = if matches!(op, AtomicOp::Load | AtomicOp::Store) { ArType::Ref(scalar) } else { ArType::RefMut(scalar) };
+                                    let reference = ArType::Ref(scalar);
                                     let mut parameters = vec![checker.intern(reference)];
                                     parameters.resize(op.argument_count(), scalar);
                                     Some((parameters, if op == AtomicOp::Store { ArType::Void } else { scalar_ty }))
                                 }
-                                IntrinsicKind::AtomicFence | IntrinsicKind::AtomicCompilerFence => Some((Vec::new(), ArType::Void)),
+                                IntrinsicKind::AtomicFence(..) | IntrinsicKind::AtomicCompilerFence(..) => Some((Vec::new(), ArType::Void)),
                                 _ => None,
                             };
                             if let Some((parameters, result)) = expected
                                 && (!member.generic_params.is_empty() || param_types != parameters || ret_ty != result
-                                    || matches!(kind, IntrinsicKind::Atomic(op, arandu_middle::intrinsics::AtomicWidth::Pointer)
+                                    || matches!(kind, IntrinsicKind::Atomic(op, arandu_middle::intrinsics::AtomicWidth::Pointer, _)
                                         if !matches!(op, AtomicOp::Load | AtomicOp::Store | AtomicOp::Swap | AtomicOp::CompareExchange)))
                             {
                                 checker.diagnostics.push(arandu_middle::Diagnostic::error(
@@ -419,4 +724,101 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
             _ => {}
         }
     });
+}
+
+/// An owning closure carries code with the internal calling convention and
+/// an environment only Arandu can destroy, so it never crosses a foreign
+/// boundary (RFC 0032, L3).
+fn reject_foreign_owning_closure(
+    checker: &mut TypeChecker<'_>,
+    ty: crate::type_checker::types::TypeId,
+    span: arandu_lexer::Span,
+) {
+    let mut found = false;
+    if let Ok(shape) =
+        arandu_middle::types::TypeShape::from_id(ty, &checker.type_info.type_interner)
+    {
+        let _ = shape.for_each_symbol(|symbol| {
+            found |= checker.symbols.try_get(symbol).is_some_and(|entry| {
+                entry
+                    .lang_item
+                    .is_some_and(|item| item.owning_closure().is_some())
+            });
+        });
+    }
+    if found {
+        checker.diagnostics.push(
+            arandu_middle::Diagnostic::error(
+                arandu_middle::DiagCode::T049InvalidFfiExport,
+                "an owning closure cannot cross a foreign function boundary",
+                span,
+            )
+            .with_primary_label("`own (A) -> R` uses Arandu's internal calling convention")
+            .with_hint("pass a plain function value `(A) -> R` and a context pointer instead"),
+        );
+    }
+}
+
+fn extract_param_default(
+    pool: &arandu_parser::AstPool,
+    mut expr: arandu_parser::ExprId,
+    ty: crate::type_checker::types::TypeId,
+) -> crate::ParamDefault {
+    use arandu_parser::{StringPart, UnaryOp, ast_pool::ExprKind};
+    while let ExprKind::Group { expr: inner } = pool.expr(expr) {
+        expr = *inner;
+    }
+    match pool.expr(expr) {
+        ExprKind::Int { value } => crate::ParamDefault::Int {
+            raw: value.clone(),
+            ty,
+        },
+        ExprKind::Float { value } => crate::ParamDefault::Float {
+            raw: value.clone(),
+            ty,
+        },
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr: inner,
+        } => {
+            let mut inner_id = *inner;
+            while let ExprKind::Group { expr: g } = pool.expr(inner_id) {
+                inner_id = *g;
+            }
+            match pool.expr(inner_id) {
+                ExprKind::Int { value } => crate::ParamDefault::Int {
+                    raw: smol_str::SmolStr::new(format!("-{value}")),
+                    ty,
+                },
+                ExprKind::Float { value } => crate::ParamDefault::Float {
+                    raw: smol_str::SmolStr::new(format!("-{value}")),
+                    ty,
+                },
+                _ => crate::ParamDefault::LocalExpr { expr, ty },
+            }
+        }
+        ExprKind::Bool { value } => crate::ParamDefault::Bool(*value),
+        ExprKind::Char { value } => crate::ParamDefault::Char(value.clone()),
+        ExprKind::Nil => crate::ParamDefault::Nil { ty },
+        ExprKind::InterpolatedString { parts } => {
+            let parts = pool.string_part_list(*parts);
+            let mut combined = String::new();
+            let mut all_text = true;
+            for part_id in parts {
+                match pool.string_part(*part_id) {
+                    StringPart::Text { text, .. } => combined.push_str(text),
+                    StringPart::Expr { .. } => {
+                        all_text = false;
+                        break;
+                    }
+                }
+            }
+            if all_text {
+                crate::ParamDefault::Str(smol_str::SmolStr::new(combined))
+            } else {
+                crate::ParamDefault::LocalExpr { expr, ty }
+            }
+        }
+        _ => crate::ParamDefault::LocalExpr { expr, ty },
+    }
 }

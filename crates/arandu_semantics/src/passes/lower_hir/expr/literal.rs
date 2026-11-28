@@ -32,6 +32,28 @@ pub(super) fn lower_unary(
     else {
         unreachable!();
     };
+    if matches!(
+        op,
+        arandu_parser::UnaryOp::Ref | arandu_parser::UnaryOp::RefMut
+    ) {
+        let mut target = *inner_expr;
+        while let ExprKind::Group { expr: inner, .. } = pool.expr(target) {
+            target = *inner;
+        }
+        if let ExprKind::Index { base, index } = pool.expr(target)
+            && let Some(kind) = super::access::try_lower_trait_index_ref(
+                type_check,
+                pool,
+                hir_pool,
+                *base,
+                *index,
+                matches!(op, arandu_parser::UnaryOp::RefMut),
+                pool.expr_span(expr),
+            )?
+        {
+            return Ok(kind);
+        }
+    }
     Ok({
         let inner_id = super::lower_expr(type_check, pool, hir_pool, *inner_expr)?;
         HirExprKind::Unary {
@@ -120,6 +142,20 @@ pub(super) fn lower_byte_string(pool: &AstPool, expr: ExprId) -> Result<HirExprK
     ))
 }
 
+pub(super) fn lower_c_string(pool: &AstPool, expr: ExprId) -> Result<HirExprKind, Diagnostic> {
+    let ExprKind::CString { bytes } = pool.expr(expr) else {
+        unreachable!();
+    };
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Ok(HirExprKind::FrozenBytes(
+            arandu_middle::ctfe::ConstString::new(text).bytes(),
+        ));
+    }
+    Ok(HirExprKind::FrozenBytes(
+        arandu_middle::ctfe::ConstBytes::from_raw(bytes.clone()),
+    ))
+}
+
 pub(super) fn lower_interpolated_string(
     type_check: &mut TypeCheckResult,
     pool: &AstPool,
@@ -145,11 +181,21 @@ pub(super) fn lower_interpolated_string(
                     } => {
                         has_expr = true;
                         let lowered = super::lower_expr(type_check, pool, hir_pool, *inner_expr)?;
-                        hir_parts.push(HirStringPart::Expr(lowered));
+                        let wrapped = super::text::wrap_user_to_str(type_check, hir_pool, lowered);
+                        let wrapped = super::text::wrap_user_display(type_check, hir_pool, wrapped);
+                        hir_parts.push(HirStringPart::Expr(wrapped));
                     }
                 }
             }
-            if has_expr {
+            let owned = super::text::own_type(type_check, pool, expr)
+                .is_some_and(|ty| super::text::is_string(type_check, ty));
+            if has_expr && owned {
+                // Text built at run time is an owned `String`.
+                let span = pool.expr_span(expr);
+                super::text::owned_interpolation(type_check, hir_pool, hir_parts, span).ok_or_else(
+                    || Diagnostic::ice(crate::DiagCode::ICEL001, "`String.from` is missing", span),
+                )?
+            } else if has_expr {
                 HirExprKind::StringInterp { parts: hir_parts }
             } else {
                 // Pure text — collapse segments into a single Str literal.
@@ -169,7 +215,20 @@ pub(super) fn lower_interpolated_string(
                         crate::SmolStr::new(buf)
                     }
                 };
-                HirExprKind::Str(combined)
+                if owned {
+                    let span = pool.expr_span(expr);
+                    super::text::owned_literal(type_check, hir_pool, combined, span).ok_or_else(
+                        || {
+                            Diagnostic::ice(
+                                crate::DiagCode::ICEL001,
+                                "`String.from` is missing",
+                                span,
+                            )
+                        },
+                    )?
+                } else {
+                    HirExprKind::Str(combined)
+                }
             }
         }
     })

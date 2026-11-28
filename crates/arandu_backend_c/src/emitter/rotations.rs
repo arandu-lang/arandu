@@ -62,9 +62,17 @@ pub(super) fn plan(
             constants[lhs.as_usize()] = constant(op);
         }
     }
-    let count_value = |op: &AmirOperand| match op {
-        AmirOperand::Copy(t) => constants[t.as_usize()],
-        _ => constant(op),
+    let temp_of = |op: &AmirOperand| match op {
+        AmirOperand::Copy(t) | AmirOperand::Move(t) => Some(*t),
+        _ => None,
+    };
+    let same_value = |a: &AmirOperand, b: &AmirOperand| match (temp_of(a), temp_of(b)) {
+        (Some(ta), Some(tb)) => ta == tb,
+        _ => a == b,
+    };
+    let count_value = |op: &AmirOperand| match temp_of(op) {
+        Some(t) => constants[t.as_usize()],
+        None => constant(op),
     };
     let removable_constant = |stmt: &&AmirStmt| matches!(stmt, AmirStmt::Assign { lhs, .. } if *lhs != TempId(0) && !func.params.contains(lhs) && constants[lhs.as_usize()].is_some() && uses[lhs.as_usize()] == 1);
     let mut rotations = vec![None; func.temps.len()];
@@ -111,8 +119,8 @@ pub(super) fn plan(
             else {
                 continue;
             };
-            let paired = (*left == AmirOperand::Copy(*a) && *right == AmirOperand::Copy(*b))
-                || (*left == AmirOperand::Copy(*b) && *right == AmirOperand::Copy(*a));
+            let paired = (temp_of(left) == Some(*a) && temp_of(right) == Some(*b))
+                || (temp_of(left) == Some(*b) && temp_of(right) == Some(*a));
             let width = match interner.resolve(func.temps[result.as_usize()].ty) {
                 ArType::Primitive(Primitive::U32) => 32,
                 ArType::Primitive(Primitive::U64) => 64,
@@ -122,8 +130,11 @@ pub(super) fn plan(
                 continue;
             };
             if !paired
-                || x != y
-                || !matches!(x, AmirOperand::Copy(_) | AmirOperand::Constant(_))
+                || !same_value(x, y)
+                || !matches!(
+                    x,
+                    AmirOperand::Copy(_) | AmirOperand::Move(_) | AmirOperand::Constant(_)
+                )
                 || ca == 0
                 || cb == 0
                 || ca >= width
@@ -158,7 +169,7 @@ pub(super) fn plan(
                 .collect();
             if omitted
                 .iter()
-                .any(|t| *count_a != AmirOperand::Copy(*t) && *count_b != AmirOperand::Copy(*t))
+                .any(|t| temp_of(count_a) != Some(*t) && temp_of(count_b) != Some(*t))
             {
                 continue;
             }

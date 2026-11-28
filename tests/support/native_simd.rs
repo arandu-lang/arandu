@@ -107,6 +107,7 @@ fn fixture(funcs: Vec<AmirFunc>, pool: AmirLiteralPool, info: TypeInfo) -> Fixtu
             extern_funcs: Default::default(),
             debug_bindings: vec![],
             debug_blocks: vec![],
+            statics: vec![],
         },
         symbols,
         info,

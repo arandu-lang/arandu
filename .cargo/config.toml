@@ -1,5 +1,10 @@
 # Workspace-level cargo configuration.
 #
+# `cargo xt <task>` is the short form of `cargo run --locked -p xtask -- <task>`.
+
+[alias]
+xt = "run --locked -p xtask --"
+#
 # IMPORTANT: [build].rustflags from ~/.cargo/config.toml (mold linker) is concatenated
 # with [target.*.rustflags] here. Cargo does NOT allow target-specific overrides to
 # suppress [build].rustflags from a higher-level config file.

@@ -118,7 +118,8 @@ pub fn validate_amir_func(
                     diags.push(Diagnostic::ice(
                         DiagCode::ICEGEN002,
                         format!(
-                            "bb{i} argument {arg_index} to bb{} has type {}, but block parameter expects {} (SSA-TYPE)",
+                            "in func '{}': bb{i} argument {arg_index} to bb{} has type {}, but block parameter expects {} (SSA-TYPE)",
+                            symbols.get(func.symbol).name,
                             target.as_usize(),
                             type_name(interner, arg_ty),
                             type_name(interner, param.ty)
@@ -164,8 +165,12 @@ pub fn validate_amir_func(
         if i == 0 {
             continue;
         }
+        // A check proved to pass leaves its trap block behind, harmless.
         if !reachable.contains(BlockId::from_usize(i))
-            && !matches!(block.terminator, AmirTerminator::Unreachable)
+            && !matches!(
+                block.terminator,
+                AmirTerminator::Unreachable | AmirTerminator::Trap(_)
+            )
         {
             diags.push(Diagnostic::ice(
                 DiagCode::ICEGEN002,
@@ -212,7 +217,11 @@ pub fn validate_amir_func(
         if interner.is_error(temp.ty) {
             diags.push(Diagnostic::ice(
                 DiagCode::ICEGEN002,
-                format!("temp _{} has poison type Error (TYP-1)", temp.id.as_usize()),
+                format!(
+                    "in func '{}': temp _{} has poison type Error (TYP-1)",
+                    symbols.get(func.symbol).name,
+                    temp.id.as_usize()
+                ),
                 span,
             ));
         }
@@ -248,8 +257,68 @@ pub fn validate_amir_func(
 
     validate_gen_operations(func, interner, &mut diags);
     validate_vector_operations(func, interner, span, &mut diags);
+    validate_scalar_selects(func, interner, span, &mut diags);
 
     diags
+}
+
+fn is_scalar_select_type(ty: &ArType) -> bool {
+    matches!(
+        ty,
+        ArType::Primitive(Primitive::Bool | Primitive::Char) | ArType::Ptr(_)
+    ) || matches!(ty, ArType::Primitive(primitive) if primitive.is_numeric())
+}
+
+fn validate_scalar_selects(
+    func: &AmirFunc,
+    interner: &TypeInterner,
+    span: crate::Span,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for stmt in func.stmts.payloads.iter() {
+        let AmirStmt::Assign {
+            lhs,
+            rhs:
+                AmirRvalue::Select {
+                    condition,
+                    if_true,
+                    if_false,
+                },
+        } = stmt
+        else {
+            continue;
+        };
+        let Some(result_ty_id) = func.temps.get(lhs.as_usize()).map(|temp| temp.ty) else {
+            continue;
+        };
+        let result = interner.resolve(result_ty_id);
+        let arm_valid = |op: &AmirOperand| match operand_type(func, op, interner) {
+            Some(op_ty) => edge_types_compatible(interner, op_ty, result_ty_id),
+            None => match op {
+                AmirOperand::Constant(AmirConstant::Pool(_)) => {
+                    matches!(result, ArType::Primitive(_))
+                }
+                AmirOperand::Constant(AmirConstant::Nil) => matches!(result, ArType::Ptr(_)),
+                _ => false,
+            },
+        };
+        let cond_ok = operand_type(func, condition, interner)
+            .is_some_and(|ty| interner.resolve(ty) == ArType::Primitive(Primitive::Bool));
+        if !is_scalar_select_type(&result)
+            || !cond_ok
+            || !arm_valid(if_true)
+            || !arm_valid(if_false)
+        {
+            diags.push(Diagnostic::ice(
+                DiagCode::ICEGEN002,
+                format!(
+                    "invalid scalar select operand or result type for temp _{} (SELECT-TYPE)",
+                    lhs.as_usize()
+                ),
+                span,
+            ));
+        }
+    }
 }
 
 fn validate_gen_operations(func: &AmirFunc, interner: &TypeInterner, diags: &mut Vec<Diagnostic>) {
@@ -386,7 +455,9 @@ fn validate_borrowed_gen_result(
     for stmt in func.stmts.payloads.iter() {
         let AmirStmt::Assign { lhs, rhs } = stmt else {
             let used = match stmt {
-                AmirStmt::Store { rhs, .. } | AmirStmt::Free(rhs) => references(rhs),
+                AmirStmt::Store { rhs, .. } | AmirStmt::Free(rhs) | AmirStmt::ArenaRewind(rhs) => {
+                    references(rhs)
+                }
                 AmirStmt::Call { callee, args, .. } => {
                     references(callee) || args.iter().any(references)
                 }
@@ -425,7 +496,7 @@ fn validate_borrowed_gen_result(
 
     for block in &func.blocks {
         let used = match &block.terminator {
-            AmirTerminator::Return | AmirTerminator::Unreachable => false,
+            AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => false,
             AmirTerminator::Goto { args, .. } => args.iter().any(references),
             AmirTerminator::Branch {
                 condition,
@@ -539,12 +610,15 @@ fn is_valid_terminator(term: &AmirTerminator) -> bool {
             | AmirTerminator::SwitchInt { .. }
             | AmirTerminator::Suspend { .. }
             | AmirTerminator::Unreachable
+            | AmirTerminator::Trap(_)
     )
 }
 
 fn terminator_targets(term: &AmirTerminator) -> Vec<BlockId> {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => Vec::new(),
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {
+            Vec::new()
+        }
         AmirTerminator::Goto { target, .. } => vec![*target],
         AmirTerminator::Branch {
             if_true, if_false, ..
@@ -562,7 +636,7 @@ fn terminator_targets(term: &AmirTerminator) -> Vec<BlockId> {
 
 fn for_each_terminator_edge(term: &AmirTerminator, mut f: impl FnMut(BlockId, &[AmirOperand])) {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
         AmirTerminator::Goto { target, args } => f(*target, args),
         AmirTerminator::Branch {
             if_true,
@@ -676,6 +750,17 @@ fn validate_vector_operations(
             } => {
                 matches!(result, ArType::Vector(shape) if *lane < shape.lanes() && operand(value) == Some(ArType::Primitive(shape.lane())))
                     && same(vector)
+            }
+            AmirRvalue::VectorBitmask { vector } => {
+                operand(vector) == Some(ArType::Vector(crate::types::VectorType::U8x16))
+                    && result == ArType::Primitive(crate::types::Primitive::U32)
+            }
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                matches!(
+                    operand(source),
+                    Some(ArType::Slice(elem))
+                        if matches!(interner.resolve(elem), ArType::Primitive(crate::types::Primitive::U8))
+                ) && result == ArType::Vector(crate::types::VectorType::U8x16)
             }
             _ => continue,
         };

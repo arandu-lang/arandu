@@ -7,7 +7,6 @@ pub(super) fn hash_shape(hash: &mut blake3::Hasher, shape: &TypeShape) {
         Vector(_) => 25,
         Named(_, _) => 1,
         Func(_, _) => 2,
-        Nullable(_) => 3,
         Slice(_) => 4,
         Array(_, _) => 5,
         ConstArray(_, _) => 6,
@@ -30,6 +29,7 @@ pub(super) fn hash_shape(hash: &mut blake3::Hasher, shape: &TypeShape) {
         FloatLiteral => 22,
         Error => 23,
         MutSlice(_) => 26,
+        Never => 27,
     };
     hash.update(&[tag]);
     match shape {
@@ -79,14 +79,12 @@ pub(super) fn hash_shape(hash: &mut blake3::Hasher, shape: &TypeShape) {
             hash.update(&symbol.file_id.to_le_bytes());
             hash.update(&symbol.local_id.0.to_le_bytes());
         }
-        Nullable(inner) | Slice(inner) | MutSlice(inner) | Ptr(inner) | Ref(inner)
-        | RefMut(inner) | Option(inner) | Coroutine(inner) | Poll(inner) | Range(inner) => {
-            hash_shape(hash, inner)
-        }
+        Slice(inner) | MutSlice(inner) | Ptr(inner) | Ref(inner) | RefMut(inner)
+        | Option(inner) | Coroutine(inner) | Poll(inner) | Range(inner) => hash_shape(hash, inner),
         Result(ok, error) => {
             hash_shape(hash, ok);
             hash_shape(hash, error);
         }
-        GenRef | Err | Void | IntLiteral | FloatLiteral | Error => {}
+        GenRef | Err | Void | Never | IntLiteral | FloatLiteral | Error => {}
     }
 }

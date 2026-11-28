@@ -133,7 +133,7 @@ impl<'a> CEmitter<'a> {
         );
     }
 
-    pub(super) fn emit_slice_data(
+    pub(in crate::emitter) fn emit_slice_data(
         &mut self,
         slice: &AmirOperand,
         func: &AmirFunc,
@@ -196,6 +196,7 @@ impl<'a> CEmitter<'a> {
         let elem_ty =
             match arandu_middle::types::index_elem_type(&deref_ty, self.symbols, self.interner) {
                 Some(id) => self.interner.resolve(id),
+                None if matches!(base_ty, ArType::Ptr(_)) => deref_ty.clone(),
                 None => ArType::Error,
             };
         let elem_c_ty = self.format_type(&elem_ty);
@@ -247,6 +248,19 @@ impl<'a> CEmitter<'a> {
         // Byte-count allocation via libc malloc (RC-RVALUE-GAPS).
         let size_str = self.format_operand(op, func);
         let _ = write!(&mut self.output, "malloc((size_t)({}))", size_str);
+    }
+
+    pub(super) fn emit_arena_alloc(&mut self, size: u32, align: u32, expected_c_type: &str) {
+        let _ = write!(
+            &mut self.output,
+            "({expected_c_type})ar_task_arena_alloc((size_t){}, (size_t){})",
+            size.max(1),
+            align.max(1)
+        );
+    }
+
+    pub(super) fn emit_arena_checkpoint(&mut self) {
+        let _ = write!(&mut self.output, "(int64_t)ar_task_arena_checkpoint()");
     }
 
     pub(super) fn emit_relative_borrow(&mut self, local: &LocalId) {

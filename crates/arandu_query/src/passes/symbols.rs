@@ -129,26 +129,13 @@ pub fn local_symbols(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Resol
         },
     };
 
-    if !db
+    if db
         .as_db_impl()
         .is_some_and(|db| db.is_trusted_stdlib_source(file))
     {
+        Arc::make_mut(&mut resolved.symbols).trusted_stdlib = true;
+    } else {
         Arc::make_mut(&mut resolved.symbols).clear_source_lang_items();
-        if let Ok(program) = &**program_res {
-            program.for_each_decl_recursive(|_, declaration| {
-                if let arandu_parser::TopLevelDecl::Extern(external) = declaration {
-                    if arandu_parser::AbiKind::from_abi_str(&external.abi)
-                        == arandu_parser::AbiKind::AranduIntrinsic
-                    {
-                        resolved.diagnostics.push(Diagnostic::error(
-                            arandu_middle::DiagCode::U001FeatureNotSupported,
-                            "the 'arandu-intrinsic' ABI requires a trusted standard-library source",
-                            external.span,
-                        ));
-                    }
-                }
-            });
-        }
     }
     HashEq::new(resolved)
 }
@@ -234,6 +221,7 @@ pub fn exported_symbols(
     let mut lang_items = std::collections::BTreeMap::new();
     let mut sealed_symbols = std::collections::BTreeSet::new();
     let mut sealed_ids = rustc_hash::FxHashSet::default();
+    let mut type_paths = std::collections::BTreeMap::new();
 
     let global_scope = locals.symbols.global_scope();
     for symbol in locals.symbols.iter() {
@@ -246,6 +234,14 @@ pub fn exported_symbols(
                 lang_items.insert(symbol.id, li);
             }
             map.insert(symbol.name.to_string(), (symbol.id, symbol.kind));
+            if matches!(
+                symbol.kind,
+                arandu_middle::SymbolKind::Struct | arandu_middle::SymbolKind::Enum
+            ) {
+                if let Some(path) = locals.symbols.host_function_names.get(&symbol.id) {
+                    type_paths.insert(symbol.id, path.clone());
+                }
+            }
         }
     }
 
@@ -276,6 +272,9 @@ pub fn exported_symbols(
                         for item in items {
                             let name = item.name.as_str();
                             if let Some(&(id, kind)) = target_exports.symbols.get(name) {
+                                if let Some(path) = target_exports.type_paths.get(&id) {
+                                    type_paths.insert(id, path.clone());
+                                }
                                 let export_name =
                                     item.alias.as_ref().unwrap_or(&item.name).to_string();
                                 if let Some(&li) = target_exports.lang_items.get(&id) {
@@ -327,6 +326,7 @@ pub fn exported_symbols(
         lang_items,
         sealed_symbols,
         sealed_implementations,
+        type_paths,
         is_cycle: false,
     })
 }
@@ -345,6 +345,7 @@ pub fn internal_symbols(
     let mut lang_items = std::collections::BTreeMap::new();
     let mut sealed_symbols = std::collections::BTreeSet::new();
     let mut sealed_ids = rustc_hash::FxHashSet::default();
+    let mut type_paths = std::collections::BTreeMap::new();
     let global_scope = locals.symbols.global_scope();
     for symbol in locals.symbols.iter() {
         if symbol.scope == global_scope && symbol.visibility == arandu_parser::Visibility::Internal
@@ -357,6 +358,14 @@ pub fn internal_symbols(
                 lang_items.insert(symbol.id, li);
             }
             map.insert(symbol.name.to_string(), (symbol.id, symbol.kind));
+            if matches!(
+                symbol.kind,
+                arandu_middle::SymbolKind::Struct | arandu_middle::SymbolKind::Enum
+            ) {
+                if let Some(path) = locals.symbols.host_function_names.get(&symbol.id) {
+                    type_paths.insert(symbol.id, path.clone());
+                }
+            }
         }
     }
     let mut sealed_implementations: Vec<_> = locals
@@ -408,6 +417,13 @@ pub fn internal_symbols(
                                         .and_then(|t| t.internal_symbols.get(name))
                                 })
                             {
+                                if let Some(path) =
+                                    target_exports.type_paths.get(&id).or_else(|| {
+                                        target_internal.as_ref().and_then(|t| t.type_paths.get(&id))
+                                    })
+                                {
+                                    type_paths.insert(id, path.clone());
+                                }
                                 let export_name =
                                     item.alias.as_ref().unwrap_or(&item.name).to_string();
                                 if let Some(&li) =
@@ -474,6 +490,7 @@ pub fn internal_symbols(
         lang_items,
         sealed_symbols,
         sealed_implementations,
+        type_paths,
         is_cycle: false,
     })
 }

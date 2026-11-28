@@ -313,8 +313,40 @@ func main() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == DiagCode::U001FeatureNotSupported),
-        "expected U001 for a partial move from a destructor type: {diagnostics:?}"
+            .any(|diagnostic| diagnostic.code == DiagCode::O018MoveOutOfDestructor),
+        "expected O018 for a partial move from a destructor type: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn move_non_copy_struct_without_destructor_out_of_index_is_rejected() {
+    let src = r#"
+struct Handle {
+    ptr_val: ptr[u8],
+    tag: int,
+}
+
+func main(): int {
+    let arr = [Handle { ptr_val: nil, tag: 1 }, Handle { ptr_val: nil, tag: 2 }]
+    let h = arr[0]
+    return h.tag
+}
+"#;
+    let program = arandu_parser::parse(src).expect("parse");
+    let resolution = resolve_for_test(0, &program);
+    let mut tc = type_check(
+        resolution,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
+    let hir = lower_to_hir(&mut tc, &program).expect("HIR");
+    let diagnostics = lower_to_amir(&tc, &hir, 8).expect_err("non-Copy index move must fail");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagCode::O015MoveOutOfIndex),
+        "expected O015 for moving non-Copy value out of array index: {diagnostics:?}"
     );
 }
 
@@ -402,8 +434,8 @@ func main(cond: bool) {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == DiagCode::O007InconsistentMoveBetweenBranches),
-        "expected O007 inconsistent move diagnostic, got {diagnostics:?}"
+            .any(|diagnostic| diagnostic.code == DiagCode::O001UseAfterMove),
+        "expected O001 use-after-move diagnostic for conditional move, got {diagnostics:?}"
     );
 }
 
@@ -942,6 +974,7 @@ fn validate_amir_rejects_inconsistent_gen_payload_and_handle_types() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     let issues = validate_amir_program(&program, &validation_symbols(), &interner);
@@ -1200,6 +1233,7 @@ fn validate_amir_rejects_mismatched_suspend_edge_arguments() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     let issues = validate_amir_program(&program, &validation_symbols(), &interner);
@@ -1223,6 +1257,7 @@ fn validate_amir_rejects_mismatched_suspend_edge_arguments() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let issues_type =
         validate_amir_program(&program_type_mismatch, &validation_symbols(), &interner);
@@ -1375,5 +1410,282 @@ func bad(m: Msg): int {
             .any(|d| d.code == DiagCode::T024NonExhaustiveMatch),
         "expected T024NonExhaustiveMatch, got: {:?}",
         bad_tc.diagnostics
+    );
+}
+
+#[test]
+fn labeled_break_and_continue_lower_to_valid_amir() {
+    let src = r#"
+func nested_loops(): int {
+    let mut sum = 0;
+    'outer: while true {
+        'inner: for let mut i = 0; i < 10; i = i + 1 {
+            if i == 5 {
+                break 'outer;
+            }
+            if i == 2 {
+                continue 'inner;
+            }
+            sum = sum + i;
+        }
+    }
+    return sum;
+}
+"#;
+    let program = arandu_parser::parse(src).expect("parse labeled loops");
+    let res = resolve_for_test(0, &program);
+    let mut tc = type_check(
+        res,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        tc.diagnostics.is_empty(),
+        "type check failed: {:?}",
+        tc.diagnostics
+    );
+    let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering for labeled loops");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering for labeled loops");
+    let issues = validate_amir_program(&amir, &tc.symbols, &tc.type_info.type_interner);
+    assert!(
+        issues.is_empty(),
+        "expected valid AMIR for labeled loops, got: {issues:?}"
+    );
+}
+
+#[test]
+fn undeclared_loop_label_reports_diagnostic() {
+    let src = r#"
+func bad_label(): void {
+    while true {
+        break 'nonexistent;
+    }
+}
+"#;
+    let program = arandu_parser::parse(src).expect("parse bad label");
+    let res = resolve_for_test(0, &program);
+    let tc = type_check(
+        res,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        tc.diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::N011BreakContinueOutsideLoop),
+        "expected N011BreakContinueOutsideLoop, got: {:?}",
+        tc.diagnostics
+    );
+}
+
+fn lower_valid_amir_for_test(src: &str) -> arandu_semantics::amir::AmirProgram {
+    let program = arandu_parser::parse(src).expect("parse");
+    let res = resolve_for_test(0, &program);
+    let mut tc = type_check(
+        res,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        tc.diagnostics
+            .iter()
+            .all(|d| d.severity != arandu_semantics::Severity::Error),
+        "unexpected typecheck errors: {:?}",
+        tc.diagnostics
+    );
+    let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering");
+    let issues = validate_amir_program(&amir, &tc.symbols, &tc.type_info.type_interner);
+    assert!(
+        issues.is_empty(),
+        "expected valid AMIR, got issues: {issues:?}"
+    );
+    amir
+}
+
+#[test]
+fn ergonomics_unqualified_option_result_ctors_lower_to_valid_amir() {
+    lower_valid_amir_for_test(
+        r#"
+func maybe(flag: bool): Option<int> {
+    if flag {
+        return Some(7)
+    }
+    return None
+}
+
+func fallible(flag: bool): Result<int, str> {
+    if flag {
+        return Ok(42)
+    }
+    return Err("failed")
+}
+
+func check(): bool {
+    let a = maybe(false)
+    let is_none = a == None
+    let _ = match fallible(true) {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+    return is_none
+}
+"#,
+    );
+}
+
+#[test]
+fn ergonomics_unit_enum_equality_and_wildcard_let_lower_to_valid_amir() {
+    let amir = lower_valid_amir_for_test(
+        r#"
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+func compare(a: Color, b: Color): bool {
+    let _ = 1
+    let _ = 2
+    if a == b {
+        return true
+    }
+    return a != Color.Blue
+}
+"#,
+    );
+    let has_discriminant = amir.funcs.iter().any(|f| {
+        f.stmts.payloads.raw.iter().any(|s| {
+            matches!(
+                s,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::Discriminant { .. },
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        has_discriminant,
+        "unit enum equality must lower to Discriminant tag comparison in AMIR"
+    );
+}
+
+#[test]
+fn ergonomics_diverging_arms_and_statement_match_lower_to_valid_amir() {
+    lower_valid_amir_for_test(
+        r#"
+func extract_or_default(opt: Option<int>, flag: bool): int {
+    let val = match opt {
+        Some(v) => v,
+        None => { return -1 }
+    }
+    let adjusted = if flag { val + 1 } else { return 0 }
+    match opt {
+        Some(v) => v + 1,
+        None => {},
+    }
+    return adjusted
+}
+"#,
+    );
+}
+
+#[test]
+fn ergonomics_diverging_match_non_copy_binding_does_not_double_move() {
+    lower_valid_amir_for_test(
+        r#"
+struct Boxed {
+    handle: ptr[u8]
+}
+
+func make_boxed(ok: bool): Result<Boxed, int> {
+    if ok {
+        return Ok(Boxed { handle: nil })
+    }
+    return Err(1)
+}
+
+func unwrap_or_abort(ok: bool): Result<Boxed, int> {
+    let val = match make_boxed(ok) {
+        Ok(b) => b,
+        Err(e) => { return Err(e) }
+    }
+    let val2 = if ok { val } else { return Err(2) }
+    return Ok(val2)
+}
+"#,
+    );
+}
+
+#[test]
+fn onda2_optional_resource_lowering_emits_option_enum_and_drop() {
+    let amir = lower_valid_amir_for_test(
+        r#"
+struct Guard {
+    id: int
+}
+
+@Destructor
+func Guard.destroy(own self): void {}
+
+func make_opt(some: bool): Guard? {
+    if some {
+        return Guard { id: 7 }
+    }
+    return nil
+}
+
+func use_opt(some: bool): int {
+    let g: Guard? = make_opt(some)
+    if g is val {
+        return val.id
+    }
+    return 0
+}
+"#,
+    );
+    let has_enum_construct = amir.funcs.iter().any(|f| {
+        f.stmts.payloads.raw.iter().any(|s| {
+            matches!(
+                s,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::EnumConstruct { .. },
+                    ..
+                }
+            )
+        })
+    });
+    assert!(has_enum_construct, "T? must lower as Option enum in AMIR");
+    let has_destructor_drop = amir.funcs.iter().any(|f| {
+        f.stmts
+            .payloads
+            .raw
+            .iter()
+            .any(|s| matches!(s, AmirStmt::Destroy(_)))
+    });
+    assert!(
+        has_destructor_drop,
+        "Guard? (Option<Guard>) must participate in scope Destroy lowering"
+    );
+}
+
+#[test]
+fn onda5_nested_guarded_or_pattern_lowers_to_amir() {
+    let amir = lower_valid_amir_for_test(
+        r#"
+enum Node { Left(int), Right(int) }
+
+public func score(opt: Option<Node>): int {
+    return match opt {
+        Option.Some(Node.Left(v) | Node.Right(v)) if v > 0 => v
+        Option.Some(_) | Option.None => 0
+    }
+}
+"#,
+    );
+    assert!(
+        amir.funcs.iter().any(|f| !f.blocks.is_empty()),
+        "expected lowered score() function in AMIR"
     );
 }

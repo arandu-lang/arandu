@@ -8,20 +8,27 @@ use crate::type_checker::constraints::ConstraintOrigin;
 use crate::type_checker::types::{self, ArType, Primitive};
 use arandu_middle::types::type_interner::TypeId;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CastCompatibility {
+    Safe,
+    RequiresUnsafe,
+    Invalid,
+}
+
 fn cast_types_compatible(
     found: &ArType,
     target: &ArType,
     interner: &arandu_middle::types::TypeInterner,
     symbols: &arandu_middle::SymbolTable,
-) -> bool {
+) -> CastCompatibility {
     if found.is_error() || target.is_error() {
-        return true;
+        return CastCompatibility::Safe;
     }
     if types::unify(found, target, interner) {
-        return true;
+        return CastCompatibility::Safe;
     }
     if found.is_numeric() && target.is_numeric() {
-        return true;
+        return CastCompatibility::Safe;
     }
     // Every unsigned byte maps to a valid Unicode scalar U+0000..U+00FF.
     // This is a numeric codepoint conversion, not UTF-8 decoding. Wider or
@@ -29,7 +36,7 @@ fn cast_types_compatible(
     if matches!(found, ArType::Primitive(Primitive::U8 | Primitive::Byte))
         && matches!(target, ArType::Primitive(Primitive::Char))
     {
-        return true;
+        return CastCompatibility::Safe;
     }
     // `char` is a Unicode scalar value with a canonical u32 representation.
     // This direction is lossless; the inverse requires scalar validation and
@@ -37,35 +44,51 @@ fn cast_types_compatible(
     if matches!(found, ArType::Primitive(Primitive::Char))
         && matches!(target, ArType::Primitive(Primitive::U32))
     {
-        return true;
+        return CastCompatibility::Safe;
     }
+    // Forming/casting raw pointers from other raw pointers, ints, or plain function
+    // pointers cannot cause UB on its own (dereferencing is unsafe). Converting a
+    // safe borrow (`ref` / `mut ref`) to a raw pointer requires `unsafe`.
     if matches!(found, ArType::Ptr(_)) && matches!(target, ArType::Ptr(_)) {
-        return true;
+        return CastCompatibility::Safe;
+    }
+    if matches!(found, ArType::Ref(_) | ArType::RefMut(_)) && matches!(target, ArType::Ptr(_)) {
+        return CastCompatibility::RequiresUnsafe;
+    }
+    if (matches!(found, ArType::Ptr(_)) && target.is_integer())
+        || (found.is_integer() && matches!(target, ArType::Ptr(_)))
+    {
+        return CastCompatibility::Safe;
     }
     // WorkThunk / function-to-pointer cast: allow `func as ptr[T]`.
     if matches!(found, ArType::Func(_, _)) && matches!(target, ArType::Ptr(_)) {
-        return true;
+        return CastCompatibility::Safe;
     }
     // A3/SL_R ABI: `Coroutine[T]` is a state-blob pointer at runtime (Cranelift
-    // `clif_type` → pointer). Allow `job as ptr[u8]` so `std.runtime` typed
-    // spawn/block_on can hand the blob to host `ar_rt_*` / `ar_co_*`.
+    // `clif_type` → pointer). `job as ptr[u8]` requires `unsafe` so `std.runtime`
+    // typed spawn/block_on can hand the blob to host `ar_rt_*` / `ar_co_*`.
     if let (ArType::Coroutine(_), ArType::Ptr(inner)) = (found, target) {
         let inner_ty = interner.resolve(*inner);
-        return matches!(
+        return if matches!(
             inner_ty,
             ArType::Primitive(Primitive::Byte) | ArType::Primitive(Primitive::U8)
-        );
+        ) {
+            CastCompatibility::RequiresUnsafe
+        } else {
+            CastCompatibility::Invalid
+        };
     }
     // Host i64 payload bits → type param `T` (generic join/block_on).
-    // Only TypeParam targets — never arbitrary named types.
+    // Only TypeParam targets, and always requires `unsafe` (prevents safe
+    // forging of arbitrary owned/borrowed types from integers).
     if found.is_integer()
         && let ArType::Named(id, args) = target
         && args.is_empty()
         && symbols.get(*id).kind == arandu_middle::SymbolKind::TypeParam
     {
-        return true;
+        return CastCompatibility::RequiresUnsafe;
     }
-    false
+    CastCompatibility::Invalid
 }
 
 #[tracing::instrument(level = "trace", target = "arandu_typeck", skip(checker, expr))]
@@ -89,8 +112,20 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
             let ty_id = *ty;
             let target_ty = checker.lower_type_expr(ty_id, checker.type_scope());
             let target_ty_id = checker.intern(target_ty);
-            let expected_inner = match checker.pool.expr(inner_id) {
+            let mut peeled_inner = inner_id;
+            while let ExprKind::Group { expr } = checker.pool.expr(peeled_inner) {
+                peeled_inner = *expr;
+            }
+            let expected_inner = match checker.pool.expr(peeled_inner) {
                 ExprKind::Int { .. } | ExprKind::Float { .. } => Some(target_ty_id),
+                ExprKind::Nil
+                    if matches!(
+                        checker.resolve(target_ty_id),
+                        ArType::Ptr(_) | ArType::Option(_)
+                    ) =>
+                {
+                    Some(target_ty_id)
+                }
                 ExprKind::Unary {
                     op: UnaryOp::Neg,
                     expr: sub_id,
@@ -104,20 +139,46 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
             let found_ty_id = super::super::synth_expr_expected(checker, inner_id, expected_inner);
             let found_ty = checker.resolve(found_ty_id);
             let target_ty = checker.resolve(target_ty_id);
-            if !cast_types_compatible(
+            match cast_types_compatible(
                 &found_ty,
                 &target_ty,
                 &checker.type_info.type_interner,
                 &checker.symbols,
             ) {
-                checker.add_constraint(
-                    target_ty_id,
-                    found_ty_id,
-                    ConstraintOrigin::CastExpr {
-                        expr_span: checker.pool.expr_span(inner_id),
-                        target_span: checker.pool.type_expr_span(ty_id),
-                    },
-                );
+                CastCompatibility::Safe => {}
+                CastCompatibility::RequiresUnsafe => {
+                    if !checker.ctx.is_in_unsafe() {
+                        checker.diagnostics.push(
+                            crate::Diagnostic::error(
+                                crate::DiagCode::O019RawPtrRequiresUnsafe,
+                                format!(
+                                    "unsafe cast from '{}' to '{}' requires an `unsafe` block",
+                                    found_ty.display(
+                                        &checker.symbols,
+                                        &checker.type_info.type_interner
+                                    ),
+                                    target_ty.display(
+                                        &checker.symbols,
+                                        &checker.type_info.type_interner
+                                    ),
+                                ),
+                                span,
+                            )
+                            .with_label(span, "this cast reinterprets raw bits or borrows")
+                            .with_hint("wrap the cast in an `unsafe { ... }` block"),
+                        );
+                    }
+                }
+                CastCompatibility::Invalid => {
+                    checker.add_constraint(
+                        target_ty_id,
+                        found_ty_id,
+                        ConstraintOrigin::CastExpr {
+                            expr_span: checker.pool.expr_span(inner_id),
+                            target_span: checker.pool.type_expr_span(ty_id),
+                        },
+                    );
+                }
             }
             Some(target_ty_id)
         }
@@ -195,6 +256,7 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
                     }
 
                     let expr_ty_id = synth_expr_expected(checker, inner_id, expected);
+                    let expr_ty_id = checker.settle_operand(expr_ty_id, expected);
                     // Bind the negation to the operand's literal group (peeling
                     // groups like `-(128)`) so late constraints see it, and
                     // mark the occurrence as negated so the retroactive T038
@@ -254,6 +316,7 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
                     let int_expected =
                         expected.filter(|&exp_id| checker.resolve(exp_id).is_integer());
                     let expr_ty_id = synth_expr_expected(checker, inner_id, int_expected);
+                    let expr_ty_id = checker.settle_operand(expr_ty_id, int_expected);
                     let expr_ty = checker.resolve(expr_ty_id);
                     if expr_ty.is_error() {
                         return Some(checker.intern(ArType::Error));
@@ -306,6 +369,61 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
                 UnaryOp::RefMut => {
                     let expr_ty_id = synth_expr(checker, inner_id);
                     let expr_ty = checker.resolve(expr_ty_id);
+                    if let ExprKind::Index { base, index } = checker.pool.expr(inner_id)
+                        && let Some(raw_base_ty_id) = checker.type_info.expr_type_id(*base)
+                    {
+                        let mut peeled_id = raw_base_ty_id;
+                        for _ in 0..8 {
+                            match checker.resolve(peeled_id) {
+                                ArType::Ref(i) | ArType::RefMut(i) => peeled_id = i,
+                                _ => break,
+                            }
+                        }
+                        let peeled_ty = checker.resolve(peeled_id);
+                        if !crate::type_checker::synth::field::is_builtin_index_base(
+                            &peeled_ty,
+                            &checker.symbols,
+                        ) {
+                            let idx_ty_id = checker
+                                .type_info
+                                .expr_type_id(*index)
+                                .unwrap_or_else(|| checker.intern(ArType::Error));
+                            let base_span = checker.pool.expr_span(*base);
+                            let idx_span = checker.pool.expr_span(*index);
+                            if let Some((_idx_ty, out_ty)) =
+                                crate::type_checker::synth::field::resolve_trait_index(
+                                    checker,
+                                    &peeled_ty,
+                                    Some(*index),
+                                    idx_ty_id,
+                                    true,
+                                    base_span,
+                                    idx_span,
+                                )
+                            {
+                                let out_ref_mut = checker.intern(ArType::RefMut(out_ty));
+                                crate::type_checker::synth::method::validate_exclusive_receiver_autoref(
+                                    checker,
+                                    inner_id,
+                                    out_ref_mut,
+                                    out_ty,
+                                );
+                                return Some(out_ref_mut);
+                            } else {
+                                let ty_disp = peeled_ty
+                                    .display(&checker.symbols, &checker.type_info.type_interner);
+                                checker.diagnostics.push(
+                                    crate::Diagnostic::error(
+                                        crate::DiagCode::T026CannotAssignImmutable,
+                                        format!("cannot mutably index `{ty_disp}`: missing `IndexMut` (`indexMut`) implementation"),
+                                        span,
+                                    )
+                                    .with_label(span, "mutable indexing requires `IndexMut`"),
+                                );
+                                return Some(checker.intern(ArType::Error));
+                            }
+                        }
+                    }
                     let inner_id = if expr_ty.is_error() {
                         checker.intern(ArType::Error)
                     } else {
@@ -322,13 +440,13 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
                             if !checker.ctx.is_in_unsafe() {
                                 checker.diagnostics.push(
                                     crate::Diagnostic::error(
-                                        crate::DiagCode::O012AllocRequiresUnsafe,
+                                        crate::DiagCode::O019RawPtrRequiresUnsafe,
                                         "dereferencing a raw pointer requires an `unsafe` block",
                                         span,
                                     )
                                     .with_label(span, "raw `ptr[T]` deref is unsafe")
                                     .with_note(
-                                        "use `&T` / `&mut T` for safe borrows (F2.0)".to_string(),
+                                        "use `ref T` / `mut ref T` for safe borrows".to_string(),
                                     ),
                                 );
                             }

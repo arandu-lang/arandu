@@ -50,6 +50,11 @@ module std.core.atomic
 
 import std.core.intrinsics as intrinsics
 
+/// Emits a processor spin-loop pause / yield hint. Safe and allocation-free.
+public func spinLoop(): void {
+    intrinsics.spinLoopHint()
+}
+
 /// Memory synchronization ordering for atomic operations.
 public enum MemoryOrder {
     /// Relaxed ordering: guarantees atomicity, but no memory barriers.
@@ -113,7 +118,14 @@ func requireCompareExchange(success: MemoryOrder, failure: MemoryOrder): void {
 /// Hardware fence. Relaxed is invalid and traps.
 public func fence(order: MemoryOrder): void {
     requireFence(order)
-    unsafe { intrinsics.atomicFence() }
+    unsafe {
+        match order {
+            MemoryOrder.Acquire => { intrinsics.atomicFenceAcquire() }
+            MemoryOrder.Release => { intrinsics.atomicFenceRelease() }
+            MemoryOrder.AcqRel => { intrinsics.atomicFenceAcqRel() }
+            _ => { intrinsics.atomicFence() }
+        }
+    }
 }
 
 /// Compiler fence; Cranelift/Wasm conservatively strengthen it to hardware.
@@ -135,47 +147,59 @@ public func AtomicBool.new(val: bool): AtomicBool {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicBool.load(self: ref AtomicBool, order: MemoryOrder): bool {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad8(ref self.val) != (0 as u8)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed8(ref self.val) != (0 as u8)) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire8(ref self.val) != (0 as u8)) }
+            _ => { return (intrinsics.atomicLoad8(ref self.val) != (0 as u8)) }
+        }
+    }
 }
 
 /// Stores atomically through shared access. Acquire and AcqRel are invalid.
 public func AtomicBool.store(self: ref AtomicBool, val: bool, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore8(ref self.val, encodeBool(val)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed8(ref self.val, encodeBool(val)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease8(ref self.val, encodeBool(val)) }
+            _ => { intrinsics.atomicStore8(ref self.val, encodeBool(val)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicBool.swap(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
-    unsafe { return (intrinsics.atomicSwap8(mut ref self.val, encodeBool(val)) != (0 as u8)) }
+public func AtomicBool.swap(self: ref AtomicBool, val: bool, order: MemoryOrder): bool {
+    unsafe { return (intrinsics.atomicSwap8(ref self.val, encodeBool(val)) != (0 as u8)) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicBool.fetchAnd(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
-    unsafe { return (intrinsics.atomicFetchAnd8(mut ref self.val, encodeBool(val)) != (0 as u8)) }
+public func AtomicBool.fetchAnd(self: ref AtomicBool, val: bool, order: MemoryOrder): bool {
+    unsafe { return (intrinsics.atomicFetchAnd8(ref self.val, encodeBool(val)) != (0 as u8)) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicBool.fetchOr(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
-    unsafe { return (intrinsics.atomicFetchOr8(mut ref self.val, encodeBool(val)) != (0 as u8)) }
+public func AtomicBool.fetchOr(self: ref AtomicBool, val: bool, order: MemoryOrder): bool {
+    unsafe { return (intrinsics.atomicFetchOr8(ref self.val, encodeBool(val)) != (0 as u8)) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicBool.fetchXor(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
-    unsafe { return (intrinsics.atomicFetchXor8(mut ref self.val, encodeBool(val)) != (0 as u8)) }
+public func AtomicBool.fetchXor(self: ref AtomicBool, val: bool, order: MemoryOrder): bool {
+    unsafe { return (intrinsics.atomicFetchXor8(ref self.val, encodeBool(val)) != (0 as u8)) }
 }
 
 /// Strong compare-and-exchange. Failure order cannot exceed success order.
-public func AtomicBool.compareExchange(self: mut ref AtomicBool, expected: bool, desired: bool, success: MemoryOrder, failure: MemoryOrder): Result<bool, bool> {
+public func AtomicBool.compareExchange(self: ref AtomicBool, expected: bool, desired: bool, success: MemoryOrder, failure: MemoryOrder): Result<bool, bool> {
     requireCompareExchange(success, failure)
     unsafe {
-        let observed = intrinsics.atomicCompareExchange8(mut ref self.val, encodeBool(expected), encodeBool(desired))
+        let observed = intrinsics.atomicCompareExchange8(ref self.val, encodeBool(expected), encodeBool(desired))
         if observed == encodeBool(expected) { return Result.Ok((observed != (0 as u8))) }
         return Result.Err((observed != (0 as u8)))
     }
 }
 
 /// Weak CAS uses the permitted non-spurious strong implementation.
-public func AtomicBool.compareExchangeWeak(self: mut ref AtomicBool, expected: bool, desired: bool, success: MemoryOrder, failure: MemoryOrder): Result<bool, bool> {
+public func AtomicBool.compareExchangeWeak(self: ref AtomicBool, expected: bool, desired: bool, success: MemoryOrder, failure: MemoryOrder): Result<bool, bool> {
     return self.compareExchange(expected, desired, success, failure)
 }
 
@@ -190,57 +214,69 @@ public func AtomicInt.new(val: int): AtomicInt {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicInt.load(self: ref AtomicInt, order: MemoryOrder): int {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad32(ref self.val) as int) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed32(ref self.val) as int) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire32(ref self.val) as int) }
+            _ => { return (intrinsics.atomicLoad32(ref self.val) as int) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicInt.store(self: ref AtomicInt, val: int, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore32(ref self.val, (val as u32)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed32(ref self.val, (val as u32)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease32(ref self.val, (val as u32)) }
+            _ => { intrinsics.atomicStore32(ref self.val, (val as u32)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicInt.swap(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
-    unsafe { return (intrinsics.atomicSwap32(mut ref self.val, (val as u32)) as int) }
+public func AtomicInt.swap(self: ref AtomicInt, val: int, order: MemoryOrder): int {
+    unsafe { return (intrinsics.atomicSwap32(ref self.val, (val as u32)) as int) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicInt.fetchAdd(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
-    unsafe { return (intrinsics.atomicFetchAdd32(mut ref self.val, (val as u32)) as int) }
+public func AtomicInt.fetchAdd(self: ref AtomicInt, val: int, order: MemoryOrder): int {
+    unsafe { return (intrinsics.atomicFetchAdd32(ref self.val, (val as u32)) as int) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicInt.fetchSub(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
-    unsafe { return (intrinsics.atomicFetchSub32(mut ref self.val, (val as u32)) as int) }
+public func AtomicInt.fetchSub(self: ref AtomicInt, val: int, order: MemoryOrder): int {
+    unsafe { return (intrinsics.atomicFetchSub32(ref self.val, (val as u32)) as int) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicInt.fetchAnd(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
-    unsafe { return (intrinsics.atomicFetchAnd32(mut ref self.val, (val as u32)) as int) }
+public func AtomicInt.fetchAnd(self: ref AtomicInt, val: int, order: MemoryOrder): int {
+    unsafe { return (intrinsics.atomicFetchAnd32(ref self.val, (val as u32)) as int) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicInt.fetchOr(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
-    unsafe { return (intrinsics.atomicFetchOr32(mut ref self.val, (val as u32)) as int) }
+public func AtomicInt.fetchOr(self: ref AtomicInt, val: int, order: MemoryOrder): int {
+    unsafe { return (intrinsics.atomicFetchOr32(ref self.val, (val as u32)) as int) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicInt.fetchXor(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
-    unsafe { return (intrinsics.atomicFetchXor32(mut ref self.val, (val as u32)) as int) }
+public func AtomicInt.fetchXor(self: ref AtomicInt, val: int, order: MemoryOrder): int {
+    unsafe { return (intrinsics.atomicFetchXor32(ref self.val, (val as u32)) as int) }
 }
 
 /// Strong compare-and-exchange. Failure order cannot exceed success order.
-public func AtomicInt.compareExchange(self: mut ref AtomicInt, expected: int, desired: int, success: MemoryOrder, failure: MemoryOrder): Result<int, int> {
+public func AtomicInt.compareExchange(self: ref AtomicInt, expected: int, desired: int, success: MemoryOrder, failure: MemoryOrder): Result<int, int> {
     requireCompareExchange(success, failure)
     unsafe {
-        let observed = intrinsics.atomicCompareExchange32(mut ref self.val, (expected as u32), (desired as u32))
+        let observed = intrinsics.atomicCompareExchange32(ref self.val, (expected as u32), (desired as u32))
         if observed == (expected as u32) { return Result.Ok((observed as int)) }
         return Result.Err((observed as int))
     }
 }
 
 /// Weak CAS uses the permitted non-spurious strong implementation.
-public func AtomicInt.compareExchangeWeak(self: mut ref AtomicInt, expected: int, desired: int, success: MemoryOrder, failure: MemoryOrder): Result<int, int> {
+public func AtomicInt.compareExchangeWeak(self: ref AtomicInt, expected: int, desired: int, success: MemoryOrder, failure: MemoryOrder): Result<int, int> {
     return self.compareExchange(expected, desired, success, failure)
 }
 
@@ -255,57 +291,69 @@ public func AtomicUint.new(val: uint): AtomicUint {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicUint.load(self: ref AtomicUint, order: MemoryOrder): uint {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad32(ref self.val) as uint) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed32(ref self.val) as uint) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire32(ref self.val) as uint) }
+            _ => { return (intrinsics.atomicLoad32(ref self.val) as uint) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicUint.store(self: ref AtomicUint, val: uint, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore32(ref self.val, (val as u32)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed32(ref self.val, (val as u32)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease32(ref self.val, (val as u32)) }
+            _ => { intrinsics.atomicStore32(ref self.val, (val as u32)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUint.swap(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
-    unsafe { return (intrinsics.atomicSwap32(mut ref self.val, (val as u32)) as uint) }
+public func AtomicUint.swap(self: ref AtomicUint, val: uint, order: MemoryOrder): uint {
+    unsafe { return (intrinsics.atomicSwap32(ref self.val, (val as u32)) as uint) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUint.fetchAdd(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
-    unsafe { return (intrinsics.atomicFetchAdd32(mut ref self.val, (val as u32)) as uint) }
+public func AtomicUint.fetchAdd(self: ref AtomicUint, val: uint, order: MemoryOrder): uint {
+    unsafe { return (intrinsics.atomicFetchAdd32(ref self.val, (val as u32)) as uint) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUint.fetchSub(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
-    unsafe { return (intrinsics.atomicFetchSub32(mut ref self.val, (val as u32)) as uint) }
+public func AtomicUint.fetchSub(self: ref AtomicUint, val: uint, order: MemoryOrder): uint {
+    unsafe { return (intrinsics.atomicFetchSub32(ref self.val, (val as u32)) as uint) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUint.fetchAnd(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
-    unsafe { return (intrinsics.atomicFetchAnd32(mut ref self.val, (val as u32)) as uint) }
+public func AtomicUint.fetchAnd(self: ref AtomicUint, val: uint, order: MemoryOrder): uint {
+    unsafe { return (intrinsics.atomicFetchAnd32(ref self.val, (val as u32)) as uint) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUint.fetchOr(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
-    unsafe { return (intrinsics.atomicFetchOr32(mut ref self.val, (val as u32)) as uint) }
+public func AtomicUint.fetchOr(self: ref AtomicUint, val: uint, order: MemoryOrder): uint {
+    unsafe { return (intrinsics.atomicFetchOr32(ref self.val, (val as u32)) as uint) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUint.fetchXor(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
-    unsafe { return (intrinsics.atomicFetchXor32(mut ref self.val, (val as u32)) as uint) }
+public func AtomicUint.fetchXor(self: ref AtomicUint, val: uint, order: MemoryOrder): uint {
+    unsafe { return (intrinsics.atomicFetchXor32(ref self.val, (val as u32)) as uint) }
 }
 
 /// Strong compare-and-exchange. Failure order cannot exceed success order.
-public func AtomicUint.compareExchange(self: mut ref AtomicUint, expected: uint, desired: uint, success: MemoryOrder, failure: MemoryOrder): Result<uint, uint> {
+public func AtomicUint.compareExchange(self: ref AtomicUint, expected: uint, desired: uint, success: MemoryOrder, failure: MemoryOrder): Result<uint, uint> {
     requireCompareExchange(success, failure)
     unsafe {
-        let observed = intrinsics.atomicCompareExchange32(mut ref self.val, (expected as u32), (desired as u32))
+        let observed = intrinsics.atomicCompareExchange32(ref self.val, (expected as u32), (desired as u32))
         if observed == (expected as u32) { return Result.Ok((observed as uint)) }
         return Result.Err((observed as uint))
     }
 }
 
 /// Weak CAS uses the permitted non-spurious strong implementation.
-public func AtomicUint.compareExchangeWeak(self: mut ref AtomicUint, expected: uint, desired: uint, success: MemoryOrder, failure: MemoryOrder): Result<uint, uint> {
+public func AtomicUint.compareExchangeWeak(self: ref AtomicUint, expected: uint, desired: uint, success: MemoryOrder, failure: MemoryOrder): Result<uint, uint> {
     return self.compareExchange(expected, desired, success, failure)
 }
 
@@ -320,57 +368,69 @@ public func AtomicUsize.new(val: usize): AtomicUsize {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicUsize.load(self: ref AtomicUsize, order: MemoryOrder): usize {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoadUsize(ref self.val) as usize) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxedUsize(ref self.val) as usize) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquireUsize(ref self.val) as usize) }
+            _ => { return (intrinsics.atomicLoadUsize(ref self.val) as usize) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicUsize.store(self: ref AtomicUsize, val: usize, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStoreUsize(ref self.val, (val as usize)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxedUsize(ref self.val, (val as usize)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreReleaseUsize(ref self.val, (val as usize)) }
+            _ => { intrinsics.atomicStoreUsize(ref self.val, (val as usize)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUsize.swap(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
-    unsafe { return (intrinsics.atomicSwapUsize(mut ref self.val, (val as usize)) as usize) }
+public func AtomicUsize.swap(self: ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    unsafe { return (intrinsics.atomicSwapUsize(ref self.val, (val as usize)) as usize) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUsize.fetchAdd(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
-    unsafe { return (intrinsics.atomicFetchAddUsize(mut ref self.val, (val as usize)) as usize) }
+public func AtomicUsize.fetchAdd(self: ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    unsafe { return (intrinsics.atomicFetchAddUsize(ref self.val, (val as usize)) as usize) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUsize.fetchSub(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
-    unsafe { return (intrinsics.atomicFetchSubUsize(mut ref self.val, (val as usize)) as usize) }
+public func AtomicUsize.fetchSub(self: ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    unsafe { return (intrinsics.atomicFetchSubUsize(ref self.val, (val as usize)) as usize) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUsize.fetchAnd(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
-    unsafe { return (intrinsics.atomicFetchAndUsize(mut ref self.val, (val as usize)) as usize) }
+public func AtomicUsize.fetchAnd(self: ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    unsafe { return (intrinsics.atomicFetchAndUsize(ref self.val, (val as usize)) as usize) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUsize.fetchOr(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
-    unsafe { return (intrinsics.atomicFetchOrUsize(mut ref self.val, (val as usize)) as usize) }
+public func AtomicUsize.fetchOr(self: ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    unsafe { return (intrinsics.atomicFetchOrUsize(ref self.val, (val as usize)) as usize) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicUsize.fetchXor(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
-    unsafe { return (intrinsics.atomicFetchXorUsize(mut ref self.val, (val as usize)) as usize) }
+public func AtomicUsize.fetchXor(self: ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    unsafe { return (intrinsics.atomicFetchXorUsize(ref self.val, (val as usize)) as usize) }
 }
 
 /// Strong compare-and-exchange. Failure order cannot exceed success order.
-public func AtomicUsize.compareExchange(self: mut ref AtomicUsize, expected: usize, desired: usize, success: MemoryOrder, failure: MemoryOrder): Result<usize, usize> {
+public func AtomicUsize.compareExchange(self: ref AtomicUsize, expected: usize, desired: usize, success: MemoryOrder, failure: MemoryOrder): Result<usize, usize> {
     requireCompareExchange(success, failure)
     unsafe {
-        let observed = intrinsics.atomicCompareExchangeUsize(mut ref self.val, (expected as usize), (desired as usize))
+        let observed = intrinsics.atomicCompareExchangeUsize(ref self.val, (expected as usize), (desired as usize))
         if observed == (expected as usize) { return Result.Ok((observed as usize)) }
         return Result.Err((observed as usize))
     }
 }
 
 /// Weak CAS uses the permitted non-spurious strong implementation.
-public func AtomicUsize.compareExchangeWeak(self: mut ref AtomicUsize, expected: usize, desired: usize, success: MemoryOrder, failure: MemoryOrder): Result<usize, usize> {
+public func AtomicUsize.compareExchangeWeak(self: ref AtomicUsize, expected: usize, desired: usize, success: MemoryOrder, failure: MemoryOrder): Result<usize, usize> {
     return self.compareExchange(expected, desired, success, failure)
 }
 
@@ -385,57 +445,69 @@ public func AtomicI64.new(val: i64): AtomicI64 {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicI64.load(self: ref AtomicI64, order: MemoryOrder): i64 {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad64(ref self.val) as i64) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed64(ref self.val) as i64) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire64(ref self.val) as i64) }
+            _ => { return (intrinsics.atomicLoad64(ref self.val) as i64) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicI64.store(self: ref AtomicI64, val: i64, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore64(ref self.val, (val as u64)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed64(ref self.val, (val as u64)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease64(ref self.val, (val as u64)) }
+            _ => { intrinsics.atomicStore64(ref self.val, (val as u64)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicI64.swap(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
-    unsafe { return (intrinsics.atomicSwap64(mut ref self.val, (val as u64)) as i64) }
+public func AtomicI64.swap(self: ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    unsafe { return (intrinsics.atomicSwap64(ref self.val, (val as u64)) as i64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicI64.fetchAdd(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
-    unsafe { return (intrinsics.atomicFetchAdd64(mut ref self.val, (val as u64)) as i64) }
+public func AtomicI64.fetchAdd(self: ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    unsafe { return (intrinsics.atomicFetchAdd64(ref self.val, (val as u64)) as i64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicI64.fetchSub(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
-    unsafe { return (intrinsics.atomicFetchSub64(mut ref self.val, (val as u64)) as i64) }
+public func AtomicI64.fetchSub(self: ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    unsafe { return (intrinsics.atomicFetchSub64(ref self.val, (val as u64)) as i64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicI64.fetchAnd(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
-    unsafe { return (intrinsics.atomicFetchAnd64(mut ref self.val, (val as u64)) as i64) }
+public func AtomicI64.fetchAnd(self: ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    unsafe { return (intrinsics.atomicFetchAnd64(ref self.val, (val as u64)) as i64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicI64.fetchOr(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
-    unsafe { return (intrinsics.atomicFetchOr64(mut ref self.val, (val as u64)) as i64) }
+public func AtomicI64.fetchOr(self: ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    unsafe { return (intrinsics.atomicFetchOr64(ref self.val, (val as u64)) as i64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicI64.fetchXor(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
-    unsafe { return (intrinsics.atomicFetchXor64(mut ref self.val, (val as u64)) as i64) }
+public func AtomicI64.fetchXor(self: ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    unsafe { return (intrinsics.atomicFetchXor64(ref self.val, (val as u64)) as i64) }
 }
 
 /// Strong compare-and-exchange. Failure order cannot exceed success order.
-public func AtomicI64.compareExchange(self: mut ref AtomicI64, expected: i64, desired: i64, success: MemoryOrder, failure: MemoryOrder): Result<i64, i64> {
+public func AtomicI64.compareExchange(self: ref AtomicI64, expected: i64, desired: i64, success: MemoryOrder, failure: MemoryOrder): Result<i64, i64> {
     requireCompareExchange(success, failure)
     unsafe {
-        let observed = intrinsics.atomicCompareExchange64(mut ref self.val, (expected as u64), (desired as u64))
+        let observed = intrinsics.atomicCompareExchange64(ref self.val, (expected as u64), (desired as u64))
         if observed == (expected as u64) { return Result.Ok((observed as i64)) }
         return Result.Err((observed as i64))
     }
 }
 
 /// Weak CAS uses the permitted non-spurious strong implementation.
-public func AtomicI64.compareExchangeWeak(self: mut ref AtomicI64, expected: i64, desired: i64, success: MemoryOrder, failure: MemoryOrder): Result<i64, i64> {
+public func AtomicI64.compareExchangeWeak(self: ref AtomicI64, expected: i64, desired: i64, success: MemoryOrder, failure: MemoryOrder): Result<i64, i64> {
     return self.compareExchange(expected, desired, success, failure)
 }
 
@@ -450,57 +522,69 @@ public func AtomicU64.new(val: u64): AtomicU64 {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicU64.load(self: ref AtomicU64, order: MemoryOrder): u64 {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad64(ref self.val) as u64) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed64(ref self.val) as u64) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire64(ref self.val) as u64) }
+            _ => { return (intrinsics.atomicLoad64(ref self.val) as u64) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicU64.store(self: ref AtomicU64, val: u64, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore64(ref self.val, (val as u64)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed64(ref self.val, (val as u64)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease64(ref self.val, (val as u64)) }
+            _ => { intrinsics.atomicStore64(ref self.val, (val as u64)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicU64.swap(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
-    unsafe { return (intrinsics.atomicSwap64(mut ref self.val, (val as u64)) as u64) }
+public func AtomicU64.swap(self: ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    unsafe { return (intrinsics.atomicSwap64(ref self.val, (val as u64)) as u64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicU64.fetchAdd(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
-    unsafe { return (intrinsics.atomicFetchAdd64(mut ref self.val, (val as u64)) as u64) }
+public func AtomicU64.fetchAdd(self: ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    unsafe { return (intrinsics.atomicFetchAdd64(ref self.val, (val as u64)) as u64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicU64.fetchSub(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
-    unsafe { return (intrinsics.atomicFetchSub64(mut ref self.val, (val as u64)) as u64) }
+public func AtomicU64.fetchSub(self: ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    unsafe { return (intrinsics.atomicFetchSub64(ref self.val, (val as u64)) as u64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicU64.fetchAnd(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
-    unsafe { return (intrinsics.atomicFetchAnd64(mut ref self.val, (val as u64)) as u64) }
+public func AtomicU64.fetchAnd(self: ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    unsafe { return (intrinsics.atomicFetchAnd64(ref self.val, (val as u64)) as u64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicU64.fetchOr(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
-    unsafe { return (intrinsics.atomicFetchOr64(mut ref self.val, (val as u64)) as u64) }
+public func AtomicU64.fetchOr(self: ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    unsafe { return (intrinsics.atomicFetchOr64(ref self.val, (val as u64)) as u64) }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicU64.fetchXor(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
-    unsafe { return (intrinsics.atomicFetchXor64(mut ref self.val, (val as u64)) as u64) }
+public func AtomicU64.fetchXor(self: ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    unsafe { return (intrinsics.atomicFetchXor64(ref self.val, (val as u64)) as u64) }
 }
 
 /// Strong compare-and-exchange. Failure order cannot exceed success order.
-public func AtomicU64.compareExchange(self: mut ref AtomicU64, expected: u64, desired: u64, success: MemoryOrder, failure: MemoryOrder): Result<u64, u64> {
+public func AtomicU64.compareExchange(self: ref AtomicU64, expected: u64, desired: u64, success: MemoryOrder, failure: MemoryOrder): Result<u64, u64> {
     requireCompareExchange(success, failure)
     unsafe {
-        let observed = intrinsics.atomicCompareExchange64(mut ref self.val, (expected as u64), (desired as u64))
+        let observed = intrinsics.atomicCompareExchange64(ref self.val, (expected as u64), (desired as u64))
         if observed == (expected as u64) { return Result.Ok((observed as u64)) }
         return Result.Err((observed as u64))
     }
 }
 
 /// Weak CAS uses the permitted non-spurious strong implementation.
-public func AtomicU64.compareExchangeWeak(self: mut ref AtomicU64, expected: u64, desired: u64, success: MemoryOrder, failure: MemoryOrder): Result<u64, u64> {
+public func AtomicU64.compareExchangeWeak(self: ref AtomicU64, expected: u64, desired: u64, success: MemoryOrder, failure: MemoryOrder): Result<u64, u64> {
     return self.compareExchange(expected, desired, success, failure)
 }
 
@@ -515,31 +599,43 @@ public func AtomicPtr.new<T>(val: ptr[T]): AtomicPtr<T> {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicPtr.load<T>(self: ref AtomicPtr<T>, order: MemoryOrder): ptr[T] {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoadPtr(ref self.val) as ptr[T]) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxedPtr(ref self.val) as ptr[T]) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquirePtr(ref self.val) as ptr[T]) }
+            _ => { return (intrinsics.atomicLoadPtr(ref self.val) as ptr[T]) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicPtr.store<T>(self: ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStorePtr(ref self.val, (val as ptr[u8])) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxedPtr(ref self.val, (val as ptr[u8])) }
+            MemoryOrder.Release => { intrinsics.atomicStoreReleasePtr(ref self.val, (val as ptr[u8])) }
+            _ => { intrinsics.atomicStorePtr(ref self.val, (val as ptr[u8])) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
-public func AtomicPtr.swap<T>(self: mut ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): ptr[T] {
-    unsafe { return (intrinsics.atomicSwapPtr(mut ref self.val, (val as ptr[u8])) as ptr[T]) }
+public func AtomicPtr.swap<T>(self: ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): ptr[T] {
+    unsafe { return (intrinsics.atomicSwapPtr(ref self.val, (val as ptr[u8])) as ptr[T]) }
 }
 
 /// Strong compare-and-exchange. Failure order cannot exceed success order.
-public func AtomicPtr.compareExchange<T>(self: mut ref AtomicPtr<T>, expected: ptr[T], desired: ptr[T], success: MemoryOrder, failure: MemoryOrder): Result<ptr[T], ptr[T]> {
+public func AtomicPtr.compareExchange<T>(self: ref AtomicPtr<T>, expected: ptr[T], desired: ptr[T], success: MemoryOrder, failure: MemoryOrder): Result<ptr[T], ptr[T]> {
     requireCompareExchange(success, failure)
     unsafe {
-        let observed = intrinsics.atomicCompareExchangePtr(mut ref self.val, (expected as ptr[u8]), (desired as ptr[u8]))
+        let observed = intrinsics.atomicCompareExchangePtr(ref self.val, (expected as ptr[u8]), (desired as ptr[u8]))
         if observed == (expected as ptr[u8]) { return Result.Ok((observed as ptr[T])) }
         return Result.Err((observed as ptr[T]))
     }
 }
 
 /// Weak CAS uses the permitted non-spurious strong implementation.
-public func AtomicPtr.compareExchangeWeak<T>(self: mut ref AtomicPtr<T>, expected: ptr[T], desired: ptr[T], success: MemoryOrder, failure: MemoryOrder): Result<ptr[T], ptr[T]> {
+public func AtomicPtr.compareExchangeWeak<T>(self: ref AtomicPtr<T>, expected: ptr[T], desired: ptr[T], success: MemoryOrder, failure: MemoryOrder): Result<ptr[T], ptr[T]> {
     return self.compareExchange(expected, desired, success, failure)
 }

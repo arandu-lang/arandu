@@ -1,9 +1,10 @@
 import std.alloc.vec as vec
+import std.core.result as core_result
 import std.core.slice as slice
 
 func main(): int {
     let mut values = vec.Vec<int>.new()
-    if !values.tryPush(17) {
+    if !values.tryPush(17).isOk() {
         return -1
     }
     let vector_len = values.len()

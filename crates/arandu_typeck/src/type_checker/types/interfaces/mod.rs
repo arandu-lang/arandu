@@ -23,6 +23,7 @@ pub struct InterfaceInfo {
 pub(crate) use check::check_instantiation_constraints;
 pub use collect::collect_interfaces_and_constraints;
 pub(crate) use method::instantiate_interface_method;
+pub(crate) use satisfy::type_satisfies_interface;
 
 #[cfg(test)]
 use super::ArType;

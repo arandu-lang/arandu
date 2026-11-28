@@ -1,0 +1,100 @@
+module onceClosures
+
+import std.alloc.string as strings
+import std.alloc.vec as vec
+
+// `own once (A) -> R` closures are called at most once: the call consumes
+// the closure, so the body may consume what it captured (RFC 0032, L3).
+
+static mut DROPS: int = 0
+
+struct Token {
+    id: int,
+}
+
+@Destructor
+func Token.destroy(self: own Token): void {
+    unsafe {
+        DROPS += 1
+    }
+}
+
+func drops(): int {
+    return unsafe { DROPS }
+}
+
+func consumeToken(token: Token): int {
+    return token.id
+}
+
+// The body moves its captures out: a `Token` and a `Vec` it gives away.
+func spender(id: int): own once () -> int {
+    let token = Token { id: id }
+    let mut items: vec.Vec<int> = vec.Vec.new()
+    items.push(id)
+    return () => {
+        let total = consumeToken(token) + items.len() as int
+        let gone = items
+        return total
+    }
+}
+
+func greeter(name: strings.String): own once (int) -> strings.String {
+    return (extra) => {
+        let mut owned = name
+        if extra > 0 { let _, _ = owned.pushStr("!") }
+        return owned
+    }
+}
+
+func runOnce(f: own once () -> int): int {
+    return f()
+}
+
+func calls(): int {
+    let before = drops()
+    let spend = spender(41)
+    if spend() != 42 { return 1 }
+    // The token moved into `consumeToken` and was destroyed there.
+    if drops() != before + 1 { return 2 }
+    let hello = greeter(strings.String.from("hi"))
+    let shout = hello(1)
+    if shout.len() != (3 as usize) { return 3 }
+    return 0
+}
+
+func dropUncalled(): void {
+    let spend = spender(1)
+}
+
+// A `once` closure that is never called still destroys its captures.
+func unused(): int {
+    let before = drops()
+    dropUncalled()
+    if drops() != before + 1 { return 1 }
+    return 0
+}
+
+// `own (A) -> R` becomes `own once (A) -> R` where one is expected, and a
+// temporary is called directly.
+func converted(): int {
+    let mut n = 0
+    let counter: own () -> int = () => {
+        n += 1
+        return n
+    }
+    if runOnce(counter) != 1 { return 1 }
+    if runOnce(spender(2)) != 3 { return 2 }
+    if spender(4)() != 5 { return 3 }
+    return 0
+}
+
+func main(): int {
+    let c = calls()
+    if c != 0 { return 10 + c }
+    let u = unused()
+    if u != 0 { return 20 + u }
+    let v = converted()
+    if v != 0 { return 30 + v }
+    return 0
+}

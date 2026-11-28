@@ -54,10 +54,10 @@ func main(): int {
     let mut code3 = 0
     match fs.readDir("crates") {
         Ok(mut listing) => {
-            if listing.count() == 0 {
+            if listing.len() == 0 {
                 code3 = 9
             }
-            listing.close()
+            let _, _ = listing.close()
         }
         Err(_) => {
             code3 = 10

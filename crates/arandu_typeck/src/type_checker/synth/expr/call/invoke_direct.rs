@@ -6,7 +6,6 @@ use arandu_parser::ast_pool::{ExprId, ExprKind, IndexRange};
 use super::thread_target::synth_thread_spawn_closure;
 use super::{
     check_call_arg, check_target_thread_capabilities, infer_and_instantiate_func, synth_expr,
-    synth_expr_expected,
 };
 use crate::type_checker::TypeChecker;
 use crate::type_checker::types::ArType;
@@ -20,18 +19,31 @@ pub(super) fn synth_direct_symbol_call(
     args_range: IndexRange,
     expected: Option<TypeId>,
 ) -> Option<TypeId> {
+    let callee_path = match checker.pool.expr(callee_id) {
+        ExprKind::Generic { callee, .. } => *callee,
+        _ => callee_id,
+    };
+    let outer_callee = checker.direct_callee.replace(callee_path);
     let callee_ty_id = synth_expr(checker, callee_id);
+    checker.direct_callee = outer_callee;
     let arg_ids = checker.pool.expr_list(args_range).to_vec();
     let callee_ty = checker.resolve(callee_ty_id);
-    let func_info = if let ArType::Func(ref params, ret) = callee_ty {
-        Some((checker.type_info.type_interner.type_args(*params), ret))
-    } else {
-        None
+    // `f(args)` on a callback parameter calls its closure's `call` directly.
+    let callback_bound = super::closure::callback_param_of(checker, callee_ty_id)
+        .and_then(|implicit| checker.type_info.callback_bounds.get(&implicit).copied());
+    // `f(args)` on an owning closure calls its code with its environment.
+    let owning = super::owning::closure_call_signature(checker, callee_id, callee_ty_id);
+    let func_info = match callback_bound
+        .map_or_else(|| callee_ty.clone(), |bound| checker.resolve(bound))
+    {
+        _ if owning.is_some() => owning,
+        ArType::Func(params, ret) => Some((checker.type_info.type_interner.type_args(params), ret)),
+        _ => None,
     };
     let is_error = matches!(callee_ty, ArType::Error);
 
     Some(if let Some((mut params, mut ret)) = func_info {
-        let mut is_direct = false;
+        let mut is_direct = callback_bound.is_some();
         let mut current_callee = callee_id;
         let had_explicit_generic = matches!(checker.pool.expr(callee_id), ExprKind::Generic { .. });
         if let ExprKind::Generic { callee: inner, .. } = checker.pool.expr(current_callee) {
@@ -125,6 +137,13 @@ pub(super) fn synth_direct_symbol_call(
         if let Some(sym_id) = callee_func_sym
             && checker.symbols.get(sym_id).lang_item
                 == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
+            && let &[job] = arg_ids.as_slice()
+        {
+            super::owning::adjust_thread_job(checker, job);
+        }
+        if let Some(sym_id) = callee_func_sym
+            && checker.symbols.get(sym_id).lang_item
+                == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
             && arg_ids.len() == 1
             && matches!(checker.pool.expr(arg_ids[0]), ExprKind::Lambda { .. })
         {
@@ -138,11 +157,9 @@ pub(super) fn synth_direct_symbol_call(
             && let Some(gp) = checker.type_info.generic_params.get(&sym_id).cloned()
             && !gp.is_empty()
         {
-            let arg_tys: Vec<TypeId> = arg_ids
-                .iter()
-                .copied()
-                .map(|aid| synth_expr(checker, aid))
-                .collect();
+            let arg_tys =
+                super::closure::synth_args_with_callbacks(checker, &gp, &params, &arg_ids, &[]);
+            super::closure::check_callback_args(checker, &params, &arg_ids, &arg_tys);
             if let Some((ip, ir)) = infer_and_instantiate_func(
                 checker,
                 (Some(sym_id), &gp),
@@ -157,39 +174,153 @@ pub(super) fn synth_direct_symbol_call(
                 let func_ty = ArType::func(&params, ret, &checker.type_info.type_interner);
                 let inst_func = checker.intern(func_ty);
                 checker.record_expr_type(callee_id, inst_func);
+            } else if arg_tys.iter().any(|&ty| checker.resolve(ty).is_error()) {
+                // An argument already reported its error; checking the others
+                // against the uninstantiated formals would only cascade.
+                let err = checker.intern(ArType::Error);
+                checker.record_expr_type(expr, err);
+                return Some(err);
             }
         }
 
-        if !is_direct {
-            let diag = crate::Diagnostic::error(
-                crate::DiagCode::T033IndirectCallNotSupported,
-                "indirect function calls are not supported",
-                span,
-            )
-            .with_label(
-                checker.pool.expr_span(callee_id),
-                "this expression evaluates to a function, but Arandu only supports direct calls",
-            );
-            checker.diagnostics.push(diag);
+        // `f<int>(xs, (x) => ...)`: the explicit arguments fixed the declared
+        // parameters; the callback parameters are inferred here.
+        if had_explicit_generic
+            && let Some(sym_id) = callee_func_sym
+            && let Some(gp) = checker.type_info.generic_params.get(&sym_id).cloned()
+        {
+            let implicit: Vec<_> = gp
+                .iter()
+                .copied()
+                .filter(|param| checker.type_info.callback_bounds.contains_key(param))
+                .collect();
+            if !implicit.is_empty() {
+                // The callback bounds mention the declared parameters too, so
+                // recover their explicit arguments from the instantiated formals.
+                let declared: Vec<_> = gp
+                    .iter()
+                    .copied()
+                    .filter(|param| !implicit.contains(param))
+                    .collect();
+                let mut explicit = rustc_hash::FxHashMap::default();
+                if let Some(ArType::Func(template, template_ret)) = checker.decl_type(sym_id) {
+                    let template = checker.type_info.type_interner.type_args(template);
+                    for (&formal, &actual) in template.iter().zip(&params) {
+                        let formal = checker.resolve(formal);
+                        super::instantiate::bind_type_params(
+                            checker,
+                            &declared,
+                            &formal,
+                            actual,
+                            &mut explicit,
+                        );
+                    }
+                    let formal = checker.resolve(template_ret);
+                    super::instantiate::bind_type_params(
+                        checker,
+                        &declared,
+                        &formal,
+                        ret,
+                        &mut explicit,
+                    );
+                }
+                let explicit: Vec<_> = explicit.into_iter().collect();
+                let arg_tys = super::closure::synth_args_with_callbacks(
+                    checker, &implicit, &params, &arg_ids, &explicit,
+                );
+                super::closure::check_callback_args(checker, &params, &arg_ids, &arg_tys);
+                if let Some((ip, ir)) = infer_and_instantiate_func(
+                    checker,
+                    (None, &implicit),
+                    &params,
+                    ret,
+                    &arg_tys,
+                    expected,
+                    span,
+                ) {
+                    params = ip;
+                    ret = ir;
+                    let func_ty = ArType::func(&params, ret, &checker.type_info.type_interner);
+                    let inst_func = checker.intern(func_ty);
+                    checker.record_expr_type(callee_id, inst_func);
+                }
+            }
         }
 
-        if params.len() != arg_ids.len() {
-            let diag = crate::Diagnostic::error(
-                crate::DiagCode::T012WrongArgCount,
-                format!(
-                    "expected {} arguments, found {}",
-                    params.len(),
-                    arg_ids.len()
-                ),
-                span,
-            )
-            .with_label(checker.pool.expr_span(callee_id), "call target is here")
-            .with_label(span, format!("{} arguments provided", arg_ids.len()));
-            checker.diagnostics.push(diag);
+        // A call through a function value may reach any function of its type.
+        if !is_direct {
+            checker.current_observed_effects = checker
+                .current_observed_effects
+                .union(arandu_middle::EffectFlags::ANY_CALL);
+        }
+
+        let is_variadic =
+            callee_func_sym.is_some_and(|sym| checker.type_info.variadic_functions.contains(&sym));
+
+        if is_variadic {
+            let min_params = params.len().saturating_sub(1);
+            if arg_ids.len() < min_params {
+                let diag = crate::Diagnostic::error(
+                    crate::DiagCode::T012WrongArgCount,
+                    format!(
+                        "expected at least {} arguments, found {}",
+                        min_params,
+                        arg_ids.len()
+                    ),
+                    span,
+                )
+                .with_label(checker.pool.expr_span(callee_id), "call target is here")
+                .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                checker.diagnostics.push(diag);
+            }
+        } else {
+            let min_params = if let Some(sym) = callee_func_sym {
+                let mut required = params.len();
+                while required > 0
+                    && checker
+                        .type_info
+                        .func_param_defaults
+                        .contains_key(&(sym, required - 1))
+                {
+                    required -= 1;
+                }
+                required
+            } else {
+                params.len()
+            };
+            if arg_ids.len() < min_params || arg_ids.len() > params.len() {
+                let expected_msg = if min_params == params.len() {
+                    format!(
+                        "expected {} arguments, found {}",
+                        params.len(),
+                        arg_ids.len()
+                    )
+                } else {
+                    format!(
+                        "expected {} to {} arguments, found {}",
+                        min_params,
+                        params.len(),
+                        arg_ids.len()
+                    )
+                };
+                let diag = crate::Diagnostic::error(
+                    crate::DiagCode::T012WrongArgCount,
+                    expected_msg,
+                    span,
+                )
+                .with_label(checker.pool.expr_span(callee_id), "call target is here")
+                .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                let diag = super::note_trailing_block(checker, diag, &arg_ids, params.len());
+                checker.diagnostics.push(diag);
+            }
         }
         for (i, arg_id) in arg_ids.iter().copied().enumerate() {
-            let formal = params.get(i).copied();
-            let arg_ty_id = synth_expr_expected(checker, arg_id, formal);
+            let formal = if is_variadic && i >= params.len().saturating_sub(1) {
+                params.last().copied()
+            } else {
+                params.get(i).copied()
+            };
+            let arg_ty_id = super::closure::synth_call_arg(checker, arg_id, formal);
             if let Some(param_id) = formal {
                 check_call_arg(
                     checker,
@@ -204,11 +335,7 @@ pub(super) fn synth_direct_symbol_call(
             }
         }
 
-        if !is_direct {
-            checker.intern(ArType::Error)
-        } else {
-            ret
-        }
+        ret
     } else if is_error {
         checker.intern(ArType::Error)
     } else {

@@ -47,7 +47,7 @@ pub struct ServerState {
     /// Latest client document version for each open buffer.
     pub versions: FxHashMap<DocumentId, i32>,
     /// Last published diagnostic fingerprint per document (skip no-op publish).
-    pub last_diag_fp: FxHashMap<DocumentId, ([u8; 32], Option<i32>)>,
+    pub last_diag_fp: FxHashMap<DocumentId, ([u8; 32], Option<i32>, AnalysisRevision)>,
     /// P3: last per-item IDE diag fingerprints (DocumentId, item local key).
     pub last_item_diag_fp: FxHashMap<(DocumentId, u32, u32), [u8; 32]>,
     /// Scheduler rejections produced on the event-loop thread itself.

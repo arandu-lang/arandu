@@ -127,8 +127,20 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/core/option.aru"),
     ),
     (
+        "stdlib/core/ops.aru",
+        include_str!("../../../../stdlib/core/ops.aru"),
+    ),
+    (
         "stdlib/core/pointer.aru",
         include_str!("../../../../stdlib/core/pointer.aru"),
+    ),
+    (
+        "stdlib/core/range.aru",
+        include_str!("../../../../stdlib/core/range.aru"),
+    ),
+    (
+        "stdlib/core/types.aru",
+        include_str!("../../../../stdlib/core/types.aru"),
     ),
     (
         "stdlib/core/prelude.aru",
@@ -173,6 +185,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
     (
         "stdlib/std/fs.aru",
         include_str!("../../../../stdlib/std/fs.aru"),
+    ),
+    (
+        "stdlib/std/collections.aru",
+        include_str!("../../../../stdlib/std/collections.aru"),
     ),
     (
         "stdlib/std/io.aru",

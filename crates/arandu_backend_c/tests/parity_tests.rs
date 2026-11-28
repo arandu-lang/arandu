@@ -34,6 +34,66 @@ fn parity_bit_intrinsics_cover_every_bit_position_and_zero() {
 }
 
 #[test]
+fn parity_rotate_and_swap_intrinsics_wrap_amounts_and_reverse_bytes() {
+    test_zero_result_all_opt_levels(
+        "rotate_swap_intrinsics",
+        include_str!("rotate_swap_intrinsics.aru"),
+    );
+}
+
+#[test]
+fn parity_fma_and_spin_intrinsics_evaluate_accurately() {
+    test_zero_result_all_opt_levels(
+        "fma_spin_intrinsics",
+        include_str!("fma_spin_intrinsics.aru"),
+    );
+}
+
+#[test]
+fn parity_overflow_saturating_intrinsics() {
+    test_zero_result_all_opt_levels(
+        "overflow_saturating_intrinsics",
+        include_str!("overflow_saturating_intrinsics.aru"),
+    );
+}
+
+#[test]
+fn parity_scalar_select_if_conversion() {
+    let source = r#"
+func pickInt(cond: bool, a: int, b: int): int {
+    return if cond { a } else { b }
+}
+
+func pickI64(cond: bool, a: i64, b: i64): i64 {
+    return if cond { a + 1 as i64 } else { b - 1 as i64 }
+}
+
+func pickFloat(cond: bool, a: f64, b: f64): f64 {
+    if cond { return a } else { return b }
+}
+
+func pickBool(cond: bool, a: bool, b: bool): bool {
+    let mut r = b
+    if cond { r = a }
+    return r
+}
+
+func main(): int {
+    if pickInt(true, 17, 29) != 17 { return 1 }
+    if pickInt(false, 17, 29) != 29 { return 2 }
+    if pickI64(true, 100 as i64, 200 as i64) != (101 as i64) { return 3 }
+    if pickI64(false, 100 as i64, 200 as i64) != (199 as i64) { return 4 }
+    if pickFloat(true, 2.25, 3.5) != 2.25 { return 5 }
+    if pickFloat(false, 2.25, 3.5) != 3.5 { return 6 }
+    if !pickBool(true, true, false) { return 7 }
+    if pickBool(false, true, false) { return 8 }
+    return 0
+}
+"#;
+    test_zero_result_all_opt_levels("scalar_select_if_conversion", source);
+}
+
+#[test]
 fn atomic_intrinsics_survive_real_native_thread_contention() {
     use std::sync::atomic::{AtomicU32, Ordering};
     let (amir, tc) = compile_src(include_str!("../../../tests/corpus/atomic_contention.aru"));
@@ -139,7 +199,7 @@ fn generated_c_udp_socket_table_handles_concurrent_bind_send_close() {
     let (amir, tc) = compile_src(
         r#"
 extern "C" {
-    func ar_net_udp_bind(host: ptr[u8]?, host_len: usize, port: int): int
+    func ar_net_udp_bind(host: ptr[u8], host_len: usize, port: int): int
 }
 func main(): int {
     return unsafe { ar_net_udp_bind(nil, 0 as usize, 0) }
@@ -245,7 +305,7 @@ fn generated_c_udp_accepts_localhost_ipv6_and_more_than_64_sockets() {
     let (amir, tc) = compile_src(
         r#"
 extern "C" {
-    func ar_net_udp_bind(host: ptr[u8]?, host_len: usize, port: int): int
+    func ar_net_udp_bind(host: ptr[u8], host_len: usize, port: int): int
 }
 func main(): int {
     return unsafe { ar_net_udp_bind(nil, 0 as usize, 0) }
@@ -697,7 +757,8 @@ func main(): int {
 
 fn compile_src(src: &str) -> (AmirProgram, TypeCheckResult) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    std::sync::Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -834,11 +895,10 @@ int main(void) {
 }
 fn emit_c(amir: &AmirProgram, tc: &TypeCheckResult) -> String {
     // Host parity only; Cranelift is host-only — see solidification matrix.
-    arandu_backend_c::emit_c(
+    arandu_backend_c::emit_c_with_context(
         amir,
         tc.symbols.as_ref(),
         tc.type_info.as_ref(),
-        &tc.type_info.type_interner,
         arandu_middle::layout::DataLayout::host(),
     )
     .unwrap()
@@ -1689,6 +1749,8 @@ fn parity_index_addressing_combined_with_shift() {
 fn generated_integer_programs_match_independent_oracle() {
     // Keep the original left-associated 64-call expression and exercise all
     // compiler phases with a bounded stack on every host, including macOS.
+    // The recursive phases grow their stack on demand, so the bound holds on
+    // every host whatever its frame sizes.
     std::thread::Builder::new()
         .stack_size(512 * 1024)
         .spawn(|| {
@@ -1699,6 +1761,25 @@ fn generated_integer_programs_match_independent_oracle() {
                 "Cranelift disagreed with the independent oracle"
             );
             assert_eq!(c, expected, "C disagreed with the independent oracle");
+        })
+        .expect("spawn bounded compiler worker")
+        .join()
+        .expect("bounded compiler worker failed");
+}
+
+/// A chain of 500 operands, near the parser's limit of 512, nests 500 levels
+/// deep in every phase. The
+/// recursive phases grow their stack on demand, so a 512 KiB thread compiles
+/// it on every host, as a Windows main thread of 1 MiB must.
+#[test]
+fn deeply_chained_expressions_compile_on_a_bounded_stack() {
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let terms = vec!["1"; 500].join(" + ");
+            let source = format!("func main(): int {{\n    return {terms} - 458\n}}\n");
+            let (jit, c) = test_execution_result("deeply_chained_expression", &source);
+            assert_eq!((jit, c), (42, 42));
         })
         .expect("spawn bounded compiler worker")
         .join()
@@ -2056,14 +2137,13 @@ fn parity_enum_equality_uses_values_not_padding_or_float_bits() {
     test_zero_result_all_opt_levels(
         "enum_equality_values",
         r#"
-struct Padded { small: u8, wide: i64 }
 func main(): int {
     let a: Option<[3]int> = Option.Some([1, 2, 3])
     let b: Option<[3]int> = Option.Some([1, 2, 3])
     let c: Option<[3]int> = Option.Some([1, 2, 4])
     if a != b || a == c { return 1 }
-    let x: Option<Padded> = Option.Some(Padded { small: 1, wide: 42 })
-    let y: Option<Padded> = Option.Some(Padded { small: 1, wide: 42 })
+    let x: Option<(u8, i64)> = Option.Some((1 as u8, 42 as i64))
+    let y: Option<(u8, i64)> = Option.Some((1 as u8, 42 as i64))
     if x != y { return 2 }
     let plus: Option<f64> = Option.Some(0.0)
     let minus: Option<f64> = Option.Some(-0.0)
@@ -2530,15 +2610,15 @@ fn cooperative_task_table_matches_in_both_backends() {
         "rt_task_table",
         r#"
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
+    func ar_rt_cancel_i64(handle: i64): void
 }
 async func answer(): int { return 42 }
 func main(): int {
     let job = answer()
     let handle = unsafe { ar_rt_spawn_i64(job as ptr[u8]) }
-    return unsafe { ar_rt_join_i64(handle) }
+    return unsafe { ar_rt_join_i64(handle) } as int
 }
 "#,
     );
@@ -2550,9 +2630,9 @@ fn cooperative_cancel_before_join_recovers_slot_in_c() {
     let (amir, tc) = compile_src(
         r#"
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
+    func ar_rt_cancel_i64(handle: i64): void
 }
 async func answer(): int { return 42 }
 func main(): int {
@@ -2564,7 +2644,7 @@ func main(): int {
     if handle2 != handle {
         return 1
     }
-    return unsafe { ar_rt_join_i64(handle2) }
+    return unsafe { ar_rt_join_i64(handle2) } as int
 }
 "#,
     );
@@ -2581,9 +2661,9 @@ fn cooperative_cancel_before_join_matches_across_backends() {
         "rt_task_cancel_parity",
         r#"
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
+    func ar_rt_cancel_i64(handle: i64): void
 }
 async func answer(): int { return 42 }
 func main(): int {
@@ -2592,7 +2672,7 @@ func main(): int {
     unsafe { ar_rt_cancel_i64(handle) }
     let job2 = answer()
     let handle2 = unsafe { ar_rt_spawn_i64(job2 as ptr[u8]) }
-    let result = unsafe { ar_rt_join_i64(handle2) }
+    let result = unsafe { ar_rt_join_i64(handle2) } as int
     unsafe { ar_rt_cancel_i64(handle2) }
     return result
 }
@@ -2607,9 +2687,9 @@ fn cooperative_cached_join_reuses_result_without_polling() {
         "rt_task_cached",
         r#"
 extern "C" {
-    func ar_rt_spawn_i64(state: ptr[u8]): int
-    func ar_rt_join_i64(handle: int): int
-    func ar_rt_cancel_i64(handle: int): void
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+    func ar_rt_join_i64(handle: i64): i64
+    func ar_rt_cancel_i64(handle: i64): void
 }
 async func answer(): int { return 42 }
 func main(): int {
@@ -2617,7 +2697,7 @@ func main(): int {
     let handle = unsafe { ar_rt_spawn_i64(job as ptr[u8]) }
     let first = unsafe { ar_rt_join_i64(handle) }
     let cached = unsafe { ar_rt_join_i64(handle) }
-    if first != 42 || cached != 42 {
+    if first != (42 as i64) || cached != (42 as i64) {
         return 1
     }
     unsafe { ar_rt_cancel_i64(handle) }
@@ -2761,7 +2841,8 @@ fn compile_generic_work_thunk() -> (AmirProgram, TypeCheckResult, String) {
 /// (`_A$...`) instead of being inlined at the call site by AMIR lowering.
 fn compile_src_mono(src: &str) -> (AmirProgram, TypeCheckResult) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    std::sync::Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -4563,8 +4644,8 @@ fn c_user_print_names_preserve_return_values_and_side_effects() {
         r#"
 import io
 struct User {}
-func print(value: str): int { io.print(value) return 7 }
-func User.println(value: str): int { io.print(value) return 9 }
+func print(value: str): int { io.print(value); return 7 }
+func User.println(value: str): int { io.print(value); return 9 }
 func main(): int {
     let left = print("left")
     let right = User.println("right")
@@ -5311,4 +5392,134 @@ func main(): int {
         42,
         "generated C must agree with the JIT"
     );
+}
+
+#[test]
+fn parity_extern_c_variadic_snprintf_and_mixed_args() {
+    let source = r#"
+extern "C" {
+    func snprintf(buf: ptr[u8], size: usize, fmt: ptr[u8], args: any...): i32
+    func malloc(size: usize): ptr[u8]
+    func free(p: ptr[u8]): void
+}
+
+func main(): int {
+    unsafe {
+        let buf = malloc(64 as usize)
+        let n = snprintf(buf, 64 as usize, c"%d+%u", 12 as i8, 30 as u16)
+        free(buf)
+        if n != (5 as i32) { return 1 }
+    }
+    return 42
+}
+"#;
+    let (amir, tc) = compile_src(source);
+    assert_eq!(execute_cranelift(&amir, &tc), 42, "cranelift baseline");
+    let emitted = emit_c(&amir, &tc);
+    assert!(
+        emitted.contains("int32_t snprintf(uint8_t*, uint64_t, uint8_t*, ...);")
+            || emitted.contains("int32_t snprintf(uint8_t*, uintptr_t, uint8_t*, ...);"),
+        "expected variadic prototype in C output:\n{emitted}"
+    );
+    // Test generated C compilation + execution using a custom variadic C symbol
+    // (avoiding standard header prototype char*/void* vs uint8_t* redeclaration clash).
+    let custom_src = r#"
+extern "C" {
+    func ar_test_var_add(count: i32, args: any...): i32
+}
+
+func main(): int {
+    unsafe {
+        return ar_test_var_add(3 as i32, 10 as i8, 20 as u16, 12 as i32) as int
+    }
+}
+"#;
+    let (c_amir, c_tc) = compile_src(custom_src);
+    let c_emitted = emit_c(&c_amir, &c_tc);
+    assert!(
+        c_emitted.contains("int32_t ar_test_var_add(int32_t, ...);"),
+        "expected variadic custom extern C prototype:\n{c_emitted}"
+    );
+    let dir = env::temp_dir().join("arandu_c_tests");
+    fs::create_dir_all(&dir).unwrap();
+    let main_c = dir.join("extern_c_variadic_custom.c");
+    let helper_c = dir.join("extern_c_variadic_helper.c");
+    let exe = dir.join("extern_c_variadic_custom.exe");
+    fs::write(&main_c, &c_emitted).unwrap();
+    fs::write(
+        &helper_c,
+        "#include <stdarg.h>\n#include <stdint.h>\nint32_t ar_test_var_add(int32_t count, ...) {\n    va_list ap;\n    va_start(ap, count);\n    int32_t sum = 0;\n    for (int32_t i = 0; i < count; i++) sum += va_arg(ap, int);\n    va_end(ap);\n    return sum;\n}\n",
+    )
+    .unwrap();
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let compiled = Command::new(&cc)
+        .arg(&main_c)
+        .arg(&helper_c)
+        .arg("-o")
+        .arg(&exe)
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    assert_eq!(Command::new(&exe).status().unwrap().code(), Some(42));
+}
+
+#[test]
+fn parity_cold_likely_unlikely() {
+    let source = r#"
+module std.core.c_branch_hint_test
+
+extern "arandu-intrinsic" {
+    func likely(cond: bool): bool
+    func unlikely(cond: bool): bool
+}
+
+@Cold
+func cold_err(x: int): int {
+    return x + 100
+}
+
+func classify(x: int): int {
+    if unlikely(x < 0) {
+        return cold_err(x)
+    }
+    if likely(x >= 0) {
+        return x * 3
+    }
+    return -1
+}
+
+func main(): int {
+    if classify(-5) != 95 { return 1 }
+    if classify(7) != 21 { return 2 }
+    return 0
+}
+"#;
+    let (mut amir, tc) = compile_src(source);
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimize failed");
+    let emitted = emit_c(&amir, &tc);
+    assert!(
+        emitted.contains("AR_COLD "),
+        "expected AR_COLD on @Cold function:\n{emitted}"
+    );
+    assert!(
+        emitted.contains("AR_LIKELY("),
+        "expected AR_LIKELY in C output:\n{emitted}"
+    );
+    assert!(
+        emitted.contains("AR_UNLIKELY("),
+        "expected AR_UNLIKELY in C output:\n{emitted}"
+    );
+    assert_eq!(execute_cranelift(&amir, &tc), 0, "cranelift parity");
+    assert_eq!(execute_c("parity_cold_likely_unlikely", &amir, &tc), 0);
 }

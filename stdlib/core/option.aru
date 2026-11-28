@@ -26,6 +26,7 @@
 module std.core.option
 
 import std.core.intrinsics as intrinsics
+import std.core.mem as mem
 
 /// Algebraic data type representing either the presence (`Some`) or absence (`None`) of a value.
 ///
@@ -66,6 +67,24 @@ func asRef<T>(value: ref Option<T>): Option<ref T> {
 /// The returned reference remains tied to the borrow of `self` by the compiler.
 public func Option.asRef<T>(self: ref Option<T>): Option<ref T> {
     return asRef<T>(self)
+}
+
+func asMut<T>(value: mut ref Option<T>): Option<mut ref T> {
+    match value {
+        Some(inner) => {
+            return Option.Some(inner)
+        }
+        None => {
+            return Option.None
+        }
+    }
+}
+
+/// Mutably borrows the payload when the option is `Some`.
+///
+/// The returned exclusive reference remains tied to the mutable borrow of `self`.
+public func Option.asMut<T>(self: mut ref Option<T>): Option<mut ref T> {
+    return asMut<T>(self)
 }
 
 /// Returns `true` if the option is the `Some` variant.
@@ -133,10 +152,10 @@ public func Option.unwrapOr<T>(self: own Option<T>, defaultVal: T): T {
     }
 }
 
-/// Unwraps the value contained in `Some`, or aborts the program with a fatal trap if `None`.
+/// Unwraps the value contained in `Some`, or aborts the program with `reason` on `None`.
 ///
 /// # Traps / Abort
-/// If `self` is `None`, execution is terminated immediately and deterministically (`intrinsics.abort`).
+/// If `self` is `None`, `reason` is written to standard error and execution terminates immediately (`intrinsics.abortWithMessage`).
 ///
 /// # Examples
 /// ```arandu
@@ -152,8 +171,127 @@ public func Option.expectOrAbort<T>(self: own Option<T>, reason: str): T {
         }
         None => {
             unsafe {
-                intrinsics.abort()
+                intrinsics.abortWithMessage(reason)
             }
         }
     }
+}
+
+/// Maps an `Option<T>` to `Option<R>` by applying a function to a contained value.
+public func Option.map<T, R>(self: own Option<T>, f: (T) -> R): Option<R> {
+    match self {
+        Some(v) => {
+            return Option.Some(f(v))
+        }
+        None => {
+            return Option.None
+        }
+    }
+}
+
+/// Returns the provided default value (evaluated lazily via closure) if `None`.
+public func Option.unwrapOrElse<T>(self: own Option<T>, fallback: () -> T): T {
+    match self {
+        Some(v) => {
+            return v
+        }
+        None => {
+            return fallback()
+        }
+    }
+}
+
+/// Returns `None` if the option is `None`, otherwise calls `f` with the wrapped value and returns the result.
+public func Option.andThen<T, R>(self: own Option<T>, f: (T) -> Option<R>): Option<R> {
+    match self {
+        Some(v) => {
+            return f(v)
+        }
+        None => {
+            return Option.None
+        }
+    }
+}
+
+/// Transforms the `Option<T>` into a `Result<T, E>`, mapping `Some(v)` to `Ok(v)` and `None` to `Err(err)`.
+public func Option.okOr<T, E>(self: own Option<T>, err: E): Result<T, E> {
+    match self {
+        Some(val) => {
+            return Result.Ok(val)
+        }
+        None => {
+            return Result.Err(err)
+        }
+    }
+}
+
+/// Transforms the `Option<T>` into a `Result<T, E>`, mapping `Some(v)` to `Ok(v)` and `None` to `Err(errFn())`.
+public func Option.okOrElse<T, E>(self: own Option<T>, errFn: () -> E): Result<T, E> {
+    match self {
+        Some(val) => {
+            return Result.Ok(val)
+        }
+        None => {
+            return Result.Err(errFn())
+        }
+    }
+}
+
+/// Returns `None` if the option is `None`, otherwise calls `predicate` with the wrapped value and returns:
+/// - `Some(t)` if `predicate(ref t)` returns `true`, and
+/// - `None` if `predicate(ref t)` returns `false`.
+public func Option.filter<T>(self: own Option<T>, predicate: (ref T) -> bool): Option<T> {
+    match self {
+        Some(val) => {
+            if predicate(ref val) {
+                return Option.Some(val)
+            }
+            return Option.None
+        }
+        None => {
+            return Option.None
+        }
+    }
+}
+
+/// Calls the provided closure with a reference to the contained value (if `Some`).
+public func Option.inspect<T>(self: ref Option<T>, f: (ref T) -> void): void {
+    match self {
+        Some(val) => {
+            f(val)
+        }
+        None => {}
+    }
+}
+
+/// Zips `self` with another `Option`.
+///
+/// If `self` is `Some(a)` and `other` is `Some(b)`, this method returns `Some((a, b))`.
+/// Otherwise, `None` is returned.
+public func Option.zip<T, U>(self: own Option<T>, other: own Option<U>): Option<(T, U)> {
+    match self {
+        Some(a) => {
+            match other {
+                Some(b) => {
+                    return Option.Some((a, b))
+                }
+                None => {
+                    return Option.None
+                }
+            }
+        }
+        None => {
+            return Option.None
+        }
+    }
+}
+
+/// Takes the value out of the option, leaving `Option.None` in its place.
+public func Option.take<T>(self: mut ref Option<T>): Option<T> {
+    return mem.replace<Option<T>>(self, Option.None)
+}
+
+/// Replaces the actual value in the option with `value`, returning the old value.
+public func Option.replace<T>(self: mut ref Option<T>, value: T): Option<T> {
+    return mem.replace<Option<T>>(self, Option.Some(value))
 }

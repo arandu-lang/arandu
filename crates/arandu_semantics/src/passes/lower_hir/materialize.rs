@@ -49,6 +49,8 @@ pub fn materialize_ctfe_scalar(
         // Nil with the explicit Void type is the canonical HIR unit value,
         // not a nullable/reference value and not an Option constructor.
         ConstValue::Void if expected_type == ArType::Void => HirExprKind::Nil,
+        // A frozen raw pointer that points nowhere is `nil` of its type.
+        ConstValue::Void if matches!(expected_type, ArType::Ptr(_)) => HirExprKind::Nil,
         ConstValue::Bool(boolean) if expected_type == ArType::Primitive(Primitive::Bool) => {
             HirExprKind::Bool(boolean)
         }
@@ -83,12 +85,17 @@ pub fn materialize_ctfe_scalar(
         ConstValue::Bytes(value) if matches!(expected_type, ArType::Slice(inner) if matches!(types.try_resolve(inner), Some(ArType::Primitive(Primitive::U8 | Primitive::Byte)))) => {
             HirExprKind::FrozenBytes(value)
         }
+        // `c"..."`: the address of its frozen bytes, as the literal lowers.
+        ConstValue::Bytes(value) if matches!(expected_type, ArType::Ptr(inner) if matches!(types.try_resolve(inner), Some(ArType::Primitive(Primitive::U8 | Primitive::I8 | Primitive::Byte)))) => {
+            HirExprKind::FrozenBytes(value)
+        }
         ConstValue::Void
         | ConstValue::Bool(_)
         | ConstValue::Aggregate(_)
         | ConstValue::Float(_)
         | ConstValue::String(_)
-        | ConstValue::Bytes(_) => {
+        | ConstValue::Bytes(_)
+        | ConstValue::TypeDesc(_) => {
             return Err(MaterializationError::TypeMismatch);
         }
     };
@@ -155,7 +162,7 @@ pub fn materialize_ctfe_value(
             .ok()
             .as_ref()
             != Some(aggregate.shape())
-            || !info.is_copy(expected)
+            || !frozen_copyable(info, expected, 0)
         {
             return Err(MaterializationError::TypeMismatch);
         }
@@ -249,11 +256,7 @@ pub fn materialize_ctfe_value(
                     }
                     None => pool.alloc_expr_list(&[]),
                 };
-                HirExprKind::Call {
-                    callee,
-                    args,
-                    trailing_block: None,
-                }
+                HirExprKind::Call { callee, args }
             };
             return Ok(HirExpr {
                 kind,
@@ -267,6 +270,50 @@ pub fn materialize_ctfe_value(
             .type_interner
             .try_resolve(expected)
             .ok_or(MaterializationError::InvalidType(expected))?;
+        // A view is its elements as an array, viewed whole: `[..][0..N]`,
+        // the form the checker gives an array adjusted to a slice.
+        if let ArType::Slice(element) = expected_type {
+            let count = aggregate.values().len();
+            let array_ty = info
+                .type_interner
+                .intern(ArType::Array(count as u64, element));
+            let mut items = Vec::with_capacity(count);
+            for value in aggregate.values() {
+                let item = materialize(value, element, destination, pool, depth + 1, remaining)?;
+                items.push(pool.alloc_expr(item));
+            }
+            let items = pool.alloc_expr_list(&items);
+            let array = pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Array { items },
+                ty: array_ty,
+                span,
+            });
+            let usize_ty = info
+                .type_interner
+                .intern(ArType::Primitive(Primitive::USize));
+            let bound = |pool: &mut arandu_middle::hir::HirPool, value: usize| {
+                pool.alloc_expr(HirExpr {
+                    kind: HirExprKind::Int(value.to_string().into()),
+                    ty: usize_ty,
+                    span,
+                })
+            };
+            let (left, right) = (bound(pool, 0), bound(pool, count));
+            let index = pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Binary {
+                    op: arandu_middle::ops::BinaryOp::RangeExclusive,
+                    left,
+                    right,
+                },
+                ty: info.type_interner.intern(ArType::Range(usize_ty)),
+                span,
+            });
+            return Ok(HirExpr {
+                kind: HirExprKind::Index { base: array, index },
+                ty: expected,
+                span,
+            });
+        }
         match expected_type {
             ArType::Array(count, element) => {
                 if usize::try_from(count).ok() != Some(aggregate.values().len()) {
@@ -349,4 +396,44 @@ pub fn materialize_ctfe_value(
     let mut remaining = arandu_middle::types::TypeShape::MAX_NODES;
     let destination = Destination { info, layout, span };
     materialize(value, expected, &destination, pool, 0, &mut remaining)
+}
+
+/// Whether a frozen value of `ty` may be written out more than once. A
+/// raw pointer keeps an aggregate from being `Copy`, so a free is not
+/// duplicated, but a frozen pointer is `nil` or the address of static bytes
+/// (`c"..."`) and owns nothing.
+fn frozen_copyable(info: &arandu_typeck::type_checker::TypeInfo, ty: TypeId, depth: usize) -> bool {
+    use arandu_middle::layout::StructLayoutProvider;
+    if info.is_copy(ty) {
+        return true;
+    }
+    if depth >= arandu_middle::types::TypeShape::MAX_DEPTH {
+        return false;
+    }
+    let interner = &info.type_interner;
+    match interner.resolve(ty) {
+        ArType::Ptr(_) => true,
+        ArType::Array(_, element) => frozen_copyable(info, element, depth + 1),
+        ArType::Tuple(arguments) => interner
+            .type_args(arguments)
+            .iter()
+            .all(|&argument| frozen_copyable(info, argument, depth + 1)),
+        owner @ ArType::Named(..) => {
+            info.destructor_for_type(ty).is_none()
+                && info
+                    .get_struct_fields_for_type(&owner, interner)
+                    .is_some_and(|fields| {
+                        fields.fields.iter().all(|field| {
+                            arandu_middle::layout::instantiated_field_type(
+                                &owner,
+                                field.name.as_str(),
+                                interner,
+                                info,
+                            )
+                            .is_some_and(|field_ty| frozen_copyable(info, field_ty, depth + 1))
+                        })
+                    })
+        }
+        _ => false,
+    }
 }

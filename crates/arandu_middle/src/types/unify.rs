@@ -1,7 +1,59 @@
 use super::ar_type::ArType;
+use super::infer::{bind_unified, infer_accepts};
 use super::primitive::Primitive;
 use super::result_option::{is_err_type, result_ok_err};
 use super::type_interner::TypeInterner;
+
+// The public checks succeed or fail as a whole before binding the inference
+// variables they met (S1), so a failed probe leaves no partial bindings.
+
+/// Unify return value type against declared `Result` return.
+#[must_use]
+pub fn unify_return_type(expected: &ArType, actual: &ArType, interner: &TypeInterner) -> bool {
+    let ok = unify_return_type_inner(expected, actual, interner);
+    if ok {
+        bind_unified(expected, actual, interner);
+    }
+    ok
+}
+
+/// Structural type equality; on success, binds the inference variables
+/// the two types share.
+#[must_use]
+pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
+    let ok = unify_inner(a, b, interner);
+    if ok {
+        bind_unified(a, b, interner);
+    }
+    ok
+}
+
+/// Whether `actual` can be assigned to `expected` (directional); on
+/// success, binds the inference variables they share.
+#[must_use]
+pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner) -> bool {
+    let ok = is_assignable_inner(actual, expected, interner);
+    if ok {
+        bind_unified(expected, actual, interner);
+    }
+    ok
+}
+
+/// Whether a returned `actual` fits the declared `expected`, including the
+/// `Result` wrapping of a fallible return; on success, binds the inference
+/// variables they share.
+#[must_use]
+pub fn is_assignable_return_type(
+    expected: &ArType,
+    actual: &ArType,
+    interner: &TypeInterner,
+) -> bool {
+    let ok = is_assignable_return_type_inner(expected, actual, interner);
+    if ok {
+        bind_unified(expected, actual, interner);
+    }
+    ok
+}
 
 /// Unify return value type against declared `Result` return.
 #[must_use]
@@ -10,17 +62,34 @@ use super::type_interner::TypeInterner;
     target = "arandu_middle::types::unify",
     skip(interner)
 )]
-pub fn unify_return_type(expected: &ArType, actual: &ArType, interner: &TypeInterner) -> bool {
-    if unify(expected, actual, interner) {
+fn unify_return_type_inner(expected: &ArType, actual: &ArType, interner: &TypeInterner) -> bool {
+    if matches!(actual, ArType::Never) {
         return true;
+    }
+    if unify_inner(expected, actual, interner) {
+        return true;
+    }
+    if let ArType::Option(inner_exp_id) = expected {
+        if let ArType::Option(inner_act_id) = actual {
+            let inner_exp = interner.resolve(*inner_exp_id);
+            let inner_act = interner.resolve(*inner_act_id);
+            return unify_inner(&inner_act, &inner_exp, interner);
+        }
+        let inner_exp = interner.resolve(*inner_exp_id);
+        if unify_inner(&inner_exp, actual, interner)
+            || is_assignable_inner(actual, &inner_exp, interner)
+        {
+            return true;
+        }
     }
     if let Some((ok_exp, err_exp)) = result_ok_err(expected, interner) {
         if let Some((ok_act, err_act)) = result_ok_err(actual, interner) {
-            return unify(&ok_exp, &ok_act, interner) && unify(&err_exp, &err_act, interner);
+            return unify_inner(&ok_exp, &ok_act, interner)
+                && unify_inner(&err_exp, &err_act, interner);
         }
         // `return nil` on `Result<void, Err>`
         if matches!(ok_exp, ArType::Void)
-            && matches!(actual, ArType::Nullable(inner) if matches!(&interner.resolve(*inner), ArType::Error))
+            && matches!(actual, ArType::Option(inner) if matches!(&interner.resolve(*inner), ArType::Error))
         {
             return true;
         }
@@ -50,7 +119,7 @@ pub fn unify_return_type(expected: &ArType, actual: &ArType, interner: &TypeInte
     target = "arandu_middle::types::unify",
     skip(interner)
 )]
-pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
+fn unify_inner(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
     // Poison and Any always unify
     if a.is_error() || b.is_error() {
         return true;
@@ -59,6 +128,12 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         || matches!(b, ArType::Primitive(Primitive::Any))
     {
         return true;
+    }
+    if let ArType::Infer(var) = a {
+        return infer_accepts(*var, b, interner);
+    }
+    if let ArType::Infer(var) = b {
+        return infer_accepts(*var, a, interner);
     }
 
     // Literal absorption
@@ -109,7 +184,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
                         if x == y {
                             return true;
                         }
-                        unify(&interner.resolve(x), &interner.resolve(y), interner)
+                        unify_inner(&interner.resolve(x), &interner.resolve(y), interner)
                     })
         }
         (ArType::Func(params_a, ret_a), ArType::Func(params_b, ret_b)) => {
@@ -122,27 +197,19 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
                         if x == y {
                             return true;
                         }
-                        unify(&interner.resolve(x), &interner.resolve(y), interner)
+                        unify_inner(&interner.resolve(x), &interner.resolve(y), interner)
                     })
                 && (*ret_a == *ret_b
-                    || unify(
+                    || unify_inner(
                         &interner.resolve(*ret_a),
                         &interner.resolve(*ret_b),
                         interner,
                     ))
         }
-        (ArType::Nullable(inner_a), ArType::Nullable(inner_b)) => {
-            *inner_a == *inner_b
-                || unify(
-                    &interner.resolve(*inner_a),
-                    &interner.resolve(*inner_b),
-                    interner,
-                )
-        }
 
         (ArType::Slice(inner_a), ArType::Slice(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -150,7 +217,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
         (ArType::MutSlice(inner_a), ArType::MutSlice(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -159,7 +226,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         (ArType::Array(n_a, elem_a), ArType::Array(n_b, elem_b)) => {
             n_a == n_b
                 && (*elem_a == *elem_b
-                    || unify(
+                    || unify_inner(
                         &interner.resolve(*elem_a),
                         &interner.resolve(*elem_b),
                         interner,
@@ -167,7 +234,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
         (ArType::Ptr(inner_a), ArType::Ptr(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -176,7 +243,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         // Shared refs unify structurally.
         (ArType::Ref(inner_a), ArType::Ref(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -185,7 +252,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         // Exclusive refs unify with each other.
         (ArType::RefMut(inner_a), ArType::RefMut(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -203,13 +270,14 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
                         if x == y {
                             return true;
                         }
-                        unify(&interner.resolve(x), &interner.resolve(y), interner)
+                        unify_inner(&interner.resolve(x), &interner.resolve(y), interner)
                     })
         }
         (ArType::Result(ok_a, err_a), ArType::Result(ok_b, err_b)) => {
-            (*ok_a == *ok_b || unify(&interner.resolve(*ok_a), &interner.resolve(*ok_b), interner))
+            (*ok_a == *ok_b
+                || unify_inner(&interner.resolve(*ok_a), &interner.resolve(*ok_b), interner))
                 && (*err_a == *err_b
-                    || unify(
+                    || unify_inner(
                         &interner.resolve(*err_a),
                         &interner.resolve(*err_b),
                         interner,
@@ -217,7 +285,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
         (ArType::Option(inner_a), ArType::Option(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -225,7 +293,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
         (ArType::Coroutine(inner_a), ArType::Coroutine(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -233,7 +301,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
         (ArType::Poll(inner_a), ArType::Poll(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -241,7 +309,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
         (ArType::Range(inner_a), ArType::Range(inner_b)) => {
             *inner_a == *inner_b
-                || unify(
+                || unify_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -249,6 +317,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
         (ArType::Err, ArType::Err) => true,
         (ArType::Void, ArType::Void) => true,
+        (ArType::Never, ArType::Never) => true,
         _ => false,
     }
 }
@@ -275,6 +344,7 @@ pub fn resolve_literal_pair(a: &ArType, b: &ArType) -> ArType {
         (ArType::IntLiteral, ArType::FloatLiteral) | (ArType::FloatLiteral, ArType::IntLiteral) => {
             ArType::FloatLiteral
         }
+        (ArType::Never, other) | (other, ArType::Never) => other.clone(),
         _ => a.clone(),
     }
 }
@@ -293,7 +363,7 @@ pub fn resolve_literal_pair(a: &ArType, b: &ArType) -> ArType {
     target = "arandu_middle::types::unify",
     skip(interner)
 )]
-pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner) -> bool {
+fn is_assignable_inner(actual: &ArType, expected: &ArType, interner: &TypeInterner) -> bool {
     if actual.is_error() || expected.is_error() {
         return true;
     }
@@ -302,19 +372,48 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
     {
         return true;
     }
+    if matches!(actual, ArType::Never) {
+        return true;
+    }
+    if let ArType::Infer(var) = expected {
+        return infer_accepts(*var, actual, interner);
+    }
+    if let ArType::Infer(var) = actual {
+        return infer_accepts(*var, expected, interner);
+    }
     if actual == expected {
         return true;
     }
 
-    // T -> T? coercion
-    if let ArType::Nullable(inner_expected_id) = expected {
+    // T -> Option<T> coercion
+    if let ArType::Option(inner_expected_id) = expected {
         let inner_expected = interner.resolve(*inner_expected_id);
-        if let ArType::Nullable(inner_actual_id) = actual {
+        if let ArType::Option(inner_actual_id) = actual {
             let inner_actual = interner.resolve(*inner_actual_id);
-            return is_assignable(&inner_actual, &inner_expected, interner);
+            return is_assignable_inner(&inner_actual, &inner_expected, interner);
         }
-        if is_assignable(actual, &inner_expected, interner) {
+        if is_assignable_inner(actual, &inner_expected, interner) {
             return true;
+        }
+    }
+
+    // nil -> ptr[T] coercion
+    if matches!(expected, ArType::Ptr(_))
+        && matches!(actual, ArType::Option(inner) if interner.resolve(*inner).is_error())
+    {
+        return true;
+    }
+
+    // ref func(...) -> ptr[func(...)] coercion for C-ABI function pointers
+    if let ArType::Ptr(inner_expected_id) = expected {
+        let inner_expected = interner.resolve(*inner_expected_id);
+        if matches!(inner_expected, ArType::Func(..))
+            && let ArType::Ref(inner_actual_id) = actual
+        {
+            let inner_actual = interner.resolve(*inner_actual_id);
+            if unify_inner(&inner_actual, &inner_expected, interner) {
+                return true;
+            }
         }
     }
 
@@ -323,7 +422,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         let inner_expected = interner.resolve(*inner_expected_id);
         if let ArType::RefMut(inner_actual_id) = actual {
             let inner_actual = interner.resolve(*inner_actual_id);
-            return is_assignable(&inner_actual, &inner_expected, interner);
+            return is_assignable_inner(&inner_actual, &inner_expected, interner);
         }
     }
 
@@ -373,7 +472,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
                         if x == y {
                             return true;
                         }
-                        is_assignable(&interner.resolve(x), &interner.resolve(y), interner)
+                        is_assignable_inner(&interner.resolve(x), &interner.resolve(y), interner)
                     })
         }
         (ArType::Func(params_a, ret_a), ArType::Func(params_b, ret_b)) => {
@@ -382,8 +481,10 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
                     .type_args(*params_a)
                     .iter()
                     .zip(interner.type_args(*params_b).iter())
-                    .all(|(&x, &y)| unify(&interner.resolve(x), &interner.resolve(y), interner))
-                && is_assignable(
+                    .all(|(&x, &y)| {
+                        unify_inner(&interner.resolve(x), &interner.resolve(y), interner)
+                    })
+                && is_assignable_inner(
                     &interner.resolve(*ret_a),
                     &interner.resolve(*ret_b),
                     interner,
@@ -391,7 +492,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         }
         (ArType::Slice(inner_a), ArType::Slice(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -400,7 +501,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         (ArType::MutSlice(inner_a), ArType::MutSlice(inner_b)) => *inner_a == *inner_b,
         (ArType::MutSlice(inner_a), ArType::Slice(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -409,7 +510,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         (ArType::Array(n_a, elem_a), ArType::Array(n_b, elem_b)) => {
             n_a == n_b
                 && (*elem_a == *elem_b
-                    || is_assignable(
+                    || is_assignable_inner(
                         &interner.resolve(*elem_a),
                         &interner.resolve(*elem_b),
                         interner,
@@ -417,15 +518,26 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         }
         (ArType::Ptr(inner_a), ArType::Ptr(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
                 )
+                || {
+                    let a = interner.resolve(*inner_a);
+                    let b = interner.resolve(*inner_b);
+                    matches!(
+                        (&a, &b),
+                        (
+                            ArType::Primitive(Primitive::U8 | Primitive::I8 | Primitive::Byte),
+                            ArType::Primitive(Primitive::U8 | Primitive::I8 | Primitive::Byte)
+                        )
+                    )
+                }
         }
         (ArType::Ref(inner_a), ArType::Ref(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -433,7 +545,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         }
         (ArType::RefMut(inner_a), ArType::RefMut(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -449,14 +561,18 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
                         if x == y {
                             return true;
                         }
-                        is_assignable(&interner.resolve(x), &interner.resolve(y), interner)
+                        is_assignable_inner(&interner.resolve(x), &interner.resolve(y), interner)
                     })
         }
         (ArType::Result(ok_a, err_a), ArType::Result(ok_b, err_b)) => {
             (*ok_a == *ok_b
-                || is_assignable(&interner.resolve(*ok_a), &interner.resolve(*ok_b), interner))
+                || is_assignable_inner(
+                    &interner.resolve(*ok_a),
+                    &interner.resolve(*ok_b),
+                    interner,
+                ))
                 && (*err_a == *err_b
-                    || is_assignable(
+                    || is_assignable_inner(
                         &interner.resolve(*err_a),
                         &interner.resolve(*err_b),
                         interner,
@@ -464,7 +580,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         }
         (ArType::Option(inner_a), ArType::Option(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -472,7 +588,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         }
         (ArType::Coroutine(inner_a), ArType::Coroutine(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -480,7 +596,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         }
         (ArType::Poll(inner_a), ArType::Poll(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -488,7 +604,7 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
         }
         (ArType::Range(inner_a), ArType::Range(inner_b)) => {
             *inner_a == *inner_b
-                || is_assignable(
+                || is_assignable_inner(
                     &interner.resolve(*inner_a),
                     &interner.resolve(*inner_b),
                     interner,
@@ -505,22 +621,33 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
     target = "arandu_middle::types::unify",
     skip(interner)
 )]
-pub fn is_assignable_return_type(
+fn is_assignable_return_type_inner(
     expected: &ArType,
     actual: &ArType,
     interner: &TypeInterner,
 ) -> bool {
-    if is_assignable(actual, expected, interner) {
+    if is_assignable_inner(actual, expected, interner) {
         return true;
+    }
+    if let ArType::Option(inner_exp_id) = expected {
+        if let ArType::Option(inner_act_id) = actual {
+            let inner_exp = interner.resolve(*inner_exp_id);
+            let inner_act = interner.resolve(*inner_act_id);
+            return is_assignable_inner(&inner_act, &inner_exp, interner);
+        }
+        let inner_exp = interner.resolve(*inner_exp_id);
+        if is_assignable_inner(actual, &inner_exp, interner) {
+            return true;
+        }
     }
     if let Some((ok_exp, err_exp)) = result_ok_err(expected, interner) {
         if let Some((ok_act, err_act)) = result_ok_err(actual, interner) {
-            return is_assignable(&ok_act, &ok_exp, interner)
-                && is_assignable(&err_act, &err_exp, interner);
+            return is_assignable_inner(&ok_act, &ok_exp, interner)
+                && is_assignable_inner(&err_act, &err_exp, interner);
         }
         // `return nil` on `Result<void, Err>`
         if matches!(ok_exp, ArType::Void)
-            && matches!(actual, ArType::Nullable(inner) if matches!(&interner.resolve(*inner), ArType::Error))
+            && matches!(actual, ArType::Option(inner) if matches!(&interner.resolve(*inner), ArType::Error))
         {
             return true;
         }

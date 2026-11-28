@@ -1,5 +1,6 @@
 use arandu_lexer::Span;
 use rustc_hash::FxHashMap;
+use smol_str::SmolStr;
 
 use crate::SymbolId;
 
@@ -49,6 +50,9 @@ pub struct TyCtx {
     /// Depth of loop nesting (for validating break/continue).
     loop_depth: u32,
 
+    /// Labels of enclosing loops.
+    loop_labels: Vec<Option<SmolStr>>,
+
     /// Depth of unsafe block nesting.
     unsafe_depth: u32,
 }
@@ -66,6 +70,7 @@ impl TyCtx {
             bindings: FxHashMap::default(),
             return_stack: Vec::new(),
             loop_depth: 0,
+            loop_labels: Vec::new(),
             unsafe_depth: 0,
         }
     }
@@ -166,12 +171,25 @@ impl TyCtx {
 
     /// Enter a loop scope.
     pub fn enter_loop(&mut self) {
+        self.enter_loop_with_label(None);
+    }
+
+    /// Enter a loop scope with an optional label.
+    pub fn enter_loop_with_label(&mut self, label: Option<SmolStr>) {
         self.loop_depth += 1;
+        self.loop_labels.push(label);
     }
 
     /// Leave a loop scope.
     pub fn exit_loop(&mut self) {
         self.loop_depth = self.loop_depth.saturating_sub(1);
+        self.loop_labels.pop();
+    }
+
+    /// Returns true if a loop with the given label is enclosing the current scope.
+    #[must_use]
+    pub fn has_loop_label(&self, label: &str) -> bool {
+        self.loop_labels.iter().any(|l| l.as_deref() == Some(label))
     }
 
     /// Returns true if we're inside a loop.

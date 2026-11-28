@@ -1,4 +1,4 @@
-use super::{Block, DeclId, Expr, IndexRange, TypeExprId, TypeName};
+use super::{Block, DeclId, Expr, ExprId, IndexRange, TypeExprId, TypeName};
 pub use arandu_base::lang::{AbiKind, Visibility};
 use arandu_lexer::Span;
 use smallvec::SmallVec;
@@ -63,6 +63,12 @@ pub enum ImportDecl {
         path: SmallVec<[SmolStr; 3]>,
         alias: SmolStr,
     },
+    /// `import path.to.{ mod_a, mod_b as b }`
+    ModuleGroup {
+        span: Span,
+        prefix: SmallVec<[SmolStr; 3]>,
+        items: Vec<ImportItem>,
+    },
     /// `from path.to.module import { Item, Other }`
     Named {
         span: Span,
@@ -95,6 +101,7 @@ impl ImportDecl {
     pub fn span(&self) -> Span {
         match self {
             ImportDecl::ModuleAlias { span, .. }
+            | ImportDecl::ModuleGroup { span, .. }
             | ImportDecl::Named { span, .. }
             | ImportDecl::ReExport { span, .. }
             | ImportDecl::ExternalNamed { span, .. }
@@ -185,6 +192,7 @@ pub struct ConstDecl {
     pub name: SmolStr,
     pub ty: Option<TypeExprId>,
     pub value: Expr,
+    pub is_static_mut: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -311,6 +319,8 @@ pub struct Param {
     pub is_variadic: bool,
     /// `true` when this parameter is the method receiver (`self`).
     pub is_receiver: bool,
+    /// Optional default value expression (`port: int = 8080`).
+    pub default: Option<ExprId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

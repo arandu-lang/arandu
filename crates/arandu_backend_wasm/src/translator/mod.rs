@@ -49,6 +49,7 @@ pub(super) struct FuncTranslator<'a> {
     pub literal_pool: &'a AmirLiteralPool,
     pub rodata_offsets: &'a FxHashMap<arandu_middle::literal_pool::LiteralId, u32>,
     pub func_index_map: &'a FxHashMap<SymbolId, u32>,
+    pub indirect_type_indices: &'a FxHashMap<arandu_middle::types::TypeId, u32>,
     pub functions: &'a [AmirFunc],
     pub extern_functions: &'a FxHashMap<SymbolId, (Vec<ArType>, ArType)>,
 
@@ -115,6 +116,11 @@ pub(super) struct FuncTranslator<'a> {
     /// or is already covered by a serialized enclosing initializer.
     pub static_initializer_temps: rustc_hash::FxHashSet<arandu_middle::amir::InstrId>,
     pub static_offsets: &'a FxHashMap<(SymbolId, arandu_middle::amir::InstrId), (u32, u32)>,
+    /// Linear-memory address of each `static mut`'s writable storage.
+    pub static_addresses: &'a FxHashMap<SymbolId, u32>,
+    /// Reference locals whose own address is taken (`ref r` with
+    /// `r: mut ref T`): they live in a memory cell like address-taken scalars.
+    pub ref_cells: rustc_hash::FxHashSet<arandu_middle::amir::LocalId>,
 }
 
 /// Number of wasm locals a shape occupies.
@@ -132,6 +138,8 @@ pub struct TranslationContext<'a> {
     pub functions: &'a [AmirFunc],
     pub extern_functions: &'a FxHashMap<SymbolId, (Vec<ArType>, ArType)>,
     pub static_offsets: &'a FxHashMap<(SymbolId, arandu_middle::amir::InstrId), (u32, u32)>,
+    /// Linear-memory address of each `static mut`'s writable storage.
+    pub static_addresses: &'a FxHashMap<SymbolId, u32>,
     pub symbols: &'a SymbolTable,
     pub interner: &'a TypeInterner,
     pub layout_provider: &'a dyn StructLayoutProvider,
@@ -139,6 +147,8 @@ pub struct TranslationContext<'a> {
     pub literal_pool: &'a AmirLiteralPool,
     pub rodata_offsets: &'a FxHashMap<arandu_middle::literal_pool::LiteralId, u32>,
     pub func_index_map: &'a FxHashMap<SymbolId, u32>,
+    /// Type index of each `Func` type called through a function value.
+    pub indirect_type_indices: &'a FxHashMap<arandu_middle::types::TypeId, u32>,
     /// Wasm function index of the internal `__arandu_alloc(size) -> i32`.
     pub alloc_func_idx: u32,
     /// Wasm function index of the internal `__arandu_free(ptr)`.
@@ -164,6 +174,7 @@ impl<'a> FuncTranslator<'a> {
             literal_pool: ctx.literal_pool,
             rodata_offsets: ctx.rodata_offsets,
             func_index_map: ctx.func_index_map,
+            indirect_type_indices: ctx.indirect_type_indices,
             functions: ctx.functions,
             extern_functions: ctx.extern_functions,
             temp_local: FxHashMap::default(),
@@ -196,7 +207,25 @@ impl<'a> FuncTranslator<'a> {
             current_initializer: None,
             static_initializer_temps: rustc_hash::FxHashSet::default(),
             static_offsets: ctx.static_offsets,
+            static_addresses: ctx.static_addresses,
+            ref_cells: address_taken_references(func, ctx.interner),
         }
+    }
+
+    /// A local kept in a memory cell: address-taken scalars and aggregates
+    /// handled by `is_memory`, plus references in [`Self::ref_cells`].
+    pub(super) fn is_cell_local(&self, local: &arandu_middle::amir::AmirLocal) -> bool {
+        let pointer_like = matches!(
+            self.interner.resolve(local.ty),
+            ArType::Ptr(_)
+                | ArType::Ref(_)
+                | ArType::RefMut(_)
+                | ArType::Slice(_)
+                | ArType::MutSlice(_)
+        );
+        local.is_memory
+            && (!pointer_like || self.ref_cells.contains(&local.id))
+            && !self.is_owned_aggregate(local.ty)
     }
 
     /// Compute the checked physical layout of a type, falling back to a
@@ -243,32 +272,38 @@ impl<'a> FuncTranslator<'a> {
                     ValType::I32 => self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     ValType::I64 => self.code.push(Instruction::I64Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     ValType::F32 => self.code.push(Instruction::F32Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     ValType::F64 => self.code.push(Instruction::F64Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     ValType::V128 => self.code.push(Instruction::V128Store(wasm_encoder::MemArg {
                         offset: u64::from(field.offset),
                         align: 4,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                     _ => self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     })),
                 }
             }
@@ -280,16 +315,7 @@ impl<'a> FuncTranslator<'a> {
         // Allocate memory cells for address-taken locals (is_memory).
         for local in &self.func.locals {
             let ty = self.interner.resolve(local.ty);
-            let pointer_like = matches!(
-                ty,
-                arandu_middle::types::ArType::Ptr(_)
-                    | arandu_middle::types::ArType::Ref(_)
-                    | arandu_middle::types::ArType::RefMut(_)
-                    | arandu_middle::types::ArType::Nullable(_)
-                    | arandu_middle::types::ArType::Slice(_)
-                    | arandu_middle::types::ArType::MutSlice(_)
-            );
-            if local.is_memory && !pointer_like && !self.is_owned_aggregate(local.ty) {
+            if self.is_cell_local(local) {
                 let size = self.layout_of(&ty).size.max(1) as i32;
                 self.alloc_cell(size);
                 if let Some(slot) = self.local_slot(local.id) {
@@ -413,4 +439,33 @@ impl<'a> FuncTranslator<'a> {
         wasm_func.instruction(&Instruction::End);
         wasm_func
     }
+}
+
+fn address_taken_references(
+    func: &AmirFunc,
+    interner: &TypeInterner,
+) -> rustc_hash::FxHashSet<arandu_middle::amir::LocalId> {
+    let mut locals = rustc_hash::FxHashSet::default();
+    for statement in func.stmts.payloads.iter() {
+        if let arandu_middle::amir::AmirStmt::Assign {
+            rhs:
+                arandu_middle::amir::AmirRvalue::Borrow(place)
+                | arandu_middle::amir::AmirRvalue::BorrowMut(place),
+            ..
+        } = statement
+            && place.projections.is_empty()
+            && func
+                .locals
+                .get(place.local.as_usize())
+                .is_some_and(|local| {
+                    matches!(
+                        interner.resolve(local.ty),
+                        ArType::Ref(_) | ArType::RefMut(_)
+                    )
+                })
+        {
+            locals.insert(place.local);
+        }
+    }
+    locals
 }

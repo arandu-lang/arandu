@@ -29,7 +29,7 @@ import std.core.marker as marker
 import std.core.option as option
 import std.core.slice as slice
 
-const MAX_SMALLVEC_CAPACITY = 2147483647 as usize
+// Allocation capacity ceiling uses `mem.maxAllocBytes()` at call sites.
 
 func allocationFailure(): void {
     unsafe { intrinsics.abort() }
@@ -39,17 +39,23 @@ func allocationFits(capacity: usize, element_size: usize): bool {
     if element_size == (0 as usize) {
         return false
     }
-    let max_bytes: usize = MAX_SMALLVEC_CAPACITY
+    let max_bytes: usize = mem.maxAllocBytes()
     return capacity <= max_bytes / element_size
 }
 
 extern "C" {
-    /// Host allocator for a raw byte buffer.
-    func ar_vec_malloc(size: usize): ptr[u8]
-    /// Host deallocator for a raw byte buffer.
-    func ar_vec_buf_free(p: ptr[u8], size: usize): void
-    /// Host allocator that resizes a raw byte buffer.
-    func ar_vec_realloc(p: ptr[u8], oldSize: usize, newSize: usize): ptr[u8]
+    /// Allocator for typed buffers using target-provided alignment.
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    /// Matching deallocator for `ar_rt_alloc_aligned`.
+    func ar_rt_free_aligned(p: ptr[u8], size: usize, align: usize): void
+}
+
+func smallVecAllocAlign<T>(): usize {
+    let a = mem.alignOf<Option<T>>()
+    if a < (16 as usize) {
+        return 16 as usize
+    }
+    return a
 }
 
 /// Small vector optimized for holding up to 4 elements inline on the stack without heap allocation.
@@ -57,6 +63,8 @@ extern "C" {
 /// Follows LLVM SmallVector's Data-Oriented Design (DoD):
 /// - Uses inline buffer for <= 4 elements.
 /// - Spills to heap memory only when exceeding 4 elements.
+@UnsafeSend
+@UnsafeSync
 public struct SmallVec4<T> {
     /// Pointer to heap elements when the vector has spilled.
     data: ptr[Option<T>]
@@ -143,7 +151,7 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
             allocationFailure()
         }
         unsafe {
-            let raw = ar_vec_malloc(new_cap * elem_size)
+            let raw = ar_rt_alloc_aligned(new_cap * elem_size, smallVecAllocAlign<T>())
             let nullp: ptr[u8] = nil
             if raw == nullp {
                 allocationFailure()
@@ -191,12 +199,22 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
             allocationFailure()
         }
         unsafe {
-            let raw = ar_vec_realloc(self.data as ptr[u8], self.capacity * elem_size, new_cap * elem_size)
+            let align = smallVecAllocAlign<T>()
+            let raw = ar_rt_alloc_aligned(new_cap * elem_size, align)
             let nullp: ptr[u8] = nil
             if raw == nullp {
                 allocationFailure()
             }
-            self.data = raw as ptr[Option<T>]
+            let new_ptr = raw as ptr[Option<T>]
+            let mut idx: usize = 0 as usize
+            while idx < self.len {
+                let src = mem.ptrOffset<Option<T>>(self.data, idx as isize)
+                let dst = mem.ptrOffset<Option<T>>(new_ptr, idx as isize)
+                mem.ptrWrite<Option<T>>(dst, mem.ptrRead<Option<T>>(src))
+                idx = idx + (1 as usize)
+            }
+            ar_rt_free_aligned(self.data as ptr[u8], self.capacity * elem_size, align)
+            self.data = new_ptr
         }
         self.capacity = new_cap
     }
@@ -279,6 +297,82 @@ public func SmallVec4.getRef<T>(self: ref SmallVec4<T>, index: usize): Option<re
     return getRef<T>(self, index)
 }
 
+/// Shared indexing (`sv[idx]`), aborting if `idx` is out of bounds.
+public func SmallVec4.index<T>(self: ref SmallVec4<T>, idx: usize): ref T {
+    if idx >= self.len {
+        unsafe { intrinsics.abort() }
+    }
+    if self.is_heap {
+        let slots = unsafe {
+            intrinsics.sliceFromRaw<SmallVec4<T>, Option<T>>(self, self.data, self.len)
+        }
+        match slots[idx].asRef() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (0 as usize) {
+        match self.inline_buf[0].asRef() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (1 as usize) {
+        match self.inline_buf[1].asRef() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (2 as usize) {
+        match self.inline_buf[2].asRef() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    match self.inline_buf[3].asRef() {
+        Some(r) => { return r }
+        None => { unsafe { intrinsics.abort() } }
+    }
+}
+
+/// Mutable indexing (`sv[idx] = val`, `mut ref sv[idx]`), aborting if `idx` is out of bounds.
+public func SmallVec4.indexMut<T>(self: mut ref SmallVec4<T>, idx: usize): mut ref T {
+    if idx >= self.len {
+        unsafe { intrinsics.abort() }
+    }
+    if self.is_heap {
+        let mut slots = unsafe {
+            intrinsics.mutSliceFromRaw<SmallVec4<T>, Option<T>>(self, self.data, self.len)
+        }
+        match slots[idx].asMut() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (0 as usize) {
+        match self.inline_buf[0].asMut() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (1 as usize) {
+        match self.inline_buf[1].asMut() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    if idx == (2 as usize) {
+        match self.inline_buf[2].asMut() {
+            Some(r) => { return r }
+            None => { unsafe { intrinsics.abort() } }
+        }
+    }
+    match self.inline_buf[3].asMut() {
+        Some(r) => { return r }
+        None => { unsafe { intrinsics.abort() } }
+    }
+}
+
 /// Decreases the length and returns the former last element, or `None` if empty.
 ///
 /// Heap storage remains allocated after popping, even when the length drops
@@ -345,7 +439,7 @@ func destroySmallVec<T>(v: mut ref SmallVec4<T>): void {
     if v.is_heap {
         let elem_size = mem.sizeOf<Option<T>>()
         unsafe {
-            ar_vec_buf_free(v.data as ptr[u8], v.capacity * elem_size)
+            ar_rt_free_aligned(v.data as ptr[u8], v.capacity * elem_size, smallVecAllocAlign<T>())
         }
         v.data = nil
         v.is_heap = false

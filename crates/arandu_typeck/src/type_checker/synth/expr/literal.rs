@@ -6,44 +6,40 @@ use super::synth_expr;
 use crate::type_checker::TypeChecker;
 use crate::type_checker::constraints::ConstraintOrigin;
 use crate::type_checker::types::{self, ArType, Primitive};
+use crate::{CodeReplacement, Hint};
 use arandu_middle::types::type_interner::TypeId;
 
 /// Infer `struct` type arguments from field initializers.
 ///
-/// For each type parameter `P`, finds a field whose template type is exactly
-/// `Named(P, [])` and uses the field value's type. Returns `None` if any
-/// parameter cannot be resolved to a non-error concrete type.
+/// Each field's template type is matched structurally against the peeked
+/// type of its value, so `Pair { first: Fresh {..} }` binds `T` = `Fresh` and
+/// `Wrap { items: vec }` binds `T` from `Vec<T>`. Returns `None` if any
+/// parameter stays unbound.
 fn infer_struct_type_args(
     checker: &mut TypeChecker<'_>,
     params: &[arandu_middle::SymbolId],
     template_fields: &arandu_middle::layout::StructFields,
     field_ids: &[arandu_parser::ast_pool::FieldInitId],
 ) -> Option<Vec<TypeId>> {
-    let mut out = Vec::with_capacity(params.len());
-    for &param in params {
-        let mut found: Option<TypeId> = None;
-        for &fid in field_ids {
-            let field = checker.pool.field_init(fid);
-            let Some(tmpl_tid) = template_fields.get(field.name.as_str()).map(|f| f.ty) else {
-                continue;
-            };
-            let tmpl = checker.resolve(tmpl_tid);
-            let matches_param = matches!(
-                tmpl,
-                ArType::Named(id, ref args) if id == param && args.is_empty()
-            );
-            if !matches_param {
-                continue;
-            }
-            let Some(val_tid) = peek_value_type(checker, field.value) else {
-                continue;
-            };
-            found = Some(val_tid);
-            break;
+    let mut bindings = rustc_hash::FxHashMap::default();
+    for &fid in field_ids {
+        let field = checker.pool.field_init(fid);
+        let Some(template) = template_fields.get(field.name.as_str()).map(|f| f.ty) else {
+            continue;
+        };
+        let Some(value) = peek_value_type(checker, field.value) else {
+            continue;
+        };
+        if checker.resolve(value).is_error() {
+            continue;
         }
-        out.push(found?);
+        let template = checker.resolve(template);
+        super::call::bind_type_params(checker, params, &template, value, &mut bindings);
     }
-    Some(out)
+    params
+        .iter()
+        .map(|param| bindings.get(param).copied())
+        .collect()
 }
 
 /// Side-effect-free type peek for a struct-literal field value, used only to
@@ -67,6 +63,10 @@ fn peek_value_type(checker: &mut TypeChecker<'_>, value: ExprId) -> Option<TypeI
             let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
             Some(checker.intern(ArType::Slice(u8_id)))
         }
+        ExprKind::CString { .. } => {
+            let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
+            Some(checker.intern(ArType::Ptr(u8_id)))
+        }
         ExprKind::InterpolatedString { .. } => {
             Some(checker.intern(ArType::Primitive(Primitive::Str)))
         }
@@ -86,6 +86,53 @@ fn peek_value_type(checker: &mut TypeChecker<'_>, value: ExprId) -> Option<TypeI
                 .ctx
                 .lookup(symbol_id)
                 .or_else(|| checker.decl_type_id(symbol_id))
+        }
+        // A nested literal names its type, or infers it the same way.
+        ExprKind::StructLiteral { ty, fields } => {
+            let (ty, fields) = (*ty, *fields);
+            // Lowering a type may report; the real synthesis reports once.
+            let mark = checker.diagnostics.len();
+            let lowered = checker.lower_type_expr(ty, checker.type_scope());
+            checker.diagnostics.truncate(mark);
+            let ArType::Named(symbol, args) = lowered else {
+                return None;
+            };
+            if checker.type_info.enum_variants.contains_key(&symbol) {
+                return None;
+            }
+            if !checker.type_info.type_interner.type_args(args).is_empty() {
+                return Some(checker.intern(ArType::Named(symbol, args)));
+            }
+            let Some(params) = checker
+                .type_info
+                .generic_params
+                .get(&symbol)
+                .cloned()
+                .filter(|params| !params.is_empty())
+            else {
+                return Some(checker.intern(ArType::Named(symbol, args)));
+            };
+            let template = checker.type_info.struct_fields.get(&symbol).cloned()?;
+            let field_ids = checker.pool.field_init_list(fields).to_vec();
+            let inferred = infer_struct_type_args(checker, &params, &template, &field_ids)?;
+            let named = ArType::named(symbol, &inferred, &checker.type_info.type_interner);
+            Some(checker.intern(named))
+        }
+        // A call to a plain function has its declared result.
+        ExprKind::Call { callee, .. } => {
+            let symbol = checker.resolved.expr_symbol(*callee)?;
+            if checker
+                .type_info
+                .generic_params
+                .get(&symbol)
+                .is_some_and(|params| !params.is_empty())
+            {
+                return None;
+            }
+            match checker.decl_type(symbol)? {
+                ArType::Func(_, ret) => Some(ret),
+                _ => None,
+            }
         }
         _ => None,
     }
@@ -116,9 +163,15 @@ pub(super) fn synth_literal_expr(
 ) -> Option<TypeId> {
     match kind {
         ExprKind::Int { value, .. } => {
-            if let Some(exp_id) = expected
-                && let ArType::Primitive(p) = checker.resolve(exp_id)
-            {
+            let expected_prim = expected.and_then(|exp_id| match checker.resolve(exp_id) {
+                ArType::Primitive(p) => Some((exp_id, p)),
+                ArType::Option(inner) => match checker.resolve(inner) {
+                    ArType::Primitive(p) => Some((inner, p)),
+                    _ => None,
+                },
+                _ => None,
+            });
+            if let Some((exp_id, p)) = expected_prim {
                 if p.is_float() {
                     return Some(exp_id);
                 }
@@ -155,21 +208,42 @@ pub(super) fn synth_literal_expr(
                         _ => true,
                     };
                     if !fits {
-                        checker.diagnostics.push(
-                            crate::Diagnostic::error(
-                                crate::DiagCode::T038IntegerLiteralOutOfRange,
-                                format!(
-                                    "integer literal `{value}` does not fit in `{}`",
-                                    p.as_str()
-                                ),
-                                span,
-                            )
-                            .with_label(
-                                span,
-                                format!("value is outside the range of `{}`", p.as_str()),
-                            )
-                            .with_hint("use a wider integer type or change the literal value"),
+                        let mut diag = crate::Diagnostic::error(
+                            crate::DiagCode::T038IntegerLiteralOutOfRange,
+                            format!("integer literal `{value}` does not fit in `{}`", p.as_str()),
+                            span,
+                        )
+                        .with_label(
+                            span,
+                            format!("value is outside the range of `{}`", p.as_str()),
                         );
+                        // Only a direct literal under a known annotation gets a
+                        // replacement: changing `int` elsewhere would not fix
+                        // literals nested in calls or aggregates.
+                        if p == Primitive::Int
+                            && let Some(annotation) = checker.expected_type_span
+                            && annotation.file_id == span.file_id
+                            && annotation.start != annotation.end
+                        {
+                            let wider = if parsed <= i64::MAX as i128 {
+                                "i64"
+                            } else {
+                                "u64"
+                            };
+                            diag = diag.with_hint_replacement(Hint {
+                                message: format!(
+                                    "change the type annotation from `int` to `{wider}`"
+                                ),
+                                replacement: Some(CodeReplacement {
+                                    span: annotation,
+                                    new_text: wider.to_owned(),
+                                }),
+                            });
+                        } else {
+                            diag = diag
+                                .with_hint("use a wider integer type or change the literal value");
+                        }
+                        checker.diagnostics.push(diag);
                     }
                     // Keep the contextual type after reporting. Falling back to
                     // `IntLiteral` would make generic literal unification accept
@@ -189,10 +263,16 @@ pub(super) fn synth_literal_expr(
             Some(checker.intern(ArType::IntLiteral))
         }
         ExprKind::Float { value, .. } => {
-            if let Some(exp_id) = expected
-                && let ArType::Primitive(p) = checker.resolve(exp_id)
-                && p.is_float()
-            {
+            let expected_float = expected.and_then(|exp_id| match checker.resolve(exp_id) {
+                ArType::Primitive(p) if p.is_float() => Some(exp_id),
+                ArType::Option(inner)
+                    if matches!(checker.resolve(inner), ArType::Primitive(p) if p.is_float()) =>
+                {
+                    Some(inner)
+                }
+                _ => None,
+            });
+            if let Some(exp_id) = expected_float {
                 return Some(exp_id);
             }
             let var_id = checker.literal_table.alloc(
@@ -213,16 +293,22 @@ pub(super) fn synth_literal_expr(
             let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
             Some(checker.intern(ArType::Slice(u8_id)))
         }
+        ExprKind::CString { .. } => {
+            let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
+            Some(checker.intern(ArType::Ptr(u8_id)))
+        }
         ExprKind::InterpolatedString { parts } => {
             // ToStr v0.1: formatable primitives are accepted; lower inserts
             // AmirRvalue::ToStr. Non-formatable types get T034 (not silent Any).
             let part_ids = checker.pool.string_part_list(*parts).to_vec();
             let str_ty = checker.intern(ArType::Primitive(Primitive::Str));
+            let mut built = false;
             for part_id in part_ids {
                 if let arandu_parser::StringPart::Expr {
                     expr: inner_expr, ..
                 } = checker.pool.string_part(part_id)
                 {
+                    built = true;
                     let part_ty_id = synth_expr(checker, *inner_expr);
                     let part_ty = checker.resolve(part_ty_id);
                     let is_ref_str = match &part_ty {
@@ -231,7 +317,51 @@ pub(super) fn synth_literal_expr(
                         }
                         _ => false,
                     };
-                    if part_ty.is_error() || part_ty.is_to_str_v01() || is_ref_str {
+                    let (has_to_str, has_display) = {
+                        let mut base = part_ty_id;
+                        for _ in 0..4 {
+                            match checker.resolve(base) {
+                                ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                                    base = inner;
+                                }
+                                _ => break,
+                            }
+                        }
+                        let base_resolved = checker.resolve(base);
+                        let has_to_str = match base_resolved {
+                            ArType::Named(id, _) => {
+                                checker
+                                    .symbols
+                                    .lookup_associated_member(id, "to_str")
+                                    .is_some()
+                                    || checker
+                                        .symbols
+                                        .lookup_associated_member(id, "toStr")
+                                        .is_some()
+                            }
+                            _ => false,
+                        };
+                        let has_display = checker
+                            .symbols
+                            .lang_item_symbol(arandu_middle::symbol_table::LangItem::Display)
+                            .is_some_and(|display_sym| {
+                                crate::type_checker::types::interfaces::type_satisfies_interface(
+                                    checker,
+                                    &base_resolved,
+                                    display_sym,
+                                    &[],
+                                    span,
+                                )
+                            });
+                        (has_to_str, has_display)
+                    };
+                    if part_ty.is_error()
+                        || part_ty.is_to_str_v01()
+                        || is_ref_str
+                        || super::text::is_string(checker, &part_ty)
+                        || has_to_str
+                        || has_display
+                    {
                         continue;
                     }
                     let interner = &checker.type_info.type_interner;
@@ -243,36 +373,70 @@ pub(super) fn synth_literal_expr(
                             checker.pool.expr_span(*inner_expr),
                         )
                         .with_note(
-                            "only bool, integers, floats, char, and str are supported in v0.1"
+                            "only bool, integers, floats, char, str, String, and types implementing `Display` or `toStr` are supported"
                                 .to_string(),
                         ),
                     );
                 }
             }
+            // Text built at run time is owned: `String`, freed once (as Rust's
+            // `format!`). A literal with no expression stays a `str`.
+            if built && let Some(string) = super::text::string_type(checker) {
+                return Some(string);
+            }
+            // A literal takes its type from context, as Swift's string
+            // literals do: where a `String` is expected it is one, copied
+            // from module data, without `String.from(..)` at every use.
+            if let Some(expected) = expected
+                && super::text::is_owned_string(checker, &checker.resolve(expected))
+            {
+                return Some(expected);
+            }
             Some(str_ty)
         }
         ExprKind::Nil => {
-            // SYN.3: `nil` as Option.None / Nullable empty when context is known.
-            // Prefer expected type (assignment, arg, return via synth_expr_expected),
-            // then the current function return type.
-            let context_id = expected.or_else(|| checker.ctx.current_return());
-            if let Some(ctx_id) = context_id {
+            // `nil` requires an expected nullable/optional/pointer type (it does
+            // not fill `Result` or non-nullable types, and does not steal the
+            // enclosing function's return type when unannotated).
+            if let Some(ctx_id) = expected {
                 let ctx = checker.resolve(ctx_id);
-                if types::is_err_type(&ctx, &checker.type_info.type_interner) {
-                    let err_id = checker.intern(ArType::Error);
-                    Some(checker.intern(ArType::Nullable(err_id)))
-                } else if types::is_tryable_type(&ctx, &checker.type_info.type_interner)
-                    || matches!(ctx, ArType::Option(_) | ArType::Nullable(_))
+                if ctx.is_error()
+                    || matches!(ctx, ArType::Option(_) | ArType::Ptr(_))
+                    || matches!(
+                        ctx,
+                        ArType::Result(ok, _) if matches!(checker.resolve(ok), ArType::Void)
+                    )
                 {
-                    // Option / Result / Nullable / tryable → nil fills the context type
-                    // (AMIR lowers Option-typed nil to EnumConstruct None).
                     Some(ctx_id)
+                } else if types::is_err_type(&ctx, &checker.type_info.type_interner) {
+                    let err_id = checker.intern(ArType::Error);
+                    Some(checker.intern(ArType::Option(err_id)))
                 } else {
-                    Some(checker.intern(ArType::Nullable(ctx_id)))
+                    let ty_disp = ctx.display(&checker.symbols, &checker.type_info.type_interner);
+                    checker.diagnostics.push(
+                        crate::Diagnostic::error(
+                            crate::DiagCode::T006NotNullable,
+                            format!("type '{ty_disp}' is not nullable"),
+                            span,
+                        )
+                        .with_label(
+                            span,
+                            format!("cannot assign `nil` to non-nullable type '{ty_disp}'"),
+                        ),
+                    );
+                    Some(checker.intern(ArType::Error))
                 }
             } else {
-                let err_id = checker.intern(ArType::Error);
-                Some(checker.intern(ArType::Nullable(err_id)))
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T001CannotInferType,
+                        "cannot infer type for `nil`",
+                        span,
+                    )
+                    .with_label(span, "type annotation needed for `nil`")
+                    .with_hint("add an explicit optional or pointer type annotation"),
+                );
+                Some(checker.intern(ArType::Error))
             }
         }
         ExprKind::StructLiteral { ty, fields } => {
@@ -418,6 +582,10 @@ pub(super) fn synth_literal_expr(
                         let field_val_ty_id =
                             if matches!(checker.pool.expr(field.value), ExprKind::Nil)
                                 && let Some(expected_id) = expected_id_opt
+                                && matches!(
+                                    checker.resolve(expected_id),
+                                    ArType::Option(_) | ArType::Ptr(_)
+                                )
                             {
                                 checker.type_info.record_expr_type(field.value, expected_id);
                                 expected_id
@@ -443,11 +611,19 @@ pub(super) fn synth_literal_expr(
                                 );
                             }
                             let field_val_ty = checker.resolve(field_val_ty_id);
-                            if !types::unify(
+                            let unifies = types::unify(
                                 &defined_field_ty,
                                 &field_val_ty,
                                 &checker.type_info.type_interner,
-                            ) {
+                            ) || match &defined_field_ty {
+                                ArType::Option(inner) => types::unify(
+                                    &checker.type_info.type_interner.resolve(*inner),
+                                    &field_val_ty,
+                                    &checker.type_info.type_interner,
+                                ),
+                                _ => false,
+                            };
+                            if !unifies {
                                 checker.add_constraint(
                                     defined_field_ty,
                                     field_val_ty_id,
@@ -472,7 +648,7 @@ pub(super) fn synth_literal_expr(
                         }
                     }
 
-                    if !has_update_base {
+                    if !has_update_base && !checker.type_info.struct_unions.contains(&symbol_id) {
                         let mut missing_fields = Vec::new();
                         for def_name in fields_def.keys() {
                             if !seen_fields.iter().any(|(name, _)| name == def_name) {
@@ -578,24 +754,104 @@ pub(super) fn synth_literal_expr(
                 && !checker.type_info.is_copy(element)
             {
                 let element_ty = checker.resolve(element);
-                let depends_on_parameter =
-                    checker.type_info.generic_params.values().any(|parameters| {
-                        super::super::method::contains_generic_params(
-                            &element_ty,
-                            parameters,
-                            &checker.type_info.type_interner,
-                        )
+                let generic_params_all: Vec<_> = checker
+                    .type_info
+                    .generic_params
+                    .values()
+                    .flat_map(|p| p.iter().copied())
+                    .collect();
+                let copy_bounded = |sym: arandu_middle::SymbolId| {
+                    checker
+                        .type_info
+                        .param_constraints
+                        .get(&sym)
+                        .is_some_and(|cs| {
+                            cs.iter().any(|b| {
+                                checker.symbols.try_get(b.iface_sym).is_some_and(|s| {
+                                    s.lang_item == Some(arandu_middle::symbol_table::LangItem::Copy)
+                                })
+                            })
+                        })
+                };
+                let all_params_copy_bounded = super::super::method::contains_generic_params(
+                    &element_ty,
+                    &generic_params_all,
+                    &checker.type_info.type_interner,
+                ) && {
+                    let Ok(shape) = arandu_middle::types::TypeShape::from_id(
+                        element,
+                        &checker.type_info.type_interner,
+                    ) else {
+                        return Some(checker.intern(array));
+                    };
+                    let mut all_copy = true;
+                    let _ = shape.for_each_symbol(|sym| {
+                        if checker
+                            .symbols
+                            .try_get(sym)
+                            .is_some_and(|s| s.kind == crate::SymbolKind::TypeParam)
+                            && !copy_bounded(sym)
+                        {
+                            all_copy = false;
+                        }
                     });
-                if !depends_on_parameter {
-                    checker.diagnostics.push(crate::Diagnostic::error(
-                        crate::DiagCode::T048InvalidArrayRepeat,
-                        "repeating this value would duplicate ownership",
-                        span,
-                    ).with_primary_label("this element is not Copy")
-                      .with_note("Construct each owning element independently; no implicit clone is performed."));
+                    all_copy
+                };
+                if !all_params_copy_bounded {
+                    checker.diagnostics.push(
+                        crate::Diagnostic::error(
+                            crate::DiagCode::T048InvalidArrayRepeat,
+                            "repeating this value would duplicate ownership",
+                            span,
+                        )
+                        .with_primary_label("this element is not Copy")
+                        .with_note("Construct each owning element independently or require `T: Copy`; no implicit clone is performed."),
+                    );
                 }
             }
             Some(checker.intern(array))
+        }
+        ExprKind::Tuple { items } => {
+            let item_ids = checker.pool.expr_list(*items).to_vec();
+            let expected_items = expected.and_then(|expected| match checker.resolve(expected) {
+                ArType::Tuple(items) => Some(checker.type_info.type_interner.type_args(items)),
+                _ => None,
+            });
+            let mut types = Vec::with_capacity(item_ids.len());
+            for (index, &item) in item_ids.iter().enumerate() {
+                let expected_item = expected_items
+                    .as_ref()
+                    .and_then(|items| items.get(index).copied());
+                let mut ty = super::synth_expr_expected(checker, item, expected_item);
+                // An element is a value of its own: a literal no context
+                // types takes its default now (`int`, `float`), since the
+                // tuple's type is fixed here and not by a later use.
+                let default = match checker.resolve(ty) {
+                    ArType::IntLiteral => Some(Primitive::Int),
+                    ArType::FloatLiteral => Some(Primitive::Float),
+                    _ => None,
+                };
+                if let Some(default) = default {
+                    let concrete = expected_item
+                        .filter(|&expected| checker.resolve(expected).is_numeric())
+                        .unwrap_or_else(|| checker.intern(ArType::Primitive(default)));
+                    if let Some(var) = checker.literal_table.var_for_expr(item) {
+                        checker.constrain_literal_var(
+                            var,
+                            concrete,
+                            ConstraintOrigin::ArrayLiteral {
+                                array_span: span,
+                                item_span: checker.pool.expr_span(item),
+                                item_index: index,
+                            },
+                        );
+                    }
+                    checker.record_expr_type(item, concrete);
+                    ty = concrete;
+                }
+                types.push(ty);
+            }
+            Some(checker.intern(ArType::tuple(&types, &checker.type_info.type_interner)))
         }
         ExprKind::Array { items } => {
             let items_range = *items;
@@ -649,9 +905,13 @@ pub(super) fn synth_literal_expr(
             if let Some(var_id) = first_var
                 && let Some(concrete_id) = discovered_concrete
             {
+                let literal_target = match checker.resolve(concrete_id) {
+                    ArType::Option(inner) => inner,
+                    _ => concrete_id,
+                };
                 checker.constrain_literal_var(
                     var_id,
-                    concrete_id,
+                    literal_target,
                     ConstraintOrigin::ArrayLiteral {
                         array_span: span,
                         item_span: span,
@@ -667,11 +927,20 @@ pub(super) fn synth_literal_expr(
             for (i, (&item_id, &item_ty_id)) in item_ids.iter().zip(&item_ty_ids).enumerate() {
                 let elem_ty = checker.resolve(elem_ty_id);
                 let item_ty = checker.resolve(item_ty_id);
-                if !array_element_types_compatible(
+                let compatible = array_element_types_compatible(
                     &elem_ty,
                     &item_ty,
                     &checker.type_info.type_interner,
-                ) {
+                ) || matches!(
+                    elem_ty,
+                    ArType::Option(inner_id)
+                        if array_element_types_compatible(
+                            &checker.type_info.type_interner.resolve(inner_id),
+                            &item_ty,
+                            &checker.type_info.type_interner,
+                        )
+                );
+                if !compatible {
                     // A promoted int/float pair was already reported as an
                     // implicit widening when the literal groups were merged.
                     let already_reported = reported_widening

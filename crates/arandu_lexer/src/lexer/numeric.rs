@@ -51,7 +51,12 @@ impl<'a> Lexer<'a> {
 
         self.bump_digits_or_underscores();
         let mut is_float = false;
-        if self.peek() == Some('.') && self.peek_next() != Some('.') {
+        // `1.len()` and `t.1.len()`: a dot followed by a name is a member
+        // access on the integer, not a decimal point.
+        if self.peek() == Some('.')
+            && self.peek_next() != Some('.')
+            && !self.peek_next().is_some_and(is_ident_start)
+        {
             is_float = true;
             self.bump();
             if !self.peek().is_some_and(is_digit) {
@@ -121,6 +126,13 @@ impl<'a> Lexer<'a> {
     fn lex_radix_number(&mut self, start: Mark, radix: Radix) -> Result<(), LexError> {
         self.bump_ascii(2);
         let digit_start = self.pos;
+        if self.peek() == Some('_') {
+            return Err(self.error_from(
+                start,
+                LexErrorCode::InvalidNumericLiteral,
+                "expected digit after numeric prefix",
+            ));
+        }
         while self
             .peek()
             .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')

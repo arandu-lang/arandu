@@ -42,6 +42,64 @@ fn shorthand_interpolation_decodes_unicode_identifier_starts() {
     }
 }
 
+#[test]
+fn radix_literals_require_a_digit_before_any_separator() {
+    use arandu_lexer::{LexErrorCode, Lexer};
+
+    for literal in ["0x_FF", "0b_10", "0o_7"] {
+        let error = Lexer::new(literal)
+            .lex()
+            .expect_err("a radix literal must begin with a digit after its prefix");
+        assert_eq!(error.code, LexErrorCode::InvalidNumericLiteral, "{literal}");
+    }
+}
+
+#[test]
+fn generic_type_closers_end_before_interface_members_and_eof() {
+    use arandu_lexer::{Lexer, TokenKind};
+    assert!(!TokenKind::Gt.can_end_statement());
+
+    let source =
+        "interface Reader {\nfunc read(): Result<int, err>\nfunc write(): Result<int, err>\n}";
+    let tokens = Lexer::new(source).lex().expect("interface tokens").tokens;
+    assert!(tokens.windows(2).any(|pair| {
+        pair[0].kind == TokenKind::Gt && pair[1].kind == TokenKind::Semicolon && pair[1].inserted
+    }));
+    assert!(tokens.windows(2).any(|pair| {
+        pair[0].kind == TokenKind::Semicolon
+            && pair[0].inserted
+            && pair[1].kind == TokenKind::RBrace
+    }));
+
+    let eof = Lexer::new("type Output = Result<int, err>")
+        .lex()
+        .expect("type alias tokens")
+        .tokens;
+    assert_eq!(eof[eof.len() - 2].kind, TokenKind::Semicolon);
+    assert!(eof[eof.len() - 2].inserted);
+
+    let nested = Lexer::new("type Output = Box<Box<int>>")
+        .lex()
+        .expect("nested type alias tokens")
+        .tokens;
+    assert_eq!(nested[nested.len() - 2].kind, TokenKind::Semicolon);
+    assert!(nested[nested.len() - 2].inserted);
+
+    let comparison = Lexer::new("func greater(): bool { return 1 >\n0 }")
+        .lex()
+        .expect("continued comparison tokens")
+        .tokens;
+    let greater = comparison
+        .iter()
+        .position(|token| token.kind == TokenKind::Gt)
+        .expect("greater-than token");
+    assert_ne!(
+        comparison[greater + 1].kind,
+        TokenKind::Semicolon,
+        "{comparison:?}"
+    );
+}
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

@@ -250,4 +250,74 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         self.trap_if_null_for_nonzero_size(ptr, size_val);
         ptr
     }
+
+    /// Dual-Locus linear TaskArena allocation (`ar_task_arena_alloc`, RFC 0043).
+    pub(super) fn translate_arena_alloc(&mut self, size: u32, align: u32) -> Value {
+        let Some(alloc_id) = self.resolve_function("ar_task_arena_alloc") else {
+            self.record_ice(
+                "missing ar_task_arena_alloc runtime import",
+                self.func_span(),
+            );
+            return self.poison_i32();
+        };
+        let alloc_ref = self
+            .module
+            .declare_func_in_func(alloc_id, self.builder.func);
+        let size_val = self
+            .builder
+            .ins()
+            .iconst(self.ptr_type, i64::from(size.max(1)));
+        let align_val = self
+            .builder
+            .ins()
+            .iconst(self.ptr_type, i64::from(align.max(1)));
+        let call = self.builder.ins().call(alloc_ref, &[size_val, align_val]);
+        let ptr = self.builder.inst_results(call)[0];
+        self.trap_if_null(ptr);
+        ptr
+    }
+
+    /// Capture the current linear TaskArena checkpoint (`ar_task_arena_checkpoint`, RFC 0043).
+    /// Address of `static mut` storage, defined once by the statics unit.
+    pub(super) fn translate_static_addr(&mut self, symbol: arandu_middle::SymbolId) -> Value {
+        let Some(name) = self
+            .symbol_table
+            .try_get(symbol)
+            .map(|declaration| self.symbol_table.host_func_name(declaration).to_owned())
+        else {
+            self.record_ice("`static mut` symbol is missing", self.func_span());
+            return self.poison_i32();
+        };
+        let data_id =
+            match self
+                .module
+                .declare_data(&name, cranelift_module::Linkage::Import, true, false)
+            {
+                Ok(id) => id,
+                Err(error) => {
+                    self.record_ice(
+                        format!("failed to declare `static mut` storage '{name}': {error}"),
+                        self.func_span(),
+                    );
+                    return self.poison_i32();
+                }
+            };
+        let local = self.module.declare_data_in_func(data_id, self.builder.func);
+        self.builder.ins().symbol_value(self.ptr_type, local)
+    }
+
+    pub(super) fn translate_arena_checkpoint(&mut self) -> Value {
+        let Some(checkpoint_id) = self.resolve_function("ar_task_arena_checkpoint") else {
+            self.record_ice(
+                "missing ar_task_arena_checkpoint runtime import",
+                self.func_span(),
+            );
+            return self.poison_i32();
+        };
+        let checkpoint_ref = self
+            .module
+            .declare_func_in_func(checkpoint_id, self.builder.func);
+        let call = self.builder.ins().call(checkpoint_ref, &[]);
+        self.builder.inst_results(call)[0]
+    }
 }

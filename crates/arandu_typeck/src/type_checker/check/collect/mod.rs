@@ -1,3 +1,5 @@
+mod callback;
+mod derive;
 mod shapes;
 mod signatures;
 
@@ -6,6 +8,7 @@ use arandu_parser::Ownership;
 use crate::type_checker::TypeChecker;
 use crate::type_checker::types::ArType;
 
+pub(crate) use derive::collect_derive_methods;
 pub(crate) use shapes::collect_type_shapes;
 pub(crate) use signatures::collect_signature_types;
 

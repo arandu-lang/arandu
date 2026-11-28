@@ -145,9 +145,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     ptr_val,
                     payload_base_offset + pointer_width as i32,
                 );
-            } else if self.is_inline_aggregate_ty(&op_ty)
-                && let Some(memcpy_id) = self.memcpy_func_id()
-            {
+            } else if self.is_inline_aggregate_ty(&op_ty) {
                 let op_layout = self.checked_layout(&op_ty);
                 if payload_ar_ty
                     .as_ref()
@@ -165,13 +163,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 if op_layout.size > 0 {
                     let val = self.translate_operand(op, Some(self.ptr_type));
-                    let memcpy_ref = self
-                        .module
-                        .declare_func_in_func(memcpy_id, self.builder.func);
-                    let size_val = self
-                        .builder
-                        .ins()
-                        .iconst(self.ptr_type, op_layout.size as i64);
                     let dest = if payload_base_offset != 0 {
                         self.builder
                             .ins()
@@ -179,7 +170,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     } else {
                         ptr_val
                     };
-                    self.builder.ins().call(memcpy_ref, &[dest, val, size_val]);
+                    self.copy_aggregate_bytes(dest, val, op_layout.size);
                 }
             } else {
                 // Literals retain their source-level `IntLiteral`/`FloatLiteral`

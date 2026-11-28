@@ -13,20 +13,27 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         let out_of_bounds = self.new_value();
         self.writer
             .line(format!("{out_of_bounds} = icmp uge {ty} {index}, {bound}"));
-        self.trap_if(&out_of_bounds);
+        self.trap_if(
+            &out_of_bounds,
+            arandu_middle::amir::TrapKind::IndexOutOfBounds,
+        );
     }
 
-    /// Traps when the `i1` value `condition` is true, then continues in a
-    /// fresh block, matching the traps of the other backends.
-    pub(in crate::codegen) fn trap_if(&mut self, condition: &str) {
+    /// Reports `kind` and traps when the `i1` value `condition` is true,
+    /// then continues in a fresh block, matching the other backends.
+    pub(in crate::codegen) fn trap_if(
+        &mut self,
+        condition: &str,
+        kind: arandu_middle::amir::TrapKind,
+    ) {
         let trap = self.new_block();
         let proceed = self.new_block();
+        let prof = self.module.require_cold_trap_weights();
         self.writer.line(format!(
-            "br i1 {condition}, label %{trap}, label %{proceed}"
+            "br i1 {condition}, label %{trap}, label %{proceed}, !prof {prof}"
         ));
         self.enter_llvm_label(&trap);
-        self.module.require_llvm_trap();
-        self.writer.line("call void @llvm.trap()");
+        self.emit_trap(kind);
         self.writer.line("unreachable");
         self.enter_llvm_label(&proceed);
     }
@@ -176,16 +183,26 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     .ok()
                     .and_then(|l| l.tag_encoding)
                     .is_some();
+                let has_temp_slot = lhs.is_some_and(|temp| self.temp_slot(temp).is_some());
                 if owner_is_enum
-                    && !self.module.is_pointer(&field_ty)
                     && !self.module.is_pointer(lhs_ty)
-                    && self.module.integer_width(&field_ty).is_none()
                     && self.module.integer_width(lhs_ty).is_none()
-                    && !self.module.is_float(&field_ty)
                     && !self.module.is_float(lhs_ty)
-                    && !matches!(field_ty, ArType::Primitive(Primitive::Bool))
                     && !matches!(lhs_ty, ArType::Primitive(Primitive::Bool))
                 {
+                    if has_temp_slot {
+                        let value_text = self.module.llvm_ty(lhs_ty)?;
+                        let align = self.module.align_of(lhs_ty);
+                        let raw = self.new_value();
+                        self.writer.line(format!(
+                            "{raw} = load {value_text}, ptr {address}, align {align}"
+                        ));
+                        return self.assign_coerced(
+                            result,
+                            super::super::TypedValue::new(value_text, raw),
+                            lhs_ty,
+                        );
+                    }
                     self.writer.line("; enum_field_ptr_repr");
                     self.writer
                         .line(format!("{result} = getelementptr i8, ptr {address}, i64 0"));
@@ -247,6 +264,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     self.module.symbols,
                     self.module.interner,
                 )
+                .or(match &base_ty {
+                    ArType::Ptr(inner) => Some(*inner),
+                    _ => None,
+                })
                 .ok_or_else(|| {
                     ice(format!(
                         "index access requires an indexable type, got {deref_ty:?}"

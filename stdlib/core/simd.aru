@@ -167,6 +167,8 @@ extern "arandu-intrinsic" {
     func simdU8x16Insert14(vector: U8x16, value: u8): U8x16
     func simdU8x16Extract15(vector: U8x16): u8
     func simdU8x16Insert15(vector: U8x16, value: u8): U8x16
+    func simdU8x16Bitmask(vector: U8x16): u32
+    func simdU8x16LoadUnaligned(source: []u8): U8x16
     func simdI64x2Splat(value: i64): I64x2
     func simdI64x2Add(left: I64x2, right: I64x2): I64x2
     func simdI64x2Sub(left: I64x2, right: I64x2): I64x2
@@ -274,22 +276,9 @@ public func F32x4.loadUnaligned(source: []f32): Option<F32x4> {
     if intrinsics.sliceLen<f32>(source) < (4 as usize) { return Option.None }
     return Option.Some(F32x4.new(source[0], source[1], source[2], source[3]))
 }
-/// Writes the first 4 lanes through an exclusive borrowed view.
-/// A short destination returns false without writes; scalar alignment suffices.
-public func F32x4.storeUnaligned<Owner>(self: F32x4, destination: mut ref slice.MutableSlice<Owner, f32>): bool {
-    if destination.len() < (4 as usize) { return false }
-    destination.set(0 as usize, self.extractLane(0))
-    destination.set(1 as usize, self.extractLane(1))
-    destination.set(2 as usize, self.extractLane(2))
-    destination.set(3 as usize, self.extractLane(3))
-    return true
-}
-
-/// Low-level slice descriptor store. Safety: the complete destination data
-/// range must be exclusively accessible for this call; mut ref to a shared
 /// Writes the first 4 lanes through an exclusive mutable slice view.
 /// A short destination returns false without writes.
-public func F32x4.storeUnalignedSlice(self: F32x4, destination: mut []f32): bool {
+public func F32x4.storeUnaligned(self: F32x4, destination: mut []f32): bool {
     if intrinsics.mutSliceLen<f32>(destination) < (4 as usize) { return false }
     destination[0] = self.extractLane(0)
     destination[1] = self.extractLane(1)
@@ -379,20 +368,9 @@ public func F64x2.loadUnaligned(source: []f64): Option<F64x2> {
     if intrinsics.sliceLen<f64>(source) < (2 as usize) { return Option.None }
     return Option.Some(F64x2.new(source[0], source[1]))
 }
-/// Writes the first 2 lanes through an exclusive borrowed view.
-/// A short destination returns false without writes; scalar alignment suffices.
-public func F64x2.storeUnaligned<Owner>(self: F64x2, destination: mut ref slice.MutableSlice<Owner, f64>): bool {
-    if destination.len() < (2 as usize) { return false }
-    destination.set(0 as usize, self.extractLane(0))
-    destination.set(1 as usize, self.extractLane(1))
-    return true
-}
-
-/// Low-level slice descriptor store. Safety: the complete destination data
-/// range must be exclusively accessible for this call; mut ref to a shared
 /// Writes the first 2 lanes through an exclusive mutable slice view.
 /// A short destination returns false without writes.
-public func F64x2.storeUnalignedSlice(self: F64x2, destination: mut []f64): bool {
+public func F64x2.storeUnaligned(self: F64x2, destination: mut []f64): bool {
     if intrinsics.mutSliceLen<f64>(destination) < (2 as usize) { return false }
     destination[0] = self.extractLane(0)
     destination[1] = self.extractLane(1)
@@ -494,22 +472,9 @@ public func I32x4.loadUnaligned(source: []i32): Option<I32x4> {
     if intrinsics.sliceLen<i32>(source) < (4 as usize) { return Option.None }
     return Option.Some(I32x4.new(source[0], source[1], source[2], source[3]))
 }
-/// Writes the first 4 lanes through an exclusive borrowed view.
-/// A short destination returns false without writes; scalar alignment suffices.
-public func I32x4.storeUnaligned<Owner>(self: I32x4, destination: mut ref slice.MutableSlice<Owner, i32>): bool {
-    if destination.len() < (4 as usize) { return false }
-    destination.set(0 as usize, self.extractLane(0))
-    destination.set(1 as usize, self.extractLane(1))
-    destination.set(2 as usize, self.extractLane(2))
-    destination.set(3 as usize, self.extractLane(3))
-    return true
-}
-
-/// Low-level slice descriptor store. Safety: the complete destination data
-/// range must be exclusively accessible for this call; mut ref to a shared
 /// Writes the first 4 lanes through an exclusive mutable slice view.
 /// A short destination returns false without writes.
-public func I32x4.storeUnalignedSlice(self: I32x4, destination: mut []i32): bool {
+public func I32x4.storeUnaligned(self: I32x4, destination: mut []i32): bool {
     if intrinsics.mutSliceLen<i32>(destination) < (4 as usize) { return false }
     destination[0] = self.extractLane(0)
     destination[1] = self.extractLane(1)
@@ -625,24 +590,9 @@ public func I16x8.loadUnaligned(source: []i16): Option<I16x8> {
     if intrinsics.sliceLen<i16>(source) < (8 as usize) { return Option.None }
     return Option.Some(I16x8.new(source[0], source[1], source[2], source[3], source[4], source[5], source[6], source[7]))
 }
-/// Writes the first 8 lanes through an exclusive borrowed view.
-/// A short destination returns false without writes; scalar alignment suffices.
-public func I16x8.storeUnaligned<Owner>(self: I16x8, destination: mut ref slice.MutableSlice<Owner, i16>): bool {
-    if destination.len() < (8 as usize) { return false }
-    destination.set(0 as usize, self.extractLane(0))
-    destination.set(1 as usize, self.extractLane(1))
-    destination.set(2 as usize, self.extractLane(2))
-    destination.set(3 as usize, self.extractLane(3))
-    destination.set(4 as usize, self.extractLane(4))
-    destination.set(5 as usize, self.extractLane(5))
-    destination.set(6 as usize, self.extractLane(6))
-    destination.set(7 as usize, self.extractLane(7))
-    return true
-}
-
 /// Writes the first 8 lanes through an exclusive mutable slice view.
 /// A short destination returns false without writes.
-public func I16x8.storeUnalignedSlice(self: I16x8, destination: mut []i16): bool {
+public func I16x8.storeUnaligned(self: I16x8, destination: mut []i16): bool {
     if intrinsics.mutSliceLen<i16>(destination) < (8 as usize) { return false }
     destination[0] = self.extractLane(0)
     destination[1] = self.extractLane(1)
@@ -776,38 +726,19 @@ public func U8x16.replaceLane(self: U8x16, index: int, value: u8): U8x16 {
     }
     return self
 }
+/// Extracts the high bit (bit 7) of each of the 16 `u8` lanes into bits `0..=15` of a `u32`.
+public func U8x16.highBitmask(self: U8x16): u32 {
+    unsafe { return simdU8x16Bitmask(self) }
+}
 /// Reads the first 16 lanes; a short slice returns None without reading data.
-/// Only `u8` alignment is required. Scalar accesses avoid aligned vector UB.
+/// Only `u8` alignment is required.
 public func U8x16.loadUnaligned(source: []u8): Option<U8x16> {
     if intrinsics.sliceLen<u8>(source) < (16 as usize) { return Option.None }
-    return Option.Some(U8x16.new(source[0], source[1], source[2], source[3], source[4], source[5], source[6], source[7], source[8], source[9], source[10], source[11], source[12], source[13], source[14], source[15]))
+    unsafe { return Option.Some(simdU8x16LoadUnaligned(source)) }
 }
-/// Writes the first 16 lanes through an exclusive borrowed view.
-/// A short destination returns false without writes; scalar alignment suffices.
-public func U8x16.storeUnaligned<Owner>(self: U8x16, destination: mut ref slice.MutableSlice<Owner, u8>): bool {
-    if destination.len() < (16 as usize) { return false }
-    destination.set(0 as usize, self.extractLane(0))
-    destination.set(1 as usize, self.extractLane(1))
-    destination.set(2 as usize, self.extractLane(2))
-    destination.set(3 as usize, self.extractLane(3))
-    destination.set(4 as usize, self.extractLane(4))
-    destination.set(5 as usize, self.extractLane(5))
-    destination.set(6 as usize, self.extractLane(6))
-    destination.set(7 as usize, self.extractLane(7))
-    destination.set(8 as usize, self.extractLane(8))
-    destination.set(9 as usize, self.extractLane(9))
-    destination.set(10 as usize, self.extractLane(10))
-    destination.set(11 as usize, self.extractLane(11))
-    destination.set(12 as usize, self.extractLane(12))
-    destination.set(13 as usize, self.extractLane(13))
-    destination.set(14 as usize, self.extractLane(14))
-    destination.set(15 as usize, self.extractLane(15))
-    return true
-}
-
 /// Writes the first 16 lanes through an exclusive mutable slice view.
 /// A short destination returns false without writes.
-public func U8x16.storeUnalignedSlice(self: U8x16, destination: mut []u8): bool {
+public func U8x16.storeUnaligned(self: U8x16, destination: mut []u8): bool {
     if intrinsics.mutSliceLen<u8>(destination) < (16 as usize) { return false }
     destination[0] = self.extractLane(0)
     destination[1] = self.extractLane(1)
@@ -917,20 +848,9 @@ public func I64x2.loadUnaligned(source: []i64): Option<I64x2> {
     if intrinsics.sliceLen<i64>(source) < (2 as usize) { return Option.None }
     return Option.Some(I64x2.new(source[0], source[1]))
 }
-/// Writes the first 2 lanes through an exclusive borrowed view.
-/// A short destination returns false without writes; scalar alignment suffices.
-public func I64x2.storeUnaligned<Owner>(self: I64x2, destination: mut ref slice.MutableSlice<Owner, i64>): bool {
-    if destination.len() < (2 as usize) { return false }
-    destination.set(0 as usize, self.extractLane(0))
-    destination.set(1 as usize, self.extractLane(1))
-    return true
-}
-
-/// Low-level slice descriptor store. Safety: the complete destination data
-/// range must be exclusively accessible for this call; mut ref to a shared
 /// Writes the first 2 lanes through an exclusive mutable slice view.
 /// A short destination returns false without writes.
-public func I64x2.storeUnalignedSlice(self: I64x2, destination: mut []i64): bool {
+public func I64x2.storeUnaligned(self: I64x2, destination: mut []i64): bool {
     if intrinsics.mutSliceLen<i64>(destination) < (2 as usize) { return false }
     destination[0] = self.extractLane(0)
     destination[1] = self.extractLane(1)
@@ -1025,13 +945,17 @@ public func Mask8x16.testLane(self: Mask8x16, index: int): bool {
     if index < 0 || index >= 16 { unsafe { intrinsics.abort() } return false }
     return self.bits.extractLane(index * 1) != (0 as u8)
 }
+/// Packs all 16 boolean lanes into bits `0..=15` of a `u32`.
+public func Mask8x16.bitmask(self: Mask8x16): u32 {
+    return self.bits.highBitmask()
+}
 /// True if every lane is true.
 public func Mask8x16.allTrue(self: Mask8x16): bool {
-    return self.testLane(0) && self.testLane(1) && self.testLane(2) && self.testLane(3) && self.testLane(4) && self.testLane(5) && self.testLane(6) && self.testLane(7) && self.testLane(8) && self.testLane(9) && self.testLane(10) && self.testLane(11) && self.testLane(12) && self.testLane(13) && self.testLane(14) && self.testLane(15)
+    return self.bitmask() == (65535 as u32)
 }
 /// True if at least one lane is true.
 public func Mask8x16.anyTrue(self: Mask8x16): bool {
-    return self.testLane(0) || self.testLane(1) || self.testLane(2) || self.testLane(3) || self.testLane(4) || self.testLane(5) || self.testLane(6) || self.testLane(7) || self.testLane(8) || self.testLane(9) || self.testLane(10) || self.testLane(11) || self.testLane(12) || self.testLane(13) || self.testLane(14) || self.testLane(15)
+    return self.bitmask() != (0 as u32)
 }
 
 /// Canonical mask of 8 lanes. True occupies every bit of its lane.

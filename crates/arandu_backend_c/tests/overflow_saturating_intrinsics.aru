@@ -1,0 +1,111 @@
+module std.core.overflow_saturating_test
+
+extern "arandu-intrinsic" {
+    func addWithOverflowI32(a: i32, b: i32): (i32, bool)
+    func addWithOverflowU32(a: u32, b: u32): (u32, bool)
+    func addWithOverflowI64(a: i64, b: i64): (i64, bool)
+    func addWithOverflowU64(a: u64, b: u64): (u64, bool)
+    func subWithOverflowI32(a: i32, b: i32): (i32, bool)
+    func subWithOverflowU32(a: u32, b: u32): (u32, bool)
+    func subWithOverflowI64(a: i64, b: i64): (i64, bool)
+    func subWithOverflowU64(a: u64, b: u64): (u64, bool)
+    func mulWithOverflowI32(a: i32, b: i32): (i32, bool)
+    func mulWithOverflowU32(a: u32, b: u32): (u32, bool)
+    func mulWithOverflowI64(a: i64, b: i64): (i64, bool)
+    func mulWithOverflowU64(a: u64, b: u64): (u64, bool)
+    func saturatingAddI32(a: i32, b: i32): i32
+    func saturatingAddU32(a: u32, b: u32): u32
+    func saturatingAddI64(a: i64, b: i64): i64
+    func saturatingAddU64(a: u64, b: u64): u64
+    func saturatingSubI32(a: i32, b: i32): i32
+    func saturatingSubU32(a: u32, b: u32): u32
+    func saturatingSubI64(a: i64, b: i64): i64
+    func saturatingSubU64(a: u64, b: u64): u64
+}
+
+func check_i32(): int {
+    let max32: i32 = 2147483647 as i32
+    let min32: i32 = (-2147483647 - 1) as i32
+    let p1 = addWithOverflowI32(max32, 1 as i32)
+    if p1.0 != min32 || !p1.1 { return 1 }
+    let p2 = addWithOverflowI32(10 as i32, 20 as i32)
+    if p2.0 != (30 as i32) || p2.1 { return 2 }
+    let p3 = subWithOverflowI32(min32, 1 as i32)
+    if p3.0 != max32 || !p3.1 { return 3 }
+    let p4 = mulWithOverflowI32(min32, -1 as i32)
+    if !p4.1 { return 4 }
+    let p5 = mulWithOverflowI32(100 as i32, -3 as i32)
+    if p5.0 != (-300 as i32) || p5.1 { return 5 }
+    if saturatingAddI32(max32, 10 as i32) != max32 { return 6 }
+    if saturatingAddI32(min32, -10 as i32) != min32 { return 7 }
+    if saturatingSubI32(min32, 5 as i32) != min32 { return 8 }
+    if saturatingSubI32(-1 as i32, min32) != max32 { return 9 }
+    if saturatingSubI32(0 as i32, min32) != max32 { return 10 }
+    return 0
+}
+
+func check_u32(): int {
+    let umax32: u32 = 4294967295 as u32
+    let p1 = addWithOverflowU32(umax32, 2 as u32)
+    if p1.0 != (1 as u32) || !p1.1 { return 11 }
+    let p2 = subWithOverflowU32(3 as u32, 5 as u32)
+    if p2.0 != (4294967294 as u32) || !p2.1 { return 12 }
+    let p3 = subWithOverflowU32(10 as u32, 3 as u32)
+    if p3.0 != (7 as u32) || p3.1 { return 13 }
+    let p4 = mulWithOverflowU32(65536 as u32, 65536 as u32)
+    if p4.0 != (0 as u32) || !p4.1 { return 14 }
+    if saturatingAddU32(umax32, 50 as u32) != umax32 { return 15 }
+    if saturatingSubU32(3 as u32, 9 as u32) != (0 as u32) { return 16 }
+    if saturatingSubU32(9 as u32, 3 as u32) != (6 as u32) { return 17 }
+    return 0
+}
+
+func check_i64(): int {
+    let max64: i64 = 9223372036854775807 as i64
+    let min64: i64 = ((-9223372036854775807 as i64) - (1 as i64))
+    let p1 = addWithOverflowI64(max64, 1 as i64)
+    if p1.0 != min64 || !p1.1 { return 21 }
+    let p2 = addWithOverflowI64(min64, -1 as i64)
+    if p2.0 != max64 || !p2.1 { return 22 }
+    let p3 = subWithOverflowI64(0 as i64, min64)
+    if p3.0 != min64 || !p3.1 { return 23 }
+    let p4 = mulWithOverflowI64(min64, -1 as i64)
+    if !p4.1 { return 24 }
+    let p5 = mulWithOverflowI64(-1 as i64, min64)
+    if !p5.1 { return 25 }
+    let p6 = mulWithOverflowI64(-1 as i64, 42 as i64)
+    if p6.0 != (-42 as i64) || p6.1 { return 26 }
+    let p7 = mulWithOverflowI64(3037000500 as i64, 3037000500 as i64)
+    if !p7.1 { return 27 }
+    if saturatingAddI64(max64, 100 as i64) != max64 { return 28 }
+    if saturatingAddI64(min64, -100 as i64) != min64 { return 29 }
+    if saturatingSubI64(min64, 1 as i64) != min64 { return 30 }
+    if saturatingSubI64(0 as i64, min64) != max64 { return 31 }
+    return 0
+}
+
+func check_u64(): int {
+    let umax64: u64 = 18446744073709551615 as u64
+    let p1 = addWithOverflowU64(umax64, 5 as u64)
+    if p1.0 != (4 as u64) || !p1.1 { return 41 }
+    let p2 = subWithOverflowU64(2 as u64, 5 as u64)
+    if !p2.1 { return 42 }
+    let p3 = mulWithOverflowU64(0 as u64, umax64)
+    if p3.0 != (0 as u64) || p3.1 { return 43 }
+    let p4 = mulWithOverflowU64(4294967296 as u64, 4294967296 as u64)
+    if p4.0 != (0 as u64) || !p4.1 { return 44 }
+    if saturatingAddU64(umax64, 99 as u64) != umax64 { return 45 }
+    if saturatingSubU64(10 as u64, 20 as u64) != (0 as u64) { return 46 }
+    if saturatingSubU64(20 as u64, 5 as u64) != (15 as u64) { return 47 }
+    return 0
+}
+
+func main(): int {
+    let r1 = check_i32()
+    if r1 != 0 { return r1 }
+    let r2 = check_u32()
+    if r2 != 0 { return r2 }
+    let r3 = check_i64()
+    if r3 != 0 { return r3 }
+    return check_u64()
+}

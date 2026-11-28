@@ -33,6 +33,13 @@ impl<'a> Parser<'a> {
     fn parse_block_inner(&mut self) -> Result<Block, ParseError> {
         let start = self.mark();
         self.expect_name("LBRACE")?;
+        self.parse_block_statements_until_rbrace(start)
+    }
+
+    pub(super) fn parse_block_statements_until_rbrace(
+        &mut self,
+        start: usize,
+    ) -> Result<Block, ParseError> {
         let mut statements = Vec::new();
         while !self.at_kind_name("RBRACE") {
             self.skip_semicolons();
@@ -196,25 +203,130 @@ impl<'a> Parser<'a> {
         result
     }
 
+    #[inline(never)]
+    fn parse_labeled_loop(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
+        let label_start = self.mark();
+        let raw_name = self.current().lexeme(self.source);
+        let label_name = SmolStr::new(raw_name.trim_start_matches('\''));
+        self.advance(); // consume label
+        self.advance(); // consume colon ':'
+        if self.at_kind_name("KW_WHILE") {
+            return self.parse_while_with_label(label_start, Some(label_name));
+        }
+        if self.at_kind_name("KW_FOR") || self.at_kind_name("KW_COMPTIME") {
+            return self.parse_for_with_label(label_start, Some(label_name));
+        }
+        Err(ParseError::expected(
+            ParseErrorCode::ExpectedToken,
+            "expected loop after label",
+            self.current(),
+            self.file_id,
+            self.source,
+            &["while", "for"],
+        ))
+    }
+
+    #[inline(never)]
+    fn parse_break(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
+        let start = self.mark();
+        self.advance();
+        let label = if self.current().kind == TokenKind::Label {
+            let name = self
+                .current()
+                .lexeme(self.source)
+                .trim_start_matches('\'')
+                .to_string();
+            self.advance();
+            Some(SmolStr::new(name))
+        } else if self.current().kind == TokenKind::Colon
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| matches!(t.kind, TokenKind::IdentValue | TokenKind::IdentType))
+        {
+            self.advance(); // consume ':'
+            Some(self.expect_name_like()?)
+        } else if !self.at_kind_name("SEMICOLON")
+            && !self.at_kind_name("RBRACE")
+            && !self.at_kind_name("EOF")
+            && self.at_name_like()
+        {
+            Some(self.expect_name_like()?)
+        } else {
+            None
+        };
+        self.expect_semicolon()?;
+        Ok(self.pool.alloc_stmt(Stmt::Break {
+            span: self.span_from_mark(start),
+            label,
+        }))
+    }
+
+    #[inline(never)]
+    fn parse_continue(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
+        let start = self.mark();
+        self.advance();
+        let label = if self.current().kind == TokenKind::Label {
+            let name = self
+                .current()
+                .lexeme(self.source)
+                .trim_start_matches('\'')
+                .to_string();
+            self.advance();
+            Some(SmolStr::new(name))
+        } else if self.current().kind == TokenKind::Colon
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| matches!(t.kind, TokenKind::IdentValue | TokenKind::IdentType))
+        {
+            self.advance(); // consume ':'
+            Some(self.expect_name_like()?)
+        } else if !self.at_kind_name("SEMICOLON")
+            && !self.at_kind_name("RBRACE")
+            && !self.at_kind_name("EOF")
+            && self.at_name_like()
+        {
+            Some(self.expect_name_like()?)
+        } else {
+            None
+        };
+        self.expect_semicolon()?;
+        Ok(self.pool.alloc_stmt(Stmt::Continue {
+            span: self.span_from_mark(start),
+            label,
+        }))
+    }
+
     pub(super) fn try_parse_stmt(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
+        // Labeled loop: `'label: while` or `'label: for` or `label: while` or `label: for`
+        if (self.current().kind == TokenKind::Label
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| t.kind == TokenKind::Colon))
+            || (self.at_name_like()
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|t| t.kind == TokenKind::Colon)
+                && self.tokens.get(self.pos + 2).is_some_and(|t| {
+                    matches!(
+                        t.kind,
+                        TokenKind::KwWhile | TokenKind::KwFor | TokenKind::KwComptime
+                    )
+                }))
+        {
+            return self.parse_labeled_loop();
+        }
         if self.at_kind_name("KW_RETURN") {
             return self.parse_return();
         }
         if self.at_kind_name("KW_BREAK") {
-            let start = self.mark();
-            self.advance();
-            self.expect_semicolon()?;
-            return Ok(self.pool.alloc_stmt(Stmt::Break {
-                span: self.span_from_mark(start),
-            }));
+            return self.parse_break();
         }
         if self.at_kind_name("KW_CONTINUE") {
-            let start = self.mark();
-            self.advance();
-            self.expect_semicolon()?;
-            return Ok(self.pool.alloc_stmt(Stmt::Continue {
-                span: self.span_from_mark(start),
-            }));
+            return self.parse_continue();
         }
         if self.at_kind_name("KW_IF")
             || (self.at_kind_name("KW_COMPTIME")
@@ -382,13 +494,22 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_place(&mut self) -> Result<Place, ParseError> {
+        // `*place` writes through the reference the place holds; each `*`
+        // applies after the place's own suffixes.
+        let mut derefs = Vec::new();
+        while self.current().kind == TokenKind::Star {
+            derefs.push(self.current().span(self.file_id));
+            self.advance();
+        }
         let start = self.mark();
         let root = match &self.current().kind {
             TokenKind::KwSelf => {
                 self.advance();
                 SmolStr::new("self")
             }
-            TokenKind::IdentValue => {
+            // An uppercase root names a module-level `static mut`, such as a
+            // C global brought over by c2arandu; resolution rejects others.
+            TokenKind::IdentValue | TokenKind::IdentType => {
                 let name = SmolStr::new(self.current_text());
                 self.advance();
                 name
@@ -407,6 +528,23 @@ impl<'a> Parser<'a> {
         loop {
             if self.eat_name("DOT") {
                 let suffix_start = self.pos.saturating_sub(1);
+                // `t.0 = v`, and `t.0.1 = v`, which the lexer reads as a float.
+                if matches!(self.current().kind, TokenKind::IntDec | TokenKind::Float)
+                    && self
+                        .current_text()
+                        .split('.')
+                        .all(crate::ast::is_tuple_index)
+                {
+                    let text = SmolStr::new(self.current_text());
+                    self.advance();
+                    for index in text.split('.') {
+                        suffixes.push(PlaceSuffix::Field {
+                            span: self.span_from_mark(suffix_start),
+                            name: SmolStr::new(index),
+                        });
+                    }
+                    continue;
+                }
                 let name = self.expect_ident_value()?;
                 suffixes.push(PlaceSuffix::Field {
                     span: self.span_from_mark(suffix_start),
@@ -424,6 +562,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        suffixes.extend(derefs.into_iter().map(|span| PlaceSuffix::Deref { span }));
         Ok(Place {
             span: self.span_from_mark(start),
             root,
@@ -618,11 +757,20 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_while(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
         let start = self.mark();
+        self.parse_while_with_label(start, None)
+    }
+
+    pub(super) fn parse_while_with_label(
+        &mut self,
+        start: usize,
+        label: Option<SmolStr>,
+    ) -> Result<crate::ast_pool::StmtId, ParseError> {
         self.expect_name("KW_WHILE")?;
         let condition = self.parse_condition()?;
         let body = self.parse_block()?;
         Ok(self.pool.alloc_stmt(Stmt::While {
             span: self.span_from_mark(start),
+            label,
             condition,
             body,
         }))
@@ -630,13 +778,26 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_for(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
         let start = self.mark();
+        self.parse_for_with_label(start, None)
+    }
+
+    pub(super) fn parse_for_with_label(
+        &mut self,
+        start: usize,
+        label: Option<SmolStr>,
+    ) -> Result<crate::ast_pool::StmtId, ParseError> {
         let is_comptime = self.eat_name("KW_COMPTIME");
         self.expect_name("KW_FOR")?;
         let clause = if self.looks_like_for_in_clause() {
             let clause_start = self.mark();
+            // `for (i, x) in xs` is `for i, x in xs`.
+            let has_paren = self.eat_name("LPAREN");
             let mut bindings = vec![self.parse_for_binding()?];
             while self.eat_name("COMMA") {
                 bindings.push(self.parse_for_binding()?);
+            }
+            if has_paren {
+                self.expect_name("RPAREN")?;
             }
             self.expect_name("KW_IN")?;
             let iterable = self.parse_expr_without_block_calls(0)?;
@@ -674,6 +835,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
         Ok(self.pool.alloc_stmt(Stmt::For {
             span: self.span_from_mark(start),
+            label,
             is_comptime,
             clause,
             body,
@@ -837,6 +999,11 @@ impl<'a> Parser<'a> {
 
     pub(super) fn looks_like_for_in_clause(&self) -> bool {
         let mut index = self.pos;
+        let kind = |index: usize| self.tokens.get(index).map(|token| &token.kind);
+        let has_paren = matches!(kind(index), Some(TokenKind::LParen));
+        if has_paren {
+            index += 1;
+        }
         loop {
             if self
                 .tokens
@@ -853,8 +1020,11 @@ impl<'a> Parser<'a> {
                 return false;
             }
             index += 1;
-            match self.tokens.get(index).map(|token| &token.kind) {
-                Some(TokenKind::KwIn) => return true,
+            match kind(index) {
+                Some(TokenKind::KwIn) => return !has_paren,
+                Some(TokenKind::RParen) if has_paren => {
+                    return matches!(kind(index + 1), Some(TokenKind::KwIn));
+                }
                 Some(TokenKind::Comma) => index += 1,
                 _ => return false,
             }

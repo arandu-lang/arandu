@@ -8,9 +8,15 @@
 //! (`str`), checked arithmetic via `std.core.num`, char and ASCII utilities,
 //! generic `Hash`/`Hasher` and `Iterator<T>`.
 //!
-//! Import it explicitly — nothing here is injected implicitly. The only names
-//! the compiler provides without `import` are the `io` and `err` builtins
-//! (`io.println`, `io.eprint`, `err.new`).
+//! Core items (`Option`, `Result`, `Poll`, `Range`, `RangeInclusive`,
+//! `Ordering`, `Iterator`, `Copy`, `Clone`, `Send`, `Sync`) and, outside
+//! `std.*`, the foundational heap/I/O prelude (`String`, `Vec`, `Box`,
+//! `str.toString`, `io`, `err`, `println`, `print`, `eprint`) are injected
+//! into the prelude scope automatically and may be shadowed by any local
+//! declaration or explicit `import`.
+//!
+//! Importing `std.core.prelude` explicitly remains supported for convenience
+//! re-exports such as checked arithmetic helpers and `Cell`/`UnsafeCell`.
 //!
 //! ## Platform
 //! `native` · `wasm32` · `bare-metal`
@@ -34,5 +40,6 @@ public use std.core.future.{ Poll }
 public use std.core.num.{ checkedAdd, checkedSub, checkedMul, saturatingAdd, saturatingSub }
 public use std.core.cmp.{ Ordering }
 public use std.core.iter.{ Iterator }
-public use std.core.marker.{ Copy, Send, Sync, PhantomData, phantom }
+public use std.core.marker.{ Copy, Clone, Send, Sync, PhantomData, phantom }
+public use std.core.ops.{ Index, IndexMut }
 public use std.core.cell.{ Cell, UnsafeCell }

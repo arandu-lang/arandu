@@ -58,12 +58,11 @@ impl ArType {
 
     /// Returns true if this type has an intrinsic order (<, <=, >, >=).
     ///
-    /// Specifically: numeric primitives (int, uint, float), unresolved numeric literals, and `char`.
-    /// Does NOT include `bool`, `str`, `struct`, `tuple`, `ptr`, etc.
+    /// Specifically: numeric primitives (int, uint, float), unresolved numeric literals, `char`, and `str`.
     #[must_use]
     pub fn is_orderable(&self) -> bool {
         match self {
-            ArType::Primitive(p) => p.is_numeric() || matches!(p, Primitive::Char),
+            ArType::Primitive(p) => p.is_numeric() || matches!(p, Primitive::Char | Primitive::Str),
             ArType::IntLiteral | ArType::FloatLiteral => true,
             _ => false,
         }
@@ -142,8 +141,10 @@ impl ArType {
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::IntLiteral
             | ArType::FloatLiteral
+            | ArType::Infer(_)
             | ArType::Error
             | ArType::FrozenConst(_)
             | ArType::Const(_)
@@ -159,8 +160,7 @@ impl ArType {
                 }
                 f(*ret);
             }
-            ArType::Nullable(inner)
-            | ArType::Slice(inner)
+            ArType::Slice(inner)
             | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
@@ -192,6 +192,9 @@ impl ArType {
             ArType::Primitive(p) => p.to_string(),
             ArType::Vector(vector) => vector.name().to_string(),
             ArType::Named(id, args) => {
+                if let Some(owning) = display_owning_closure(*id, *args, symbols, interner) {
+                    return owning;
+                }
                 let name = symbols.try_get(*id).map(|s| s.name.as_str()).unwrap_or("?");
                 let arg_tys = interner.type_args(*args);
                 if arg_tys.is_empty() {
@@ -218,10 +221,6 @@ impl ArType {
                 } else {
                     format!("func({}) {}", params_str.join(", "), ret_str)
                 }
-            }
-            ArType::Nullable(inner) => {
-                let inner_str = interner.resolve(*inner).display(symbols, interner);
-                format!("{}?", inner_str)
             }
             ArType::Slice(inner) => {
                 let inner_str = interner.resolve(*inner).display(symbols, interner);
@@ -303,8 +302,11 @@ impl ArType {
             }
             ArType::Err => "Err".to_string(),
             ArType::Void => "void".to_string(),
+            ArType::Never => "!".to_string(),
             ArType::IntLiteral => "int".to_string(),
             ArType::FloatLiteral => "float".to_string(),
+            // Like rustc, a type not inferred yet is shown as `_`.
+            ArType::Infer(_) => "_".to_string(),
             ArType::Error => "<error>".to_string(),
         }
     }
@@ -357,14 +359,15 @@ impl ArType {
             | ArType::FrozenConst(_)
             | ArType::Const(_)
             | ArType::Ptr(_)
-            | ArType::Nullable(_)
             | ArType::Ref(_)
             | ArType::Slice(_)
             | ArType::GenRef => true,
-            ArType::Error | ArType::Void | ArType::Err => true,
+            // A function value is a code pointer without an environment.
+            ArType::Func(_, _) => true,
+            ArType::Error | ArType::Void | ArType::Err | ArType::Never => true,
+            ArType::Infer(_) => false,
             // Named / aggregates: structural decision needs `TypeInfo::is_copy`.
             ArType::Named(_, _)
-            | ArType::Func(_, _)
             | ArType::Array(_, _)
             | ArType::ConstArray(_, _)
             | ArType::ConstParam(_)
@@ -378,4 +381,28 @@ impl ArType {
             | ArType::RefMut(_) => false,
         }
     }
+}
+
+/// `Closure<func(ptr[u8], A) R>` reads as the type the user wrote:
+/// `own func(A) R`, with `once` and `+ Send` as declared (RFC 0032, L3).
+fn display_owning_closure(
+    id: crate::SymbolId,
+    args: crate::hir::pool::IndexRange,
+    symbols: &SymbolTable,
+    interner: &TypeInterner,
+) -> Option<String> {
+    let kind = symbols.try_get(id)?.lang_item?.owning_closure()?;
+    let bound = if kind.send { " + Send" } else { "" };
+    let once = if kind.once { "once " } else { "" };
+    let &[code] = interner.type_args(args).as_slice() else {
+        return None;
+    };
+    let ArType::Func(params, ret) = interner.resolve(code) else {
+        return None;
+    };
+    let params = interner.type_args(params);
+    let (_, params) = params.split_first()?;
+    let params = interner.intern(ArType::func(params, ret, interner));
+    let func = interner.resolve(params).display(symbols, interner);
+    Some(format!("own {once}{func}{bound}"))
 }

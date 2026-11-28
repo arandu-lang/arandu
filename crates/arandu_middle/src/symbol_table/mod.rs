@@ -25,13 +25,16 @@ impl SymbolId {
     /// span so parallel item typeck cannot collide, and they never occupy a
     /// dense slot in [`SymbolTable`]'s source vector.
     pub const SYNTHETIC_LOCAL_BIT: u32 = 0x8000_0000;
+    /// Distinguishes deterministic `@Export` wrapper thunks from other
+    /// synthetic functions (such as closures and derived methods).
+    pub const EXPORT_THUNK_BIT: u32 = 0x4000_0000;
 
     pub const DUMMY: Self = Self {
         file_id: 0,
         local_id: LocalSymbolId(u32::MAX),
     };
 
-    pub fn new(file_id: crate::db::FileId, local_id: u32) -> Self {
+    pub const fn new(file_id: crate::db::FileId, local_id: u32) -> Self {
         Self {
             file_id,
             local_id: LocalSymbolId(local_id),
@@ -41,6 +44,27 @@ impl SymbolId {
     #[must_use]
     pub const fn is_synthetic(self) -> bool {
         self.local_id.0 & Self::SYNTHETIC_LOCAL_BIT != 0
+    }
+
+    /// Deterministic thunk [`SymbolId`] wrapping an `@Export` function
+    /// whose ABI uses aggregates. Preserves `target.file_id`.
+    #[must_use]
+    pub const fn export_thunk_for(target: Self) -> Self {
+        Self::new(
+            target.file_id,
+            Self::SYNTHETIC_LOCAL_BIT | Self::EXPORT_THUNK_BIT | (target.local_id.0 & 0x3FFF_FFFF),
+        )
+    }
+
+    /// Extracts the underlying `@Export` target if `self` is an export thunk.
+    #[must_use]
+    pub const fn export_thunk_target(self) -> Option<Self> {
+        let mask = Self::SYNTHETIC_LOCAL_BIT | Self::EXPORT_THUNK_BIT;
+        if (self.local_id.0 & mask) == mask {
+            Some(Self::new(self.file_id, self.local_id.0 & 0x3FFF_FFFF))
+        } else {
+            None
+        }
     }
 }
 
@@ -54,6 +78,7 @@ pub enum SymbolKind {
     ImportType,
     Func,
     Const,
+    StaticMut,
     TypeAlias,
     Struct,
     Enum,
@@ -77,11 +102,13 @@ impl SymbolKind {
             SymbolKind::ImportValue
                 | SymbolKind::Func
                 | SymbolKind::Const
+                | SymbolKind::StaticMut
                 | SymbolKind::ExternFunc
                 | SymbolKind::Param
                 | SymbolKind::Local
                 | SymbolKind::EnumVariant
                 | SymbolKind::ConstParam
+                | SymbolKind::NamespaceMember
         )
     }
 
@@ -121,9 +148,13 @@ pub enum LangItem {
     Int,
     Float,
     Ptr,
+    NonNull,
     Copy,
+    Clone,
     Send,
     Sync,
+    Eq,
+    Display,
     /// Cooperative executor handle; its opaque ID is not a transfer proof.
     TaskHandle,
     Alloc,
@@ -131,6 +162,8 @@ pub enum LangItem {
     U32,
     U64,
     Usize,
+    I32,
+    I64,
     /// Bit intrinsic explicitly declared with the compiler intrinsic ABI.
     /// Spelling alone must not replace an ordinary or foreign function call.
     BitIntrinsic,
@@ -167,9 +200,99 @@ pub enum LangItem {
     StdThread,
     /// Any `std.fs` operation. Bare-metal targets reject the module.
     StdFs,
+    /// Owning closure `own (A) -> R` (RFC 0032, L3).
+    Closure,
+    /// Owning closure that may cross threads: `own (A) -> R + Send`.
+    SendClosure,
+    /// The `ThreadJob` that runs an owning `Send` closure without parameters;
+    /// `thread.spawn(c)` wraps such a closure `c` in it.
+    ClosureJob,
+    /// Owning closure consumed by its call: `own once (A) -> R`.
+    OnceClosure,
+    /// `own once (A) -> R + Send`.
+    SendOnceClosure,
+    /// `a..b` as a value: `std.core.range.Range<T>`.
+    Range,
+    /// `a..=b` as a value: `std.core.range.RangeInclusive<T>`.
+    RangeInclusive,
+    /// `todo`: a typed hole, the expression the programmer has not written
+    /// yet (RFC 0036, H1). Shadowed by any declaration named `todo`.
+    Hole,
+    /// Total ordering interface: `std.core.cmp.Ord`.
+    Ord,
+    /// Three-way comparison result enum: `std.core.cmp.Ordering`.
+    Ordering,
+    /// `Ordering.Less` variant.
+    OrderingLess,
+    /// `Ordering.Equal` variant.
+    OrderingEqual,
+    /// `Ordering.Greater` variant.
+    OrderingGreater,
+    /// Partial equality interface: `std.core.cmp.PartialEq`.
+    PartialEq,
+    /// Hashing interface: `std.core.hash.Hash`.
+    Hash,
+    /// Streaming hasher interface: `std.core.hash.Hasher`.
+    Hasher,
+    /// Debug formatting interface: `std.core.fmt.Debug`.
+    Debug,
+    /// Allocation-free formatter buffer: `std.core.fmt.Formatter`.
+    Formatter,
+    /// Formatting error enum: `std.core.fmt.FmtError`.
+    FmtError,
+    /// Zero-sized type marker: `std.core.marker.PhantomData`.
+    PhantomData,
+    /// Shared indexing operator: `std.core.ops.Index`.
+    Index,
+    /// Mutable indexing operator: `std.core.ops.IndexMut`.
+    IndexMut,
+}
+
+/// What an owning closure type allows (RFC 0032, L3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwningClosureKind {
+    /// `+ Send`: the closure may move to another thread.
+    pub send: bool,
+    /// `once`: the call consumes the closure.
+    pub once: bool,
 }
 
 impl LangItem {
+    /// The owning closure type this lang item spells, if any.
+    #[must_use]
+    pub const fn owning_closure(self) -> Option<OwningClosureKind> {
+        match self {
+            Self::Closure => Some(OwningClosureKind {
+                send: false,
+                once: false,
+            }),
+            Self::SendClosure => Some(OwningClosureKind {
+                send: true,
+                once: false,
+            }),
+            Self::OnceClosure => Some(OwningClosureKind {
+                send: false,
+                once: true,
+            }),
+            Self::SendOnceClosure => Some(OwningClosureKind {
+                send: true,
+                once: true,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The lang item of an owning closure type.
+    #[must_use]
+    pub const fn for_owning_closure(kind: OwningClosureKind) -> Self {
+        match (kind.send, kind.once) {
+            (false, false) => Self::Closure,
+            (true, false) => Self::SendClosure,
+            (false, true) => Self::OnceClosure,
+            (true, true) => Self::SendOnceClosure,
+        }
+    }
+
     #[must_use]
     pub const fn vector_shape(self) -> Option<crate::types::VectorType> {
         use crate::types::VectorType;
@@ -230,6 +353,8 @@ pub struct BuiltinTypes {
     pub u32_type: Option<SymbolId>,
     pub u64_type: Option<SymbolId>,
     pub usize_type: Option<SymbolId>,
+    pub i32_type: Option<SymbolId>,
+    pub i64_type: Option<SymbolId>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +390,8 @@ pub struct SymbolTable {
     /// keeps internal linkage, so a module never leaks symbols it did not
     /// explicitly export.
     pub exported_functions: FxHashSet<SymbolId>,
+    /// Functions marked `@Cold` to suppress inlining and emit cold-path hints.
+    pub cold_functions: FxHashSet<SymbolId>,
     /// Functions invoked by tooling rather than source calls (`@Test`, `@Benchmark`).
     pub tooling_entrypoints: FxHashSet<SymbolId>,
     pub module_scopes: FxHashMap<SymbolId, ScopeId>,
@@ -277,6 +404,9 @@ pub struct SymbolTable {
     pub builtins: BuiltinTypes,
     pub builtin_alloc: Option<SymbolId>,
     pub builtin_free: Option<SymbolId>,
+    /// Whether this file was loaded from a trusted standard-library source.
+    /// Grants `extern "arandu-intrinsic"` authority without inspecting module names.
+    pub trusted_stdlib: bool,
 }
 
 impl Default for SymbolTable {
@@ -304,6 +434,7 @@ impl SymbolTable {
             interface_implementations: FxHashSet::default(),
             host_function_names: FxHashMap::default(),
             exported_functions: FxHashSet::default(),
+            cold_functions: FxHashSet::default(),
             tooling_entrypoints: FxHashSet::default(),
             module_scopes: FxHashMap::default(),
             type_params: std::sync::Arc::default(),
@@ -311,6 +442,7 @@ impl SymbolTable {
             builtins: BuiltinTypes::default(),
             builtin_alloc: None,
             builtin_free: None,
+            trusted_stdlib: false,
         }
     }
 }

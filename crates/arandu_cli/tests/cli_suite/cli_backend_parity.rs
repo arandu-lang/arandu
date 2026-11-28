@@ -75,6 +75,38 @@ fn outcomes(name: &str, source: &str) -> Vec<(&'static str, super::common::Progr
 
 const RESULTS: &[(&str, &str, i32)] = &[
     (
+        // A generic literal infers its parameters through nested literals,
+        // nominal values, generic fields and plain calls.
+        "generic_literal_inference",
+        r#"struct Fresh { tag: int }
+struct One<T> { value: T }
+struct Pair<T> { first: T, second: T }
+struct Holder<T> { inner: One<T>, count: int }
+func makeFresh(tag: int): Fresh { return Fresh { tag: tag } }
+func main(): int {
+    let p = Pair { first: Fresh { tag: 1 }, second: Fresh { tag: 0 } }
+    let h = Holder { inner: One { value: Fresh { tag: 5 } }, count: 2 }
+    let o = One { value: makeFresh(9) }
+    let n = One { value: One { value: p } }
+    return p.first.tag + h.inner.value.tag + o.value.tag + n.value.value.second.tag
+}
+"#,
+        15,
+    ),
+    (
+        // `*holder.field` loads the pointee, not the reference bits.
+        "deref_of_reference_field",
+        r#"struct Env { n: mut ref int, k: ref int }
+func read(e: Env): int { return *e.n + *e.k }
+func main(): int {
+    let mut n = 5
+    let k = 2
+    return read(Env { n: mut ref n, k: ref k })
+}
+"#,
+        7,
+    ),
+    (
         "narrow_shifts",
         r#"func shl(a: u8, b: u8): u8 { return a << b }
 func shr(a: i16, b: i16): i16 { return a >> b }
@@ -412,6 +444,88 @@ fn every_backend_traps() {
     }
 }
 
+/// The standard error stream of a native binary built by `compiler` from
+/// the source `emit` prints, when that compiler is installed.
+fn native_stderr(source: &Path, emit: &str, compiler: &str, extension: &str) -> Option<String> {
+    Command::new(compiler).arg("--version").output().ok()?;
+    let emitted = cli(&[emit, &source.to_string_lossy()]);
+    assert!(
+        emitted.status.success(),
+        "{emit}: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let text = source.with_extension(extension);
+    let binary = source.with_extension(format!("{extension}.bin"));
+    fs::write(&text, &emitted.stdout).expect("write emitted source");
+    let mut command = Command::new(compiler);
+    command
+        .args(["-O2", "-w"])
+        .arg(&text)
+        .arg("-o")
+        .arg(&binary);
+    if !cfg!(windows) {
+        command.arg("-lm");
+    }
+    let built = command.output().expect("compile emitted source");
+    assert!(
+        built.status.success(),
+        "{compiler}: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary).output().expect("run binary");
+    assert_eq!(super::common::outcome(&run.status), ProgramOutcome::Trapped);
+    Some(String::from_utf8_lossy(&run.stderr).into_owned())
+}
+
+/// A failed run-time check says which check failed before it traps, on
+/// every native backend, like Rust's panics; the exit status stays the
+/// platform's trap.
+#[test]
+fn every_backend_reports_the_failed_check() {
+    let cases = [
+        (
+            "trap_division",
+            "func div(a: int, b: int): int { return a / b }\nfunc main(): int { return div(7, 0) }\n",
+            "panic: attempt to divide by zero",
+        ),
+        (
+            "trap_division_overflow",
+            "func div(a: i32, b: i32): i32 { return a / b }\nfunc main(): int { return div(-2147483647 - 1, -1) as int }\n",
+            "panic: attempt to divide with overflow",
+        ),
+        (
+            "trap_index",
+            "func at(xs: []int, i: usize): int { return xs[i] }\nfunc main(): int {\n    let xs = [1, 2]\n    return at(xs, 5)\n}\n",
+            "panic: index out of bounds",
+        ),
+        (
+            "trap_range",
+            "func part(xs: []int, a: usize, b: usize): usize { return xs[a..b].len() }\nfunc main(): int {\n    let xs = [1, 2]\n    return part(xs, 1, 9) as int\n}\n",
+            "panic: range out of bounds",
+        ),
+    ];
+    for (name, source, message) in cases {
+        let file = std::env::temp_dir().join(format!("arandu_cli_parity_{name}.aru"));
+        fs::write(&file, source).expect("write");
+        let path = file.to_string_lossy().into_owned();
+        for mode in [&["run"][..], &["run", "--opt"][..]] {
+            let output = cli(&[mode, &[path.as_str()][..]].concat());
+            assert_eq!(
+                super::common::outcome(&output.status),
+                ProgramOutcome::Trapped,
+                "{name} {mode:?}"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(message), "{name} {mode:?}: {stderr}");
+        }
+        for (emit, compiler, extension) in [("emit-c", "cc", "c"), ("emit-llvm", "clang", "ll")] {
+            if let Some(stderr) = native_stderr(&file, emit, compiler, extension) {
+                assert!(stderr.contains(message), "{name} {emit}: {stderr}");
+            }
+        }
+    }
+}
+
 #[test]
 fn value_functions_must_return_on_every_path() {
     let rejected = "func f(n: u32): int {\n    if n > 2 {\n        return 5\n    }\n}\nfunc main(): int { return f(1) }\n";
@@ -550,3 +664,538 @@ const RUNS_NULLABLE: &[(&str, &str, i32)] = &[
         16,
     ),
 ];
+
+/// Non-escaping callbacks (RFC 0032, L1) are closure structs called directly:
+/// every backend, Wasm included, computes the same results.
+#[test]
+fn closure_callbacks_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/closure_callbacks.aru");
+    for (backend, outcome) in outcomes("closure_callbacks", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_closure_callbacks_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "closure callbacks in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// Every spelling of a generic receiver (`Pair`, `ref Pair`, `ref Pair<T>`,
+/// restated `<T>`) and method-only parameters agree on every backend.
+#[test]
+fn generic_receivers_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/generic_receivers.aru");
+    for (backend, outcome) in outcomes("generic_receivers", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_generic_receivers_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "generic receivers in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// Calls through function values (RFC 0032, L2) agree on every backend,
+/// including Wasm's function table.
+#[test]
+fn function_values_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/function_values.aru");
+    for (backend, outcome) in outcomes("function_values", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_function_values_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "function values in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// Owning closures (RFC 0032, L3): returned, stored in fields, passed by
+/// `mut ref` and by value, with their environments destroyed exactly once.
+/// LLVM links no runtime, so its IR is only compiled to an object there.
+#[test]
+fn own_closures_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/own_closures.aru");
+    for (backend, outcome) in outcomes_on("own_closures", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_own_closures_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "own closures in Wasmtime");
+    let ir = cli(&["emit-llvm", &path.to_string_lossy()]);
+    assert!(
+        ir.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
+    if Command::new("clang").arg("--version").output().is_ok() {
+        let ll = path.with_extension("ll");
+        fs::write(&ll, &ir.stdout).unwrap();
+        let object = Command::new("clang")
+            .args(["-c", "-O2", "-w"])
+            .arg(&ll)
+            .arg("-o")
+            .arg(path.with_extension("o"))
+            .output()
+            .expect("clang");
+        assert!(
+            object.status.success(),
+            "{}",
+            String::from_utf8_lossy(&object.stderr)
+        );
+        let _ = fs::remove_file(ll);
+        let _ = fs::remove_file(path.with_extension("o"));
+    }
+    let _ = fs::remove_file(path);
+}
+
+/// Closures over values of generic type, borrowed and owning, instantiated
+/// once per instance of the enclosing item, on every backend.
+#[test]
+fn generic_closures_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/generic_closures.aru");
+    for (backend, outcome) in outcomes_on("generic_closures", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_generic_closures_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "generic closures in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// Borrowing a value with no place borrows a temporary on every backend.
+#[test]
+fn rvalue_borrows_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/rvalue_borrows.aru");
+    for (backend, outcome) in outcomes_on("rvalue_borrows", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+}
+
+/// Arrays become slices where one is expected and answer slice methods.
+#[test]
+fn array_slices_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/array_slices.aru");
+    for (backend, outcome) in outcomes_on("array_slices", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_array_slices_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "array slices in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// `+` and `+=` on `str` concatenate on every backend, in chains, loops and
+/// with interpolated operands.
+#[test]
+fn string_concatenation_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/string_concat.aru");
+    for (backend, outcome) in outcomes_on("string_concat", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_string_concat_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "string concatenation in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// An `@Export` function with a scalar signature used as a function value,
+/// and a raw pointer indexed in a place, agree on every backend.
+#[test]
+fn exported_function_values_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/exported_function_values.aru");
+    for (backend, outcome) in outcomes("exported_function_values", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_exported_function_values_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout)
+        .assert_returns(0, "exported function values in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// `p.offsetFrom(q)` on pointers to structs and bytes, beside a method of
+/// the pointee called through the pointer, agrees on every backend.
+#[test]
+fn pointer_offsets_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/pointer_offsets.aru");
+    for (backend, outcome) in outcomes("pointer_offsets", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_pointer_offsets_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "pointer offsets in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// C strings as the initial values of `static mut` pointers agree on every
+/// backend: the data image points at their NUL-terminated bytes.
+#[test]
+fn static_c_strings_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/static_c_strings.aru");
+    for (backend, outcome) in outcomes("static_c_strings", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_static_c_strings_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "static C strings in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// `types.info<T>()`: descriptions of structs, enums, tuples and builtin
+/// types, in a `const` and in a generic function, agree on every backend.
+#[test]
+fn type_descriptions_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/type_info.aru");
+    for (backend, outcome) in outcomes("type_info", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_type_info_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "type descriptions in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// A `const` holding views of elements lives in static storage: functions
+/// return it and every backend reads the same elements.
+#[test]
+fn const_views_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/const_views.aru");
+    for (backend, outcome) in outcomes("const_views", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_const_views_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "const views in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// `static mut` storage holding text, byte views and arrays of text: the
+/// data image points at objects of its own on every backend.
+#[test]
+fn static_text_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/static_text.aru");
+    for (backend, outcome) in outcomes("static_text", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_static_text_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "static text in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// Values moved on some paths only, and or-patterns that bind names.
+#[test]
+fn conditional_moves_and_or_patterns_agree_on_every_backend() {
+    for (name, source) in [
+        (
+            "conditional_moves",
+            include_str!("../../../../tests/corpus/conditional_moves.aru"),
+        ),
+        (
+            "guarded_or_patterns",
+            include_str!("../../../../tests/corpus/guarded_or_patterns.aru"),
+        ),
+    ] {
+        for (backend, outcome) in outcomes_on(name, source, false) {
+            assert_eq!(outcome, ProgramOutcome::Returned(0), "{name} on {backend}");
+        }
+        let path = std::env::temp_dir().join(format!("arandu_{name}_{}.aru", std::process::id()));
+        fs::write(&path, source).unwrap();
+        let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+        assert!(
+            wasm.status.success(),
+            "{}",
+            String::from_utf8_lossy(&wasm.stderr)
+        );
+        crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, name);
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Range values: `Range<T>` and `RangeInclusive<T>` stored, passed,
+/// returned, looped over and used as slice indexes.
+#[test]
+fn range_values_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/range_values.aru");
+    for (backend, outcome) in outcomes_on("range_values", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_range_values_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "range values in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// Tuple values: construction, `t.0`, element assignment, destructuring in
+/// `let` and `match`, tuples in parameters and results, and `for i, x`.
+#[test]
+fn tuples_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/tuples.aru");
+    for (backend, outcome) in outcomes_on("tuples", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_tuples_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "tuples in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// `mem.replace`, `mem.swap` and `mem.take` on values with destructors.
+#[test]
+fn mem_replace_of_owned_values_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/mem_replace_owned.aru");
+    for (backend, outcome) in outcomes_on("mem_replace_owned", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+}
+
+/// A block after a call is its last argument, `() => { ... }`: borrowed
+/// callbacks, mutation of a local through one and an owned closure.
+#[test]
+fn trailing_blocks_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/trailing_blocks.aru");
+    for (backend, outcome) in outcomes_on("trailing_blocks", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_trailing_blocks_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "trailing blocks in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// `own once (A) -> R` closures consume their captures, convert from
+/// `own (A) -> R`, run as temporaries and destroy captures never called.
+#[test]
+fn once_closures_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/once_closures.aru");
+    for (backend, outcome) in outcomes_on("once_closures", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_once_closures_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "once closures in Wasmtime");
+    let ir = cli(&["emit-llvm", &path.to_string_lossy()]);
+    assert!(
+        ir.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
+    let _ = fs::remove_file(path);
+}
+
+/// Inference variables (S1): element and result types fixed by later uses,
+/// including a literal whose width a later call decides.
+#[test]
+fn inference_variables_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/inference_vars.aru");
+    for (backend, outcome) in outcomes_on("inference_vars", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_inference_vars_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "inference variables in Wasmtime");
+    let ir = cli(&["emit-llvm", &path.to_string_lossy()]);
+    assert!(
+        ir.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
+    let _ = fs::remove_file(path);
+}
+
+/// `own () -> R + Send` closures spawned directly and from a queue. Native
+/// backends with the thread runtime only.
+#[test]
+fn send_closures_run_on_threads_on_native_backends() {
+    let source = include_str!("../../../../tests/corpus/own_closures_threads.aru");
+    for (backend, outcome) in outcomes_on("own_closures_threads", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+}
+
+/// `*place = value` writes through `mut ref`, through a reference to a
+/// reference and into `static mut` storage, on every backend.
+#[test]
+fn deref_assignment_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/deref_assign.aru");
+    for (backend, outcome) in outcomes("deref_assign", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_deref_assign_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "deref assignment in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// `static mut` storage starts from its constant image and is shared by every
+/// function, on every backend, Wasm included.
+#[test]
+fn static_mut_storage_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/static_mut.aru");
+    for (backend, outcome) in outcomes("static_mut", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_static_mut_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "static mut in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// Moved and borrowed captures of owned runtime values. LLVM, which links no
+/// runtime, is left out.
+#[test]
+fn closure_owned_value_captures_agree_on_native_backends() {
+    for (name, source) in [
+        (
+            "closure_move_capture",
+            include_str!("../../../../tests/corpus/closure_move_capture.aru"),
+        ),
+        (
+            "closure_borrow_capture",
+            include_str!("../../../../tests/corpus/closure_borrow_capture.aru"),
+        ),
+    ] {
+        for (backend, outcome) in outcomes_on(name, source, false) {
+            assert_eq!(outcome, ProgramOutcome::Returned(0), "{name} on {backend}");
+        }
+    }
+}

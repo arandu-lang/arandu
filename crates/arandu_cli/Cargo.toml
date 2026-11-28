@@ -1,6 +1,6 @@
 [package]
 name = "arandu_cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
@@ -28,6 +28,7 @@ arandu_backend_wasm = { path = "../arandu_backend_wasm" }
 arandu_codegen = { path = "../arandu_codegen" }
 arandu_runtime = { path = "../arandu_runtime" }
 arandu_query = { path = "../arandu_query" }
+arandu_diagnostics = { path = "../arandu_diagnostics" }
 arandu_fmt = { path = "../arandu_fmt" }
 arandu_doc = { path = "../arandu_doc" }
 
@@ -41,8 +42,8 @@ serde_json = { workspace = true }
 rayon = "1.12.0"
 miette = { workspace = true }
 petgraph = { workspace = true }
-notify = "8.2.0"
-notify-debouncer-full = "0.7.0"
+notify = "9.0.0"
+notify-debouncer-full = "0.8.0"
 tar = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true }
@@ -59,9 +60,11 @@ windows-sys = { version = "0.60.2", features = [
     "Win32_System_Threading",
     "Win32_System_JobObjects",
     "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_ProcessStatus",
 ] }
 
 [dev-dependencies]
 num-bigint = "0.5.1"
 # Executes `emit-wasm` output for the stdlib contracts; same version as the Wasm backend tests.
-wasmtime = "49"
+wasmtime = "51"

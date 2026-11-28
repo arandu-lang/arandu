@@ -21,6 +21,7 @@ fn program(funcs: Vec<AmirFunc>) -> AmirProgram {
         extern_funcs: Default::default(),
         debug_bindings: vec![],
         debug_blocks: vec![],
+        statics: vec![],
     }
 }
 
@@ -143,6 +144,7 @@ fn closure_keeps_jump_callbacks_transitive_calls_tooling_and_live_destructors() 
         extern_funcs: Default::default(),
         debug_bindings: vec![],
         debug_blocks: vec![],
+        statics: Vec::new(),
     };
     let live = live_functions(&program, &symbols, &info.type_interner, &info);
     for id in 0..5 {
@@ -172,6 +174,7 @@ fn library_preserves_private_host_lookup() {
         extern_funcs: Default::default(),
         debug_bindings: vec![],
         debug_blocks: vec![],
+        statics: Vec::new(),
     };
     assert!(live_functions(&program, &symbols, &info.type_interner, &info).contains(&symbol));
 }

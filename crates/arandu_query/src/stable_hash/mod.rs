@@ -11,7 +11,8 @@ mod typeck;
 pub use symbols::StableHash;
 pub(crate) use symbols::{hash_literal_entry, hash_return_borrow_summary};
 pub(crate) use typeck::{
-    declaration_surface_hash, local_typing_hash, type_signature_hash, typing_input_hash,
+    declaration_surface_hash, local_typing_hash, semantic_type_bytes, type_signature_hash,
+    typing_input_hash,
 };
 
 #[cfg(test)]
@@ -95,6 +96,7 @@ mod tests {
             extern_funcs: rustc_hash::FxHashMap::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let mut p2 = arandu_middle::amir::AmirProgram {
             funcs: Vec::new(),
@@ -102,6 +104,7 @@ mod tests {
             extern_funcs: rustc_hash::FxHashMap::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         p1.literal_pool.intern_int("42");
         p2.literal_pool.intern_int("43");
@@ -149,6 +152,7 @@ mod tests {
                 local: LocalId::from_usize(local),
             }],
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         assert_ne!(make_program(3).stable_hash(), make_program(4).stable_hash());
     }
@@ -184,6 +188,7 @@ mod tests {
                 extern_funcs,
                 debug_bindings: Vec::new(),
                 debug_blocks: Vec::new(),
+                statics: Vec::new(),
             }
         };
 
@@ -294,6 +299,12 @@ mod tests {
             .insert(symbol);
         assert_ne!(baseline_hash, with_interior_mutability.stable_hash());
 
+        let mut with_non_copy = baseline.clone();
+        Arc::make_mut(&mut with_non_copy.type_info)
+            .non_copy_types
+            .insert(symbol);
+        assert_ne!(baseline_hash, with_non_copy.stable_hash());
+
         let mut with_repr_c = baseline.clone();
         Arc::make_mut(&mut with_repr_c.type_info)
             .struct_repr_c
@@ -395,6 +406,16 @@ mod vector_hash_tests {
                 if_true: a,
                 if_false: b,
             },
+            AmirRvalue::Select {
+                condition: a,
+                if_true: a,
+                if_false: b,
+            },
+            AmirRvalue::Select {
+                condition: b,
+                if_true: a,
+                if_false: b,
+            },
             AmirRvalue::VectorSplat { value: a },
             AmirRvalue::VectorShuffle {
                 left: a,
@@ -413,6 +434,10 @@ mod vector_hash_tests {
                 lane: 0,
                 value: b,
             },
+            AmirRvalue::VectorBitmask { vector: a },
+            AmirRvalue::VectorBitmask { vector: b },
+            AmirRvalue::VectorLoadUnaligned { source: a },
+            AmirRvalue::VectorLoadUnaligned { source: b },
         ];
         let mut hashes = std::collections::HashSet::new();
         for value in cases {

@@ -68,6 +68,8 @@ pub enum DiagCode {
     N020ModuleDeclarationMismatch,
     /// Two distinct functions of one program map to the same native symbol.
     N021DuplicateFunctionSymbol,
+    /// A name is bound by some alternatives of `p1 | p2` and not by others.
+    N022OrPatternBinding,
 
     // ── Type Checker (T) ──
     T001CannotInferType,
@@ -133,8 +135,17 @@ pub enum DiagCode {
     /// representation (or would need an ABI transformation).
     T049InvalidFfiExport,
     /// `std.thread` or `std.fs` was used on a freestanding target.
-    /// T049–T098 stay unused; T099 is the 0.2.0 bare-metal contract.
+    /// T050–T098 stay unused; T099 is the 0.2.0 bare-metal contract.
     T099RequiresOperatingSystem,
+    /// A borrowed `(A) -> R` callback parameter is returned, stored or
+    /// assigned where it would outlive the call that received it.
+    T100BorrowedCallbackEscapes,
+    /// A `static mut` initial value has no plain-bytes image for the data
+    /// section (for example a string or a niche-encoded enum).
+    T101StaticWithoutDataImage,
+    /// A `todo` hole is still in the program: it is reported with its
+    /// expected type and stops build, run, tests and compile-time evaluation.
+    T102TypedHole,
 
     // ── Lowering (L) ──
     L001LoweringUnresolvedSymbol,
@@ -165,6 +176,15 @@ pub enum DiagCode {
     O013ExternRequiresUnsafe,
     O014FreeRequiresUnsafe,
     O015MoveOutOfIndex,
+    /// A value with a destructor is moved out of `*r`, where `r` is a
+    /// reference: its owner would destroy it again.
+    O016MoveOutOfReference,
+    O017StaticMutRequiresUnsafe,
+    /// A part of a value is moved out of a type with a `@Destructor`, which
+    /// would then run on an incomplete value.
+    O018MoveOutOfDestructor,
+    /// Raw pointer dereference/arithmetic/indexing or unsafe cast requires an `unsafe` block.
+    O019RawPtrRequiresUnsafe,
 
     // ── Warnings & Linting (W) ──
     W001VariableAssignedNotUsed,
@@ -175,6 +195,11 @@ pub enum DiagCode {
     W006UnhandledResult,
     W007UnusedImport,
     W008Reserved,
+    /// An owning closure assigns to its copy of a captured `Copy` local and
+    /// never reads it: the original is unchanged.
+    W009CapturedCopyNeverRead,
+    /// A large `Copy` value is implicitly duplicated while still live.
+    W010LargeImplicitCopy,
 
     // ── Unimplemented (U) ──
     U001FeatureNotSupported,
@@ -233,6 +258,7 @@ impl DiagCode {
             N019CyclicReExport,
             N020ModuleDeclarationMismatch,
             N021DuplicateFunctionSymbol,
+            N022OrPatternBinding,
             T001CannotInferType,
             T002IncompatibleAssignment,
             T003IncompatibleCallArg,
@@ -279,6 +305,9 @@ impl DiagCode {
             T048InvalidArrayRepeat,
             T049InvalidFfiExport,
             T099RequiresOperatingSystem,
+            T100BorrowedCallbackEscapes,
+            T101StaticWithoutDataImage,
+            T102TypedHole,
             L001LoweringUnresolvedSymbol,
             G001GenericInstantiationCycle,
             G002GenericInstantiationLimit,
@@ -297,6 +326,10 @@ impl DiagCode {
             O013ExternRequiresUnsafe,
             O014FreeRequiresUnsafe,
             O015MoveOutOfIndex,
+            O016MoveOutOfReference,
+            O017StaticMutRequiresUnsafe,
+            O018MoveOutOfDestructor,
+            O019RawPtrRequiresUnsafe,
             W001VariableAssignedNotUsed,
             W002DeadCode,
             W003UnreachableCode,
@@ -305,6 +338,8 @@ impl DiagCode {
             W006UnhandledResult,
             W007UnusedImport,
             W008Reserved,
+            W009CapturedCopyNeverRead,
+            W010LargeImplicitCopy,
             U001FeatureNotSupported,
             ICELX001,
             ICEP001,
@@ -348,6 +383,34 @@ impl DiagCode {
     }
 
     #[must_use]
+    /// The `snake_case` name `@Suppress`, `@Deny` and `@Forbid` use for a
+    /// warning; `None` for every other code.
+    pub fn lint_name(self) -> Option<&'static str> {
+        match self {
+            DiagCode::W001VariableAssignedNotUsed => Some("unused_variable"),
+            DiagCode::W002DeadCode => Some("dead_code"),
+            DiagCode::W003UnreachableCode => Some("unreachable_code"),
+            DiagCode::W004VariableShadowing => Some("shadowing"),
+            DiagCode::W005UnnecessaryMutability => Some("unnecessary_mut"),
+            DiagCode::W006UnhandledResult => Some("unhandled_result"),
+            DiagCode::W007UnusedImport => Some("unused_import"),
+            DiagCode::W009CapturedCopyNeverRead => Some("captured_copy_never_read"),
+            DiagCode::W010LargeImplicitCopy => Some("large_implicit_copy"),
+            _ => None,
+        }
+    }
+
+    /// Resolves a warning by its `snake_case` lint name or by its diagnostic code (e.g. `"W006"`).
+    ///
+    /// Returns `Some(code)` if the name or code matches a known warning, or `None` otherwise.
+    #[must_use]
+    pub fn from_lint_name_or_code(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|code| {
+            code.lint_name()
+                .is_some_and(|lint| lint == name || code.as_str() == name)
+        })
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             DiagCode::LX001UnterminatedString => "LX001",
@@ -384,6 +447,7 @@ impl DiagCode {
             DiagCode::N019CyclicReExport => "N019",
             DiagCode::N020ModuleDeclarationMismatch => "N020",
             DiagCode::N021DuplicateFunctionSymbol => "N021",
+            DiagCode::N022OrPatternBinding => "N022",
             DiagCode::T001CannotInferType => "T001",
             DiagCode::T002IncompatibleAssignment => "T002",
             DiagCode::T003IncompatibleCallArg => "T003",
@@ -430,6 +494,9 @@ impl DiagCode {
             DiagCode::T048InvalidArrayRepeat => "T048",
             DiagCode::T049InvalidFfiExport => "T049",
             DiagCode::T099RequiresOperatingSystem => "T099",
+            DiagCode::T100BorrowedCallbackEscapes => "T100",
+            DiagCode::T101StaticWithoutDataImage => "T101",
+            DiagCode::T102TypedHole => "T102",
             DiagCode::L001LoweringUnresolvedSymbol => "L001",
             DiagCode::G001GenericInstantiationCycle => "G001",
             DiagCode::G002GenericInstantiationLimit => "G002",
@@ -448,6 +515,10 @@ impl DiagCode {
             DiagCode::O013ExternRequiresUnsafe => "O013",
             DiagCode::O014FreeRequiresUnsafe => "O014",
             DiagCode::O015MoveOutOfIndex => "O015",
+            DiagCode::O016MoveOutOfReference => "O016",
+            DiagCode::O017StaticMutRequiresUnsafe => "O017",
+            DiagCode::O018MoveOutOfDestructor => "O018",
+            DiagCode::O019RawPtrRequiresUnsafe => "O019",
             DiagCode::W001VariableAssignedNotUsed => "W001",
             DiagCode::W002DeadCode => "W002",
             DiagCode::W003UnreachableCode => "W003",
@@ -456,6 +527,8 @@ impl DiagCode {
             DiagCode::W006UnhandledResult => "W006",
             DiagCode::W007UnusedImport => "W007",
             DiagCode::W008Reserved => "W008",
+            DiagCode::W009CapturedCopyNeverRead => "W009",
+            DiagCode::W010LargeImplicitCopy => "W010",
             DiagCode::U001FeatureNotSupported => "U001",
             DiagCode::ICELX001 => "ICE-LX-001",
             DiagCode::ICEP001 => "ICE-P-001",

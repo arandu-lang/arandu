@@ -176,7 +176,8 @@ impl<'a> FuncTranslator<'a> {
             self.code.push(Instruction::I32Store8(wasm_encoder::MemArg {
                 offset: 0,
                 align: 0,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             }));
         }
         self.code.push(Instruction::LocalGet(self.scratch_b));
@@ -345,10 +346,7 @@ impl<'a> FuncTranslator<'a> {
     /// Strip one pointer/ref layer from a `TypeId`.
     pub(super) fn strip_ref(&self, ty: TypeId) -> Option<TypeId> {
         match self.interner.resolve(ty) {
-            ArType::Ptr(inner)
-            | ArType::Ref(inner)
-            | ArType::RefMut(inner)
-            | ArType::Nullable(inner) => Some(inner),
+            ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => Some(inner),
             _ => None,
         }
     }

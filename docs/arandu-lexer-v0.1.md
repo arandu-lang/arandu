@@ -537,6 +537,9 @@ IDENT_VALUE(user) SAFE_DOT IDENT_VALUE(name) NULL_COALESCE STRING_START STRING_T
 The grammar uses `stmt_end = ";"`, but source files do not require semicolons.
 
 The lexer inserts `SEMICOLON(inserted=true)` at a newline or EOF when the previous significant token can end a statement or expression.
+Because `>` and `>>` also close generic types, they end a statement at EOF and
+before a closing brace or a new declaration/statement starter. A newline after
+`x >` or `x >>` followed by an operand still continues the expression.
 
 Tokens that can end a statement:
 

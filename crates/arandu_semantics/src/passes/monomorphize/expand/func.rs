@@ -129,6 +129,13 @@ pub(super) fn specialize_func(
     if tc.symbols.tooling_entrypoints.contains(&key.symbol) {
         tc.symbols_mut().tooling_entrypoints.insert(new_func_sym);
     }
+    if tc.symbols.get(key.symbol).lang_item == Some(arandu_middle::symbol_table::LangItem::BlackBox)
+    {
+        tc.symbols_mut().set_lang_item(
+            new_func_sym,
+            arandu_middle::symbol_table::LangItem::BlackBox,
+        );
+    }
 
     // Subst and specialized return type
     let subst = build_subst_ids(&params_list, key.type_args, &tc.type_info.type_interner);

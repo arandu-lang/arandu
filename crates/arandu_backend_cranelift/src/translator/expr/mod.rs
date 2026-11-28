@@ -7,69 +7,13 @@ pub(super) mod memory;
 pub(super) mod ops;
 mod simd;
 
-use arandu_middle::amir::{AmirConstant, AmirOperand, AmirRvalue};
+use arandu_middle::amir::{AmirOperand, AmirRvalue};
 use arandu_middle::types::ArType;
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::FunctionTranslator;
 
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
-    /// Box a scalar into a heap cell for `T?` (null-or-pointer ABI).
-    fn box_nullable_scalar(&mut self, val: Value, inner: &ArType) -> Value {
-        let Some(malloc_id) = self.malloc_func_id() else {
-            return self.poison_i32();
-        };
-        let malloc_ref = self
-            .module
-            .declare_func_in_func(malloc_id, self.builder.func);
-        let layout = self.checked_layout(inner);
-        let size = self
-            .builder
-            .ins()
-            .iconst(self.ptr_type, layout.size.max(1) as i64);
-        let call = self.builder.ins().call(malloc_ref, &[size]);
-        let ptr = self.builder.inst_results(call)[0];
-        self.trap_if_null(ptr);
-        self.builder
-            .ins()
-            .store(cranelift_codegen::ir::MemFlagsData::new(), val, ptr, 0);
-        ptr
-    }
-
-    /// Copy an inline aggregate into a fresh heap box for a `T?` handle. The
-    /// value's storage may be a stack slot of this frame, which a returned or
-    /// stored handle would outlive.
-    fn box_nullable_aggregate(&mut self, val: Value, inner: &ArType) -> Value {
-        let (Some(malloc_id), Some(memcpy_id)) = (self.malloc_func_id(), self.memcpy_func_id())
-        else {
-            return self.poison_i32();
-        };
-        let malloc_ref = self
-            .module
-            .declare_func_in_func(malloc_id, self.builder.func);
-        let size = self.checked_layout(inner).size.max(1) as i64;
-        let size = self.builder.ins().iconst(self.ptr_type, size);
-        let call = self.builder.ins().call(malloc_ref, &[size]);
-        let ptr = self.builder.inst_results(call)[0];
-        self.trap_if_null(ptr);
-        let memcpy_ref = self
-            .module
-            .declare_func_in_func(memcpy_id, self.builder.func);
-        self.builder.ins().call(memcpy_ref, &[ptr, val, size]);
-        ptr
-    }
-
-    /// Load a boxed scalar from a non-null `T?` handle.
-    fn unbox_nullable_scalar(&mut self, handle: Value, inner: &ArType) -> Value {
-        let clif = match crate::types::clif_type(inner, self.ptr_type) {
-            crate::types::ClifType::Concrete(t) => t,
-            crate::types::ClifType::Void => return self.poison_i32(),
-        };
-        self.builder
-            .ins()
-            .load(clif, cranelift_codegen::ir::MemFlagsData::new(), handle, 0)
-    }
-
     pub(super) fn translate_rvalue(
         &mut self,
         rvalue: &AmirRvalue,
@@ -78,64 +22,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     ) -> Value {
         if self.error.is_some() {
             return self.poison_i32();
-        }
-
-        // ── Nullable handle ABI ──────────────────────────────────────────
-        // `T?` is always a pointer: null = nil; non-null = object ptr or
-        // boxed scalar. Box/unbox keeps `int? = 0` distinct from `nil`.
-        if let Some(ArType::Nullable(inner_id)) = expected_ar_type {
-            let inner = self.type_info.type_interner().resolve(*inner_id);
-            if matches!(
-                rvalue,
-                AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil))
-            ) {
-                return self.builder.ins().iconst(self.ptr_type, 0);
-            }
-            // Already a nullable handle (copy/move or nested) → pass through.
-            if let AmirRvalue::Use(op) = rvalue {
-                let op_ty = self.get_operand_ar_type(op);
-                if matches!(op_ty, ArType::Nullable(_)) {
-                    return self.translate_operand(op, Some(self.ptr_type));
-                }
-            }
-            // A projection already yields the field, element or payload at its
-            // own type, which here is the `T?` handle itself.
-            if matches!(
-                rvalue,
-                AmirRvalue::FieldAccess { .. }
-                    | AmirRvalue::IndexAccess { .. }
-                    | AmirRvalue::Load(_)
-                    | AmirRvalue::EnumPayload { .. }
-            ) {
-                return self.translate_rvalue_inner(rvalue, Some(self.ptr_type), expected_ar_type);
-            }
-            // Produce the inner value, then box scalars.
-            let inner_clif = match crate::types::clif_type(&inner, self.ptr_type) {
-                crate::types::ClifType::Concrete(t) => Some(t),
-                crate::types::ClifType::Void => None,
-            };
-            let raw = self.translate_rvalue_inner(rvalue, inner_clif, Some(&inner));
-            if inner.needs_nullable_box() {
-                return self.box_nullable_scalar(raw, &inner);
-            }
-            if self.is_inline_aggregate_ty(&inner) {
-                return self.box_nullable_aggregate(raw, &inner);
-            }
-            return raw;
-        }
-
-        // Unbox when assigning a `T?` handle into a non-nullable `T` (e.g. `??`).
-        if let AmirRvalue::Use(op) = rvalue {
-            let op_ty = self.get_operand_ar_type(op);
-            if let ArType::Nullable(inner_id) = &op_ty {
-                let inner = self.type_info.type_interner().resolve(*inner_id);
-                if expected_ar_type.is_none_or(|e| !matches!(e, ArType::Nullable(_)))
-                    && inner.needs_nullable_box()
-                {
-                    let handle = self.translate_operand(op, Some(self.ptr_type));
-                    return self.unbox_nullable_scalar(handle, &inner);
-                }
-            }
         }
 
         let mut val = self.translate_rvalue_inner(rvalue, expected_ty, expected_ar_type);
@@ -176,7 +62,21 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             | AmirRvalue::VectorSplat { .. }
             | AmirRvalue::VectorShuffle { .. }
             | AmirRvalue::VectorExtractLane { .. }
-            | AmirRvalue::VectorInsertLane { .. } => self.translate_vector(rvalue, expected_ty),
+            | AmirRvalue::VectorInsertLane { .. }
+            | AmirRvalue::VectorBitmask { .. }
+            | AmirRvalue::VectorLoadUnaligned { .. } => self.translate_vector(rvalue, expected_ty),
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let cond =
+                    self.translate_operand(condition, Some(cranelift_codegen::ir::types::I8));
+                let arm_true = self.translate_typed_operand(if_true, expected_ty, expected_ar_type);
+                let arm_false =
+                    self.translate_typed_operand(if_false, expected_ty, expected_ar_type);
+                self.builder.ins().select(cond, arm_true, arm_false)
+            }
             AmirRvalue::Use(op) => {
                 let val = self.translate_typed_operand(op, expected_ty, expected_ar_type);
                 let op_ty = self.get_operand_ar_type(op);
@@ -233,7 +133,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         ArType::Ptr(_)
                             | ArType::Ref(_)
                             | ArType::RefMut(_)
-                            | ArType::Nullable(_)
                             | ArType::Named(_, _)
                             | ArType::Array(_, _)
                             | ArType::Tuple(_)
@@ -333,6 +232,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 .iconst(self.ptr_type, local.as_usize() as i64),
             AmirRvalue::Len(op) => self.translate_len(op, expected_ty),
             AmirRvalue::Alloc(op) => self.translate_alloc(op),
+            AmirRvalue::ArenaAlloc { size, align, .. } => self.translate_arena_alloc(*size, *align),
+            AmirRvalue::ArenaCheckpoint => self.translate_arena_checkpoint(),
+            AmirRvalue::StaticAddr(symbol) => self.translate_static_addr(*symbol),
             AmirRvalue::CoroutineReady {
                 value,
                 payload_ty,

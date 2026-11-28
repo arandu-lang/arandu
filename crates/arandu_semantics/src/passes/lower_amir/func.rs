@@ -70,10 +70,7 @@ pub(crate) fn lower_func(
     // Return register is TempId(0) — span is the function header.
     let ret_ty = f.return_type;
     let ret_is_copy = tc.type_info.is_copy(ret_ty);
-    let ret_is_nullable = tc
-        .type_info
-        .type_interner
-        .with_type(ret_ty, |t| matches!(t, crate::types::ArType::Nullable(_)));
+    let ret_is_nullable = false;
     ctx.temps.push(AmirTemp {
         id: TempId(0),
         ty: ret_ty,
@@ -136,7 +133,7 @@ pub(crate) fn lower_func(
                 stmts
                     .last()
                     .is_some_and(|&sid| match hir.pool.stmt(sid).kind {
-                        crate::hir::HirStmtKind::Expr(_) => true,
+                        crate::hir::HirStmtKind::Expr(_) => returns_value,
                         // A trailing `match` is the value of a function that has one.
                         crate::hir::HirStmtKind::Match { .. } => returns_value && !f.is_async,
                         _ => false,
@@ -240,6 +237,7 @@ pub(crate) fn lower_func(
     func_diagnostics.extend(arandu_mir::move_checker::check_moves(
         &raw_func,
         &tc.symbols,
+        &*tc.type_info,
     ));
 
     // Restore into ctx for phi elimination / rewrite.
@@ -288,7 +286,7 @@ pub(crate) fn lower_func(
     // Drop obligations are part of the semantic AMIR inspected by M2. Inserting
     // them after borrow checking made O006 unreachable in the production
     // pipeline even though the checker itself implemented the rule.
-    arandu_mir::drop_elaborate::elaborate_drops(&mut amir_f, &*tc.type_info);
+    arandu_mir::drop_elaborate::elaborate_drops(&mut amir_f, &*tc.type_info, ctx.literal_pool);
 
     // A3.2: remaining absolute Ref/RefMut live into resume → O010.
     func_diagnostics.extend(arandu_mir::suspend_check::check_borrow_across_suspend(

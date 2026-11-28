@@ -34,7 +34,38 @@ impl<'a> Parser<'a> {
         if self.current().kind == TokenKind::LParen {
             return self.parse_group_or_lambda(start);
         }
+        if let Some(lambda) = self.try_parse_owning_arrow_lambda() {
+            return lambda;
+        }
         self.parse_prefix_dispatch(start)
+    }
+
+    /// `own (x) => …` / `move (x) => …`: an arrow lambda that moves its
+    /// captures. Anything else (a call of a function named `move`) is left
+    /// to the ordinary parse.
+    fn try_parse_owning_arrow_lambda(&mut self) -> Option<Result<ExprId, ParseError>> {
+        let owning = matches!(self.current().kind, TokenKind::KwOwn)
+            || (self.current().kind == TokenKind::IdentValue && self.current_text() == "move");
+        if !owning || self.tokens.get(self.pos + 1).map(|t| t.kind) != Some(TokenKind::LParen) {
+            return None;
+        }
+        let checkpoint = self.checkpoint();
+        self.advance();
+        let start = self.mark();
+        match self.parse_group_or_lambda(start) {
+            Ok(id) => {
+                if let ExprKind::Lambda { is_move, .. } = &mut self.pool.exprs[id.as_usize()] {
+                    *is_move = true;
+                    return Some(Ok(id));
+                }
+                checkpoint.rollback(self);
+                None
+            }
+            Err(_) => {
+                checkpoint.rollback(self);
+                None
+            }
+        }
     }
 
     fn parse_prefix_dispatch(&mut self, start: usize) -> Result<ExprId, ParseError> {
@@ -229,6 +260,16 @@ impl<'a> Parser<'a> {
                 let span = self.span_from_mark(start);
                 Ok(self.pool.alloc_expr(ExprKind::ByteString { bytes }, span))
             }
+            TokenKind::CString => {
+                let bytes: std::sync::Arc<[u8]> = self
+                    .current()
+                    .c_string_bytes(self.source)
+                    .unwrap_or_default()
+                    .into();
+                self.advance();
+                let span = self.span_from_mark(start);
+                Ok(self.pool.alloc_expr(ExprKind::CString { bytes }, span))
+            }
             TokenKind::Nil => {
                 self.advance();
                 let span = self.span_from_mark(start);
@@ -275,7 +316,8 @@ impl<'a> Parser<'a> {
                             break;
                         }
                         self.advance();
-                        if self.can_start_type() && self.parse_type().is_err() {
+                        let annotated = self.eat_name("COLON");
+                        if (annotated || self.can_start_type()) && self.parse_type().is_err() {
                             params_ok = false;
                             break;
                         }
@@ -299,6 +341,20 @@ impl<'a> Parser<'a> {
         } else {
             self.advance();
             let expr = self.parse_expr(0)?;
+            if self.at_kind_name("COMMA") {
+                // `(a, b)`: a tuple; a trailing comma is allowed.
+                let mut items = vec![expr];
+                while self.eat_name("COMMA") {
+                    if self.at_kind_name("RPAREN") {
+                        break;
+                    }
+                    items.push(self.parse_expr(0)?);
+                }
+                self.expect_name("RPAREN")?;
+                let span = self.span_from_mark(start);
+                let items = self.pool.alloc_expr_list(&items);
+                return Ok(self.pool.alloc_expr(ExprKind::Tuple { items }, span));
+            }
             self.expect_name("RPAREN")?;
             let span = self.span_from_mark(start);
             Ok(self.pool.alloc_expr(ExprKind::Group { expr }, span))
@@ -311,7 +367,12 @@ impl<'a> Parser<'a> {
     /// parsing the identifier as a type.
     fn ident_type_starts_type_led_expr(&self) -> bool {
         match self.tokens.get(self.pos + 1).map(|token| token.kind) {
-            Some(TokenKind::Dot) => true,
+            // `PAIR.0` reads an element of a value (a `static mut`); a type
+            // has no member named by a number.
+            Some(TokenKind::Dot) => !self
+                .tokens
+                .get(self.pos + 2)
+                .is_some_and(|token| matches!(token.kind, TokenKind::IntDec | TokenKind::Float)),
             Some(TokenKind::LBrace) => {
                 match self.tokens.get(self.pos + 2).map(|token| token.kind) {
                     Some(TokenKind::RBrace) => true,

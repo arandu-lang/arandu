@@ -50,7 +50,12 @@ pub(super) fn process_file(
             }
         },
         "check" => {
-            let artifacts = pipeline_lower(&db, source_file, &filepath);
+            let artifacts = pipeline_lower(
+                &db,
+                source_file,
+                &filepath,
+                project_flags.warnings_as_errors,
+            );
             if !project_flags.quiet
                 && (project_flags.verbose || explain)
                 && let Some(log) = db.rebuild_log()
@@ -69,7 +74,12 @@ pub(super) fn process_file(
             }
         }
         "hir" => {
-            let mut checked = parse_and_check(&db, source_file, &filepath);
+            let mut checked = parse_and_check(
+                &db,
+                source_file,
+                &filepath,
+                project_flags.warnings_as_errors,
+            );
             let mut hir = {
                 arandu_base::time_pass!("lower-hir");
                 match arandu_semantics::lower_to_hir(&mut checked.type_check, &checked.program) {
@@ -93,7 +103,12 @@ pub(super) fn process_file(
             }
         }
         "amir" => {
-            let artifacts = pipeline_lower(&db, source_file, &filepath);
+            let artifacts = pipeline_lower(
+                &db,
+                source_file,
+                &filepath,
+                project_flags.warnings_as_errors,
+            );
             if genref_report {
                 print_genref_report(&filepath, &artifacts);
             }
@@ -131,7 +146,12 @@ pub(super) fn process_file(
             if let Err(failure) = ensure_host_jit_layout(data_layout) {
                 finish(Err(failure));
             }
-            let artifacts = pipeline_lower(&db, source_file, &filepath);
+            let artifacts = pipeline_lower(
+                &db,
+                source_file,
+                &filepath,
+                project_flags.warnings_as_errors,
+            );
             if genref_report {
                 print_genref_report(&filepath, &artifacts);
             }
@@ -202,7 +222,12 @@ pub(super) fn process_file(
             finish(result);
         }
         "emit-c" => {
-            let artifacts = pipeline_lower(&db, source_file, &filepath);
+            let artifacts = pipeline_lower(
+                &db,
+                source_file,
+                &filepath,
+                project_flags.warnings_as_errors,
+            );
             if genref_report {
                 print_genref_report(&filepath, &artifacts);
             }
@@ -216,18 +241,22 @@ pub(super) fn process_file(
             let amir = amir_owned.as_ref().unwrap_or(&artifacts.amir);
 
             arandu_base::time_pass!("emit-c");
-            let c_src = arandu_backend_c::emit_c(
+            let c_src = arandu_backend_c::emit_c_with_context(
                 amir,
                 type_check.symbols.as_ref(),
                 type_check.type_info.as_ref(),
-                &type_check.type_info.type_interner,
                 data_layout,
             )
             .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath));
             print!("{c_src}");
         }
         "emit-llvm" => {
-            let artifacts = pipeline_lower(&db, source_file, &filepath);
+            let artifacts = pipeline_lower(
+                &db,
+                source_file,
+                &filepath,
+                project_flags.warnings_as_errors,
+            );
             if genref_report {
                 print_genref_report(&filepath, &artifacts);
             }
@@ -249,7 +278,12 @@ pub(super) fn process_file(
             print!("{ir}");
         }
         "emit-wasm" => {
-            let artifacts = pipeline_lower(&db, source_file, &filepath);
+            let artifacts = pipeline_lower(
+                &db,
+                source_file,
+                &filepath,
+                project_flags.warnings_as_errors,
+            );
             if genref_report {
                 print_genref_report(&filepath, &artifacts);
             }
@@ -299,7 +333,12 @@ pub(super) fn process_file(
                 });
         }
         "emit-component" => {
-            let artifacts = pipeline_lower(&db, source_file, &filepath);
+            let artifacts = pipeline_lower(
+                &db,
+                source_file,
+                &filepath,
+                project_flags.warnings_as_errors,
+            );
             if genref_report {
                 print_genref_report(&filepath, &artifacts);
             }

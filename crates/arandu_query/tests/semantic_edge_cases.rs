@@ -269,42 +269,26 @@ fn bool_relational_ge_rejected() {
     );
 }
 
-// ── 7. Relational Comparisons on String Rejected (T005) ─────────────
+// ── 7. Relational Comparisons on String Accepted (Onda D.1) ─────────
 
 #[test]
-fn str_relational_lt_rejected() {
-    assert_has_diag_with_hint(
-        "func f(a: str, b: str): bool { return a < b }",
-        DiagCode::T005OperatorNotApplicable,
-        "string",
-    );
+fn str_relational_lt_accepted() {
+    assert_ok("func f(a: str, b: str): bool { return a < b }");
 }
 
 #[test]
-fn str_relational_le_rejected() {
-    assert_has_diag_with_hint(
-        "func f(a: str, b: str): bool { return a <= b }",
-        DiagCode::T005OperatorNotApplicable,
-        "string",
-    );
+fn str_relational_le_accepted() {
+    assert_ok("func f(a: str, b: str): bool { return a <= b }");
 }
 
 #[test]
-fn str_relational_gt_rejected() {
-    assert_has_diag_with_hint(
-        "func f(a: str, b: str): bool { return a > b }",
-        DiagCode::T005OperatorNotApplicable,
-        "string",
-    );
+fn str_relational_gt_accepted() {
+    assert_ok("func f(a: str, b: str): bool { return a > b }");
 }
 
 #[test]
-fn str_relational_ge_rejected() {
-    assert_has_diag_with_hint(
-        "func f(a: str, b: str): bool { return a >= b }",
-        DiagCode::T005OperatorNotApplicable,
-        "string",
-    );
+fn str_relational_ge_accepted() {
+    assert_ok("func f(a: str, b: str): bool { return a >= b }");
 }
 
 // ── 8. Relational Comparisons on Orderable Types Accepted ───────────

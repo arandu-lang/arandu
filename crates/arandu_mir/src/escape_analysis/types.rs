@@ -25,12 +25,24 @@ pub struct EscapeEvent {
 }
 
 /// Options for one function's escape check.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EscapeCheckOptions {
     /// From `@NoFallback` on the function (G2 opt-in).
     pub no_fallback: bool,
     /// Provenance exported by type checking for a borrowed return.
     pub return_borrow: Option<ReturnBorrowSummary>,
+    /// Target layout used by Dual-Locus promotion size/alignment checks.
+    pub data_layout: arandu_middle::layout::DataLayout,
+}
+
+impl Default for EscapeCheckOptions {
+    fn default() -> Self {
+        Self {
+            no_fallback: false,
+            return_borrow: None,
+            data_layout: arandu_middle::layout::DataLayout::ptr_width(8),
+        }
+    }
 }
 
 impl EscapeCheckOptions {

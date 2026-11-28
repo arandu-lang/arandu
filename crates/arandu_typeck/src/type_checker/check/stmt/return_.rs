@@ -45,7 +45,29 @@ pub(super) fn check_return_stmt(
         checker.intern(ArType::Void)
     } else if values.len() == 1 {
         // T2.2: return type is the expected context for `.Ok` / `.None` sugar.
-        super::super::super::synth::synth_expr_expected(checker, values[0], Some(current_ret_id))
+        let value_file_id = checker.pool.expr_span(values[0]).file_id;
+        let annotation_span = checker
+            .ctx
+            .current_return_decl_span()
+            .filter(|span| span.start != span.end && span.file_id == value_file_id);
+        let direct_literal = matches!(
+            checker.pool.expr(values[0]),
+            arandu_parser::ast_pool::ExprKind::Int { .. }
+        );
+        checker.with_expected_type_span(
+            if direct_literal {
+                annotation_span
+            } else {
+                None
+            },
+            |checker| {
+                super::super::super::synth::synth_expr_expected(
+                    checker,
+                    values[0],
+                    Some(current_ret_id),
+                )
+            },
+        )
     } else {
         let tys_vec: Vec<TypeId> = values
             .iter()
@@ -70,6 +92,25 @@ pub(super) fn check_return_stmt(
         );
     }
 
+    // A `str` view of a `String` built in the function would outlive it.
+    if matches!(
+        current_ret,
+        ArType::Primitive(arandu_middle::types::Primitive::Str)
+    ) && crate::type_checker::synth::expr_text::is_string(checker, &val_ty)
+    {
+        let declared = checker.ctx.current_return_decl_span().unwrap_or(span);
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T004IncompatibleReturnType,
+                "cannot return a `str` view of a `String` owned by this function",
+                span,
+            )
+            .with_primary_label("the `String` is freed when the function returns")
+            .with_label(declared, "the function returns a `str` view")
+            .with_hint("return the owned text: declare the result as `String`"),
+        );
+        return;
+    }
     if !checker.is_assignable_return_type(&current_ret, &val_ty) {
         checker.add_subtype_constraint(
             current_ret,

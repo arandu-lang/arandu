@@ -69,7 +69,7 @@ Func main() -> bool
     _4 = ge 0, 0
     branch _4 => bb2, else bb1
   bb1:
-    unreachable
+    trap "range out of bounds"
   bb2:
     _5 = 0
     _6 = 4

@@ -4,6 +4,7 @@ mod condition;
 mod ctfe_block;
 mod ctfe_root;
 mod func;
+mod lint_levels;
 mod place;
 mod prelude;
 mod program;
@@ -12,9 +13,9 @@ mod stmt;
 mod validate;
 pub(crate) use validate::{validate_const_arguments, validate_const_result};
 
-pub use block::{check_block, check_block_tail};
+pub use block::{block_diverges, check_block, check_block_tail, expr_diverges};
 pub use condition::check_condition;
-pub(crate) use ctfe_block::check_thread_closure_block;
+pub(crate) use ctfe_block::check_closure_block;
 pub use ctfe_block::{CtfeBlockType, check_ctfe_block};
 pub use ctfe_root::{
     CtfeCapture, CtfeInitialRoot, check_ctfe_root, check_ctfe_root_with_substitution,

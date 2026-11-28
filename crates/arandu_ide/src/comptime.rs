@@ -66,6 +66,7 @@ fn present_value(value: &ConstValue) -> String {
         }
         ConstValue::Bytes(value) => format!("{} immutable bytes", value.len()),
         ConstValue::Aggregate(value) => format!("aggregate with {} elements", value.values().len()),
+        ConstValue::TypeDesc(desc) => format!("type {}", desc.canonical_path),
     }
 }
 

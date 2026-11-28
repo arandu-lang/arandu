@@ -301,7 +301,7 @@ pub fn file_typing(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<TypeChe
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
     query = "item_source_spans", file = ?file.file_id(db),
 ))]
-pub(super) fn item_source_spans(
+pub(crate) fn item_source_spans(
     db: &dyn ArandCompilerDb,
     file: SourceFile,
 ) -> Arc<rustc_hash::FxHashMap<arandu_middle::SymbolId, arandu_middle::Span>> {
@@ -464,8 +464,8 @@ pub(super) fn compose_items(
     }
 
     let mut symbols = Arc::clone(&signatures.symbols);
-    if !merged_info.thread_captures.is_empty() {
-        Arc::make_mut(&mut merged_info).materialize_thread_captures(Arc::make_mut(&mut symbols));
+    if !merged_info.closures.is_empty() || !merged_info.closure_temporaries.is_empty() {
+        Arc::make_mut(&mut merged_info).materialize_closures(Arc::make_mut(&mut symbols));
     }
 
     let res = TypeCheckResult {
@@ -526,12 +526,20 @@ pub fn ide_type_check(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Type
         arandu_parser::syntax::lower_syntax_to_program_recovering(tree.value.as_ref(), file_id)
             .program;
 
-    let locals = arandu_resolve::resolve_local_in_module_with_poll(
+    let mut locals = arandu_resolve::resolve_local_in_module_with_poll(
         file_id,
         &program,
         super::symbols::implicit_module(db, file).as_deref(),
         || db.unwind_if_revision_cancelled(),
     );
+    if db
+        .as_db_impl()
+        .is_some_and(|db| db.is_trusted_stdlib_source(file))
+    {
+        Arc::make_mut(&mut locals.symbols).trusted_stdlib = true;
+    } else {
+        Arc::make_mut(&mut locals.symbols).clear_source_lang_items();
+    }
     let resolved = arandu_resolve::resolve_imports_and_bodies_with_poll(
         &arandu_resolve::SourceDbLoader(db.as_source_db()),
         &program,

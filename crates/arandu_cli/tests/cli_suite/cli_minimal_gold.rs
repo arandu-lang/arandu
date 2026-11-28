@@ -20,6 +20,77 @@ fn run_cli(args: &[&str]) -> std::process::Output {
         .expect("cli")
 }
 
+#[test]
+fn process_exit_preserves_host_status_width() {
+    for code in [-2, 300] {
+        let path = std::env::temp_dir().join(format!(
+            "arandu_process_exit_{}_{}.aru",
+            std::process::id(),
+            code
+        ));
+        std::fs::write(
+            &path,
+            format!(
+                "module tests.process_exit\nimport std.process as process\nfunc main(): int {{ process.exit({code}); return 0 }}\n"
+            ),
+        )
+        .expect("write process-exit fixture");
+        let output = run_cli(&["run", path.to_str().expect("UTF-8 temp path")]);
+
+        #[cfg(unix)]
+        let expected = Some(code & 0xff);
+        #[cfg(windows)]
+        let expected = Some(code);
+        #[cfg(not(any(unix, windows)))]
+        let expected = Some(code);
+
+        assert_eq!(
+            output.status.code(),
+            expected,
+            "process.exit({code}) returned stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        if Command::new("gcc")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            let c_source = run_cli(&["emit-c", path.to_str().expect("UTF-8 temp path")]);
+            assert!(
+                c_source.status.success(),
+                "C emission failed: {}",
+                String::from_utf8_lossy(&c_source.stderr)
+            );
+            let c_file = path.with_extension("c");
+            let binary = path.with_extension(if cfg!(windows) { "exe" } else { "bin" });
+            std::fs::write(&c_file, &c_source.stdout).expect("write emitted C");
+            let compile = Command::new("gcc")
+                .arg(&c_file)
+                .arg("-o")
+                .arg(&binary)
+                .args(arandu_middle::TargetSpec::for_host().cc_link_args())
+                .output()
+                .expect("compile emitted C");
+            assert!(
+                compile.status.success(),
+                "C compilation failed: {}",
+                String::from_utf8_lossy(&compile.stderr)
+            );
+            let c_run = Command::new(&binary).output().expect("run emitted C");
+            let _ = std::fs::remove_file(c_file);
+            let _ = std::fs::remove_file(binary);
+            assert_eq!(
+                c_run.status.code(),
+                expected,
+                "C process.exit({code}) stderr: {}",
+                String::from_utf8_lossy(&c_run.stderr)
+            );
+        }
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 struct Gold {
     path: &'static str,
     /// Expected process exit code from `run` (main return value).

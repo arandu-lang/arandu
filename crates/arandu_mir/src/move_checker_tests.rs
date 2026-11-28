@@ -31,7 +31,7 @@ fn local(id: usize, ty: ArType) -> AmirLocal {
 
 fn temp(id: usize, ty: ArType) -> AmirTemp {
     let is_copy = ty.is_copy_v01();
-    let is_nullable = matches!(ty, crate::types::ArType::Nullable(_));
+    let is_nullable = false;
     AmirTemp {
         id: TempId::from_usize(id),
         ty: intern_ty(ty),
@@ -98,7 +98,7 @@ fn duplicate_destroy_reports_double_free() {
         stmts,
     );
     let symbols = SymbolTable::new(0);
-    let diags = check_moves(&func, &symbols);
+    let diags = check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default());
 
     assert!(
         diags
@@ -165,7 +165,7 @@ fn recursive_field_drop_then_root_storage_cleanup_is_not_double_free() {
     );
     let symbols = SymbolTable::new(0);
 
-    assert!(check_moves(&func, &symbols).is_empty());
+    assert!(check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default()).is_empty());
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn local_diag_span_prefers_use_over_decl() {
         Vec::new(),
         stmts,
     );
-    let diags = check_moves(&func, &symbols);
+    let diags = check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default());
     let d = diags
         .iter()
         .find(|d| d.code == DiagCode::O005DoubleFree)
@@ -210,7 +210,7 @@ fn available_local_no_error() {
         stmts,
     );
     let symbols = SymbolTable::new(0);
-    assert!(check_moves(&func, &symbols).is_empty());
+    assert!(check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default()).is_empty());
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn use_after_move_reports_error() {
         stmts,
     );
     let symbols = SymbolTable::new(0);
-    let diags = check_moves(&func, &symbols);
+    let diags = check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default());
     assert!(diags.iter().any(|d| d.code == DiagCode::O001UseAfterMove));
 }
 
@@ -313,12 +313,8 @@ fn move_on_one_branch_maybe_moved() {
         stmts,
     );
     let symbols = SymbolTable::new(0);
-    let diags = check_moves(&func, &symbols);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == DiagCode::O007InconsistentMoveBetweenBranches)
-    );
+    let diags = check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default());
+    assert!(diags.iter().any(|d| d.code == DiagCode::O001UseAfterMove));
 }
 
 #[test]
@@ -344,7 +340,7 @@ fn copy_type_move_does_not_mark_origin_moved() {
     );
     let symbols = SymbolTable::new(0);
 
-    assert!(check_moves(&func, &symbols).is_empty());
+    assert!(check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default()).is_empty());
 }
 
 #[test]
@@ -424,7 +420,7 @@ fn branch_arms_both_moving_same_local_do_not_conflict() {
         },
     ];
     let symbols = SymbolTable::new(0);
-    let diags = check_moves(&func, &symbols);
+    let diags = check_moves(&func, &symbols, &arandu_typeck::TypeInfo::default());
     assert!(
         diags.is_empty(),
         "expected no move errors when both branch arms move to their target, got: {:?}",

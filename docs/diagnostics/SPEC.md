@@ -1,7 +1,7 @@
 ---
 version: 0.0.1
 last_revised: 2026-06
-compiler_version: arandu 0.2.0
+compiler_version: arandu 0.3.0
 ---
 
 # Especificação e Catálogo de Diagnósticos de Erro do Arandu
@@ -83,10 +83,24 @@ O Arandu define formalmente quatro níveis de severidade para os diagnósticos d
 > **Comportamento de `-Werror`**: Todos os diagnósticos de severidade `Warning` podem ser promovidos a `Error` via flag `-Werror` (ou configuração equivalente em nível de projeto). As severidades `Note` e `Hint` nunca são promovíveis.
 
 #### Diretivas de Controle Estilo Java/Kotlin:
-As configurações de severidade de lints locais seguem anotações no estilo Java/Kotlin, aplicáveis a funções, structs, módulos ou blocos de código:
-*   `@Suppress("nome_lint")` / `@Suppress("warnings")`: Ignora avisos específicos ou todos os warnings naquele escopo.
-*   `@Deny("nome_lint")`: Promove um aviso específico para `Error` fatal naquele escopo.
-*   `@Forbid("nome_lint")`: Proíbe qualquer sub-escopo de anular a restrição (impede `@Suppress` aninhado).
+As severidades locais seguem anotações no estilo Java/Kotlin, aplicadas a uma função ou método e válidas para os warnings do seu corpo:
+*   `@Suppress("nome_lint", ...)` / `@Suppress("warnings")`: remove warnings específicos (aceita múltiplos argumentos ou repetição) ou todos.
+*   `@Deny("nome_lint", ...)`: torna warnings específicos em `Error`.
+*   `@Forbid("nome_lint", ...)`: como `@Deny`, e um `@Suppress` do mesmo lint na mesma declaração é `N014`.
+
+O lint é nomeado pelo nome `snake_case` ou pelo código (`"W006"`); a precedência é `Forbid` > `Deny` > `Suppress`, como no Rust. Um nome que não é de warning é `N014`. Warnings fora de um corpo (como `unused_import`) não têm declaração que carregue um nível.
+
+| Código | Nome do lint |
+| --- | --- |
+| `W001` | `unused_variable` |
+| `W002` | `dead_code` |
+| `W003` | `unreachable_code` |
+| `W004` | `shadowing` |
+| `W005` | `unnecessary_mut` |
+| `W006` | `unhandled_result` |
+| `W007` | `unused_import` |
+| `W009` | `captured_copy_never_read` |
+| `W010` | `large_implicit_copy` |
 
 ```arandu
 @Suppress("shadowing")
@@ -99,17 +113,19 @@ func exemplo() {
 ```
 
 ### 2.3 Estrutura Programática Interna (Diagnostic Model)
-Para garantir que renderizadores de terminal, exportadores de arquivo JSON/SARIF e servidores LSP consumam a mesma fonte de verdade, o compilador Arandu utiliza a seguinte estrutura interna tipada no crate `arandu_diagnostics`:
+A fonte de verdade é `Diagnostic` em `crates/arandu_diagnostics/src/lib.rs`. Renderizadores de terminal, exportadores estruturados e servidores LSP consomem a mesma struct:
 
 ```rust
 pub struct Diagnostic {
-    pub code: String,                // Ex: "T018", "ICE-T-001"
-    pub severity: Severity,          // Error, Warning, Note, Hint
-    pub kind: DiagnosticKind,        // User, InternalCompilerError
-    pub message: String,             // Mensagem textual de cabeçalho
-    pub labels: Vec<Label>,          // Spans de código destacados com texto
-    pub notes: Vec<String>,          // Notas adicionais de contexto
-    pub hints: Vec<Hint>,            // Sugestões inteligentes de correção
+    pub code: DiagCode,                     // Variante tipada; as_str() produce "T018"
+    pub severity: Severity,                 // Error, Warning, Note, Hint
+    pub kind: DiagnosticKind,               // User, InternalCompilerError
+    pub message: String,                    // Mensagem textual de cabeçalho
+    pub span: arandu_base::Span,            // Span real no arquivo-fonte
+    pub primary_label: Option<Label>,       // Label principal do renderer
+    pub labels: Vec<Label>,                 // Spans adicionais destacados
+    pub notes: Vec<String>,                 // Contexto adicional
+    pub hints: Vec<Hint>,                   // Sugestões e quick fixes
 }
 
 pub enum Severity {
@@ -125,50 +141,32 @@ pub enum DiagnosticKind {
 }
 
 pub struct Label {
-    pub span: arandu_lexer::Span,
+    pub span: arandu_base::Span,
     pub message: String,
 }
 
 pub struct Hint {
     pub message: String,
-    pub replacement: Option<CodeReplacement>, // Dica de autocorreção rápida (Quick-fix)
+    pub replacement: Option<CodeReplacement>, // Quick fix estruturado, nunca parseado de texto
 }
 ```
 
 > [!NOTE]
-> **ICE (Internal Compiler Error)**: Um ICE é classificado internamente como `DiagnosticKind::InternalCompilerError`, mas herda logicamente a severidade `Severity::Error` de forma a abortar imediatamente a execução, além de imprimir informações detalhadas de diagnóstico de infraestrutura.
+> **ICE (Internal Compiler Error)**: Um ICE é classificado como `DiagnosticKind::InternalCompilerError` e herda severidade `Error`, mas não exige documento em `docs/errors/`. A lista autoritativa de códigos é `DiagCode::ALL`.
 
-### 2.4 Registro Verificado Automaticamente via Build Script (`build.rs`)
-Para garantir escalabilidade e impedir que a documentação longa dos erros fique fora de sincronia ou que braços manuais gigantescos poluam a crate `arandu_diagnostics`, adotamos uma arquitetura automatizada baseada em `build.rs`:
+### 2.4 Registro de Explicações e Bijeção
+`build.rs` apenas incorpora os arquivos `docs/errors/*.md` existentes em `registry_gen.rs` e expõe `get_explanation(code) -> Option<&'static str>`. Ele **não valida** a bijeção; a variável `ARANDU_VALIDATE_DOCS` está deprecada.
+
+A validação 1:1 entre `DiagCode::ALL` (exceto ICEs) e `docs/errors/*.md` é feita por:
 
 ```text
-crates/arandu_diagnostics/
-  ├── build.rs             ← Escaneia docs/errors/ e gera registry_gen.rs em build-time
-  └── src/
-      ├── lib.rs
-      └── registry.rs      ← Inclui o arquivo gerado contendo o mapeamento de explicações
+cargo run --locked -p xtask -- check-diag-docs
 ```
 
-#### Mecanismo de Validação e Geração:
-1.  Durante a etapa de build, o `build.rs` lê o diretório `docs/errors/` e extrai todos os códigos documentados (arquivos no formato `[CÓDIGO].md`).
-2.  O script valida a **bijetividade (sincronia 1:1)** entre as variantes do enum `DiagCode` e os arquivos `.md` existentes. Se houver algum código declarado sem sua respectiva documentação em português (ou vice-versa), o build **falha imediatamente**, exibindo uma mensagem limpa:
-    ```text
-    error: missing documentation file docs/errors/T018.md for declared diagnostic code T018
-    ```
-3.  Se a validação passar, o script gera automaticamente o arquivo `registry_gen.rs` na pasta `OUT_DIR` com o seguinte padrão:
-    ```rust
-    // Código gerado automaticamente pelo build.rs - Não edite manualmente
-    pub fn get_explanation(code: &str) -> Option<&'static str> {
-        match code {
-            "T018" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/errors/T018.md"))),
-            "O001" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/errors/O001.md"))),
-            _ => None,
-        }
-    }
-    ```
+Um código declarado sem documento, ou um documento sem código correspondente, falha esse check — não o build. O comando `arandu explain <CODE>` consome o registry gerado e é a forma canônica de ler a explicação longa offline.
 
 ### 2.5 Extensões e Melhorias Futuras Planejadas
-*   **Recovery Diagnostics (Autocorreção)**: Sugestões acionáveis estruturadas no tipo `Hint::replacement` contendo as coordenadas exatas do código a ser alterado, permitindo que LSPs em editores apliquem quick-fixes automáticos.
+*   **Recovery Diagnostics (Autocorreção)**: Implementado. Sugestões acionáveis usam `Hint::replacement` com o span exato do token a ser alterado; CLI, miette e LSP compartilham a mesma apresentação e o editor aplica o quick fix sem parsear a mensagem.
 *   **Sinks SARIF / JSON**: Exportação estruturada para integração contínua (CI) e integração direta com o VS Code.
 *   **Ciclo de Vida de Códigos**: Introdução formal de atributos no catálogo para controlar a obsolescência de erros (`introduced_in`, `deprecated_in`, `removed_in`), impedindo que modificações quebrem parsers de logs legados.
 
@@ -239,6 +237,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **N019** | `cyclic re-export` | Error | `0.1.0` | A superfície exportada depende de um ciclo de re-exports. |
 | **N020** | `module declaration '{declared}' does not match this file's module '{expected}'` | Error | `0.2.0` | Uma fonte do pacote raiz declara um `module` diferente do módulo lógico do seu caminho (`<pacote>.<caminho>`; na entrada, o nome do pacote). O quick fix substitui a declaração. |
 | **N021** | `functions '{a}' and '{b}' map to the same native symbol '{symbol}'` | Error | `0.2.0` | Duas funções distintas do programa produzem o mesmo nome de símbolo nativo. Rejeitado antes do backend, em vez de virar ICE ou erro do linker. Dois `@Export` com o mesmo nome continuam `T049`. |
+| **N022** | `'{name}' is not bound in every alternative of the pattern` | Error | `0.3.0` | As alternativas de `p1 \| p2` precisam ligar os mesmos nomes: cada nome é uma única variável, com o mesmo tipo em todas (tipo diferente é T002), qualquer que seja a alternativa que casou. A guarda roda uma vez por alternativa. |
 
 ---
 
@@ -251,7 +250,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T003** | `incompatible argument: expected '{expected}', found '{found}'` | Error | `0.1.0` | Argumento incompatível; argumentos comptime exigem valor congelável admitido e tipo compatível. Inteiros assinados, bool e agregados Copy admitidos têm chaves estruturais; negativos não são rejeitados universalmente. |
 | **T004** | `incompatible return type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Valor incompatível com seu destino de retorno. Na função, a assinatura declarada; no bloco público `comptime`, retornos/cauda devem concordar com o destino local e todo caminho de saída deve produzir o valor exigido. Desde `0.1.11`, uma função com tipo de retorno que pode chegar ao fim do corpo sem `return` também é rejeitada. |
 | **T005** | `operator '{op}' is not applicable to type '{type}'` | Error | `0.1.0` | Tentativa de usar operador matemático ou lógico em tipos não suportados. |
-| **T006** | `type '{type}' is not nullable` | Error | `0.1.0` | Atribuição de `null` ou uso de operador de navegação segura em um tipo que não é explicitamente opcional/nulo. Desde `0.1.11`, também rejeita `T?` quando `T` possui recursos (`String`, `Vec<T>`): `T?` não tem drop e duplicaria o valor; use `Option<T>`. |
+| **T006** | `type '{type}' is not nullable` | Error | `0.1.0` | Atribuição de `nil` ou uso de acesso direto sem `?.` em um tipo que não é explicitamente opcional/ponteiro (`T?` / `Option<T>` / `ptr[T]`). Desde `0.3.0`, `T?` é açúcar sintático para `Option<T>`, funcionando inclusive para `String?` e `Vec<T>?`. |
 | **T007** | `type mismatch: 'if' and 'else' branches have incompatible types: '{then_ty}' and '{else_ty}'` | Error | `0.1.0` | As ramificações de uma expressão condicional `if/else` avaliam para tipos diferentes (Type Mismatch). |
 | **T008** | `type mismatch: match arm has type '{arm_ty}', expected '{expected_ty}'` | Error | `0.1.0` | Um braço do bloco `match` retorna um tipo inconsistente com a expressão esperada (Type Mismatch). |
 | **T009** | `condition is not a boolean: expected 'bool', found '{type}'` | Error | `0.1.0` | A expressão condicional de um `if` ou `while` não avalia para o tipo booleano primário. |
@@ -278,7 +277,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T030** | `field '{name}' is already declared in struct '{struct_name}'` | Error | `0.1.0` | Declaração de múltiplos campos com o mesmo nome na definição de um struct. |
 | **T031** | *[Reservado / Obsoleto]* | - | `0.1.0` | *Código reservado para mutação futura de valores sob referências somente-leitura.* |
 | **T032** | `await requires a coroutine value` | Error | `0.1.0` | O operando de `await` não é uma coroutine válida. |
-| **T033** | `indirect call is not supported` | Error | `0.1.0` | A chamada não possui um alvo direto suportado pelo contrato atual. |
+| **T033** | *[Reservado / Obsoleto]* | - | `0.1.0` | *Rejeitava chamada indireta até a 0.3.0; desde então um valor `(A) -> R` é chamado indiretamente (RFC 0032, L2).* |
 | **T034** | `cannot format value as str` | Error | `0.1.0` | O tipo não participa do contrato atual de apresentação textual. |
 | **T035** | `invalid @Destructor contract` | Error | `0.1.0` | O método anotado não é um destrutor consumidor válido ou o tipo já possui outro destrutor. |
 | **T036** | `invalid @Test contract` | Error | `0.1.0` | A função de teste não satisfaz o contrato síncrono, não genérico, sem parâmetros e com retorno `void` ou `Result<void, E>`. |
@@ -294,8 +293,11 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T046** | `compile-time arithmetic overflows or uses an invalid shift` | Error | `0.1.9` | Operação inteira fora da faixa ou deslocamento inválido durante CTFE. |
 | **T047** | `type has no concrete target layout` | Error | `0.1.9` | Layout indefinido ou excessivo no alvo de compilação. |
 | **T048** | `invalid array repetition` | Error | `0.1.9` | Repetição exige tamanho estático limitado e elementos Copy quando há duplicação. |
-| **T049** | `invalid FFI export` | Error | `0.1.11` | `@Export` exige função livre, não genérica e não `async`, com primitivos de largura fixa, ponteiros ou `void`; structs por valor e fatias ainda exigem classificador de ABI. |
-| **T099** | `The module '{module}' requires an underlying operating system, but target '{target}' is bare-metal.` | Error | `0.2.0` | `std.thread` e `std.fs` exigem SO. T049–T098 permanecem sem uso; o contrato freestanding fixou T099. |
+| **T049** | `invalid FFI export` | Error | `0.1.11` | `@Export` exige função livre, não genérica e não `async`, com primitivos de largura fixa, ponteiros ou `void`; structs por valor e fatias ainda exigem classificador de ABI. Desde a `0.3.0`, as declarações de `extern "C"` passam pelo mesmo classificador (`cannot pass … to C`). |
+| **T099** | `The module '{module}' requires an underlying operating system, but target '{target}' is bare-metal.` | Error | `0.2.0` | `std.thread` e `std.fs` exigem SO; desde a 0.3, também uma closure `own (A) -> R` com capturas, cujo ambiente usa o alocador do host. Operações de thread (`spawn`/`park`/`parkTimeout`/`unpark`) em `wasm32` sem threads também emitem `T099`. T050–T098 permanecem sem uso; o contrato freestanding fixou T099. |
+| **T100** | `borrowed callback of type '{type}' cannot escape the call that received it` | Error | `0.3.0` | Parâmetro `(A) -> R` é emprestado e não escapante: só pode ser chamado ou repassado a outro parâmetro de callback; retorno, campo, atribuição tipada ou argumento não-callback são rejeitados (RFC 0032, L1). |
+| **T101** | `the initial value of 'static mut {name}' has no static data image` | Error | `0.3.0` | O valor inicial de `static mut` vira uma imagem na seção de dados; `str`, fatias e arrays de texto apontam para objetos somente leitura da própria imagem (relocações). Só enums cujo tag mora num nicho do payload ou nos bits de um ponteiro não têm imagem. |
+| **T102** | `typed hole: expected '{type}'` | Error | `0.3.0` | Um `todo`, `todo()` ou `todo("motivo")` continua no programa. O diagnóstico traz o tipo esperado, o motivo e até cinco locais que o preencheriam, como quick fix não preferido. Bloqueia build, run, testes e CTFE; no editor aparece como informação, com dica inline do tipo. |
 
 ---
 
@@ -309,7 +311,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **O004** | `generational fallback: '{name}' escapes stack-limited borrow window` | Info / Error | `0.1.0` | Nota de fallback geracional/escape (G2/F2.3) — **não** conflito shared. Erro com `@NoFallback`/`--no-generational-fallback` e, desde `0.2.0`, quando o borrow seria promovido (payload `Copy` gravado em memória tipada como referência): referências são ponteiros crus em runtime, então o handle seria relido como ponteiro. |
 | **O005** | `double free detected for '{name}'` | Error | `0.1.0` | Análise estática do CFG detectou que o mesmo objeto sob ownership exclusiva seria destruído ou liberado mais de uma vez. |
 | **O006** | `cannot destroy '{name}' while borrowed` | Error | `0.1.0` | Destroy/free/drop com empréstimo ainda ativo (double-free estático; M2). |
-| **O007** | `inconsistent move status for '{name}' between branches` | Error | `0.1.0` | Uma variável é movida em uma ramificação condicional (ex: `if`), mas não na outra, deixando seu estado pós-bloco ambíguo. |
+| **O007** | `inconsistent move status for '{name}' between branches` | Error (Retired 0.3.0) | `0.1.0` | Aposentado em `0.3.0`: moves condicionais passam a usar drop flags em runtime no AMIR e usos pós-move condicional reportam `O001`. |
 | **O008** | `use of possibly uninitialized variable: '{name}'` | Error | `0.1.0` | Tentativa de ler uma variável local antes de garantir sua atribuição/inicialização em todos os caminhos do fluxo de controle. |
 | **O009** | `lifetime mismatch: lifetime of '{expected}' does not match lifetime of '{found}'` | Error | `0.1.0` | As restrições de tempo de vida de referências genéricas não conferem na passagem de argumentos ou atribuição. |
 | **O010** | `escape of borrowed value: returning reference to local variable '{name}'` | Error | `0.1.0` | Retorno de uma referência para um objeto alocado na pilha local da função corrente, o que causaria memória corrompida. |
@@ -318,6 +320,10 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **O013** | `` call to extern function requires an `unsafe` block `` | Error | `0.1.0` | Chamadas para funções `extern` e funções anotadas com `@Unsafe` exigem bloco `unsafe`. |
 | **O014** | `` `free` requires an `unsafe` block `` | Error | `0.1.0` | Desalocação manual de memória via `free` é operação insegura e exige bloco `unsafe`. |
 | **O015** | `cannot move a value with a destructor out of an indexed place` | Error | `0.1.11` | Mover um elemento com destrutor para fora de `arr[i]`, `slice[i]` ou `vec[i]` deixaria o dono destruindo o mesmo valor de novo. Empreste o elemento ou use uma operação que retire o valor (`pop`, `swap`). |
+| **O016** | `cannot move a value out of the reference '{name}'` | Error | `0.3.0` | Consumir um valor não-`Copy` alcançado por `ref`/`mut ref` (`*r`, `r.campo`, captura emprestada de closure) criaria um segundo dono: o original ainda o usa e destrói. Use o valor pela referência (método, campo `Copy`, `ref`) ou capture-o com `move`. |
+| **O017** | `` access to `static mut` requires an `unsafe` block `` | Error | `0.3.0` | Acesso ou mutação de variável global mutável (`static mut`) exige bloco `unsafe`. |
+| **O018** | `cannot move a part out of a value with a destructor: '{name}'` | Error | `0.3.0` | Mover um campo (ou payload ligado por padrão) de um valor cujo tipo tem `@Destructor` deixaria o destrutor rodar sobre um valor incompleto e destruiria a parte duas vezes (E0509 do Rust). Vale em `return`, `let`, argumento e `match`. Leia campos `Copy`, empreste a parte ou troque-a com `mem.replace`. |
+| **O019** | `raw pointer or unsafe cast operation requires an 'unsafe' block` | Error | `0.3.0` | Desreferência, leitura/escrita de campo ou índice, chamada de método do tipo apontado, aritmética em `ptr[T]`, conversão de `ref`/`mut ref` para `ptr[T]`, `Coroutine` para `ptr[u8]` ou cast de inteiro para parâmetro de tipo (`as T`) exigem bloco `unsafe` explícito. |
 
 
 ---
@@ -340,9 +346,11 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **W003** | `unreachable code after statement` | Warning | `0.1.0` | Trechos de código localizados logo após instruções de terminação incondicional (como `return`, `break` ou `continue`). |
 | **W004** | `variable shadowing: '{name}' shadows a variable defined in an outer scope` | Warning | `0.1.0` | Re-declaração de uma variável em um escopo filho que oculta a variável homônima do escopo pai. |
 | **W005** | `unnecessary mutability: variable '{name}' does not need to be mutable` | Warning | `0.1.0` | Variável declarada como `mut` mas que nunca sofreu reatribuições ou modificações mutáveis. |
-| **W006** | `unhandled result: value of type 'Result' must be checked or propagated` | Warning | `0.1.0` | Uma chamada que retorna `Result<T, E>` foi descartada silenciosamente. (Movido do antigo `T019`). |
+| **W006** | `Result value must be handled with \`?\` or \`value, err = f()\`` | Warning | `0.1.0` | Uma chamada que retorna `Result<T, E>` foi descartada silenciosamente. (Movido do antigo `T019`). |
 | **W007** | `unused import: '{name}'` | Warning | `0.1.0` | Um módulo ou símbolo foi importado no topo do arquivo mas nunca foi referenciado ou consumido no código. |
 | **W008** | *[Reservado / Obsoleto]* | - | `0.1.0` | *Avisava grafias legadas de anotações até a 0.2.0; desde então elas são `N012` com replacement para o nome canônico.* |
+| **W009** | `the closure assigns to its own copy of '{name}' and never reads it` | Warning | `0.3.0` | Uma closure com dono (`own`) copia os locais `Copy` que captura; atribuir à cópia sem lê-la não altera o local de fora nem é observado pela closure. Passe o bloco onde um callback emprestado `() -> R` é esperado, ou devolva o valor. |
+| **W010** | `implicit copy of large '{ty}' value ({size} bytes)` | Warning | `0.3.0` | Um valor `Copy` grande (>= 256 bytes no `DataLayout` do alvo) foi duplicado implicitamente enquanto ainda está vivo. Prefira passar por `ref T`, usar `@NoCopy`, ou silenciar com `@Suppress("large_implicit_copy")`. |
 
 > [!NOTE]
 > **Decisão de Design sobre Shadows (`W004`)**: O shadowing de variáveis é classificado como um `Warning` (e não `Error`) no Arandu para permitir flexibilidade de escrita em escopos muito curtos de closures e lambdas iteradoras. No entanto, é fortemente alertado por padrão para evitar que desenvolvedores ocultem nomes acidentais em escopos maiores do compilador. Pode ser silenciado localmente com `@Suppress("shadowing")`.
@@ -391,7 +399,7 @@ Erros de pânico gerados devido a falhas do próprio compilador Arandu. O sufixo
 Para adicionar um novo código de erro ao compilador Arandu, siga exatamente as seguintes regras e procedimentos:
 
 ### 4.1 Regras de Numeração e Sequenciamento
-*   **Sequenciamento Linear**: Novos códigos sempre devem utilizar o próximo número sequencial disponível dentro da categoria correspondente (ex: se o último erro em `T` foi `T048`, o próximo sequencial é `T049`). A exceção registrada é **T099**: o contrato freestanding da 0.2.0 fixou esse número. **T050–T098 permanecem sem uso** e não devem ser preenchidos retroativamente.
+*   **Sequenciamento Linear**: Novos códigos sempre devem utilizar o próximo número sequencial disponível dentro da categoria correspondente (ex: se o último erro em `T` foi `T048`, o próximo sequencial é `T049`). A exceção registrada é **T099**: o contrato freestanding da 0.2.0 fixou esse número. **T050–T098 permanecem sem uso** e não devem ser preenchidos retroativamente; o próximo `T` segue T099 (T100 em diante).
 *   **Invariabilidade de Lacunas**: Lacunas no sequenciamento lógico geradas por remoções ou migrações históricas de códigos **nunca devem ser preenchidas retroativamente**.
 *   **Preservação e Rastreabilidade**: Quando um código é descontinuado ou movido para outra categoria, ele não é excluído. Em vez disso, sua linha na tabela correspondente é marcada com `[Reservado / Obsoleto]` ou `[Movido → CÓDIGO]` para manter a rastreabilidade histórica em issues, discussões do GitHub e commits legados.
 

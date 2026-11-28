@@ -35,6 +35,7 @@ import std.core.intrinsics as intrinsics
 ///
 /// get() is an unsafe raw-pointer boundary, not a safe mutation permission.
 /// Concurrent access requires external synchronization.
+@NoSync
 public struct UnsafeCell<T> {
     /// Stored value.
     private value: T
@@ -70,6 +71,7 @@ public func UnsafeCell.intoInner<T>(self: own UnsafeCell<T>): T {
 }
 
 /// A mutable memory location for copyable types.
+@NoSync
 public struct Cell<T> {
     /// Stored value.
     value: T

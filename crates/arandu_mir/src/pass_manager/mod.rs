@@ -503,7 +503,8 @@ mod tests {
                 "bounds_check_elim",
                 "loop_deletion",
                 "mark_sweep_dce",
-                "simplify_cfg"
+                "simplify_cfg",
+                "last_use_move"
             ]
         );
         assert_eq!(
@@ -514,7 +515,8 @@ mod tests {
                 "loop_deletion",
                 "mark_sweep_dce",
                 "tail_merge",
-                "simplify_cfg"
+                "simplify_cfg",
+                "last_use_move"
             ]
         );
         assert_eq!(
@@ -528,7 +530,8 @@ mod tests {
                 "loop_deletion",
                 "mark_sweep_dce",
                 "tail_merge",
-                "simplify_cfg"
+                "simplify_cfg",
+                "last_use_move"
             ]
         );
     }

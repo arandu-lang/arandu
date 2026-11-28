@@ -1,16 +1,14 @@
-//! Heap-backed hash map for keys implementing `Hash`.
+//! Heap-backed SwissTable hash map for keys implementing `Hash`.
 //!
 //! ## Overview
 //!
-//! `HashMap<K, V>` stores key-value entries and supports insertion, lookup, removal, and capacity inspection. Hashes are derived through `std.core.hash`. Entries move between buckets; lookup can borrow them without copying owned values.
+//! `HashMap<K, V>` stores key-value entries in a flat bucket array indexed by an open-addressing control table (`ctrl`) probed 16 bytes at a time via SIMD (`std.core.simd.U8x16`). Hashes are derived through `std.core.hash`.
 //!
 //! ## Complexity
-//! Lookup, insertion, and removal probe buckets; normal performance depends
-//! on a well-distributed `Hash` implementation. Resizing visits existing
-//! entries and allocates a larger bucket array.
+//! Lookup, insertion, and removal compare 16 metadata control tags (`h2`) per group in O(1) expected time. Resizing visits existing entries and allocates a larger bucket and control array.
 //!
 //! ## Safety
-//! Keys must produce equal hashes whenever `Hash.eq` considers them equal. Bucket transfers use `Vec.takeSome` and `Vec.put` so owned values are not shallow-copied.
+//! Keys must produce equal hashes whenever `Hash.eq` considers them equal. Bucket transfers use `Vec.takeSome` and `Vec.set` so owned values are not shallow-copied.
 //! Mutating a key in storage can make it unreachable by lookup.
 //!
 //! ## Allocations
@@ -26,8 +24,12 @@ import std.core.hash as hash
 import std.core.marker as marker
 import std.core.intrinsics as intrinsics
 import std.core.option as option
+import std.core.simd as simd
 
 const MAX_BUCKETS = 1073741824 as usize
+const CTRL_EMPTY: u8 = 0x80 as u8
+const CTRL_DELETED: u8 = 0xFE as u8
+const GROUP_WIDTH: usize = 16 as usize
 
 func capacityFailure(): void {
     unsafe { intrinsics.abort() }
@@ -41,23 +43,24 @@ public struct Entry<K, V> {
     key: K
     /// Stored value.
     value: V
-    /// Probe distance from the ideal bucket.
-    distance: usize
 }
 
-/// Fast contiguous hash table based on Robin Hood Hashing with Backward-Shift deletion.
+/// Fast flat hash table using SwissTable 16-slot SIMD control-byte probing.
 ///
-/// # Design (DoD / SoA)
-/// - Contiguous flat storage via `Vec<Option<Entry<K, V>>>`, eliminating node heap allocations.
-/// - Robin Hood displacement bounds variance on probe sequences (PSL).
-/// - Deletion uses backward-shift without tombstones, preserving optimal cache density.
-/// - Load factor threshold is 75% with power-of-two growth.
+/// # Design
+/// - 1-byte metadata (`ctrl`) per bucket plus a 16-byte mirror tail for wrapless unaligned SIMD group loads.
+/// - Top 7 bits of the 64-bit hash serve as `h2` (`0x00..=0x7F`); empty (`0x80`) and deleted (`0xFE`) carry bit 7 (`0x80`).
+/// - Load factor threshold is 75% with power-of-two growth starting at 8 buckets; tombstone accumulation cleans in place.
 public struct HashMap<K: hash.Hash, V> {
-    /// Owned bucket array.
+    /// Owned bucket array (`Option<Entry<K, V>>`).
     buckets: vec.Vec<Option<Entry<K, V>>>
-    /// Number of stored elements or valid bytes.
+    /// Control bytes (`cap + 16` when `cap >= 8`, empty otherwise).
+    ctrl: vec.Vec<u8>
+    /// Number of active entries.
     len: usize
-    /// Bit mask used to index the bucket array.
+    /// Number of deleted tombstone slots in `ctrl`.
+    tombstones: usize
+    /// Bit mask (`cap - 1`) used to wrap probe offsets.
     mask: usize
 }
 
@@ -71,10 +74,46 @@ public func hashKey<K: hash.Hash>(k: ref K): u64 {
     return h.finish()
 }
 
+func h2(h: u64): u8 {
+    return ((h >> (57 as u64)) as u8) & (0x7F as u8)
+}
+
+func loadCtrlGroup(ctrl: ref vec.Vec<u8>, pos: usize): simd.U8x16 {
+    let ctrlSlice = ctrl.asSlice()
+    return unsafe {
+        simd.simdU8x16LoadUnaligned(intrinsics.sliceSubslice<u8>(ctrlSlice, pos, GROUP_WIDTH))
+    }
+}
+
+func setCtrl(ctrl: mut ref vec.Vec<u8>, cap: usize, idx: usize, tag: u8): void {
+    ctrl.set(idx, tag);
+    if cap == (8 as usize) {
+        ctrl.set(idx + (8 as usize), tag);
+    } else if idx < GROUP_WIDTH {
+        ctrl.set(cap + idx, tag);
+    }
+}
+
+func initStorage<K, V>(cap: usize, outBuckets: mut ref vec.Vec<Option<Entry<K, V>>>, outCtrl: mut ref vec.Vec<u8>): void {
+    let mut i: usize = 0 as usize
+    while i < cap {
+        outBuckets.push(Option.None)
+        i = i + (1 as usize)
+    }
+    let ctrlLen = cap + GROUP_WIDTH
+    let mut c: usize = 0 as usize
+    while c < ctrlLen {
+        outCtrl.push(CTRL_EMPTY)
+        c = c + (1 as usize)
+    }
+}
+
 func new<K: hash.Hash, V>(): HashMap<K, V> {
     return HashMap<K, V> {
         buckets: vec.Vec<Option<Entry<K, V>>>.new(),
+        ctrl: vec.Vec<u8>.new(),
         len: 0 as usize,
+        tombstones: 0 as usize,
         mask: 0 as usize,
     }
 }
@@ -99,14 +138,13 @@ func withCapacity<K: hash.Hash, V>(minCap: usize): HashMap<K, V> {
         cap = cap * (2 as usize)
     }
     let mut buckets = vec.Vec<Option<Entry<K, V>>>.withCapacity(cap)
-    let mut i: usize = 0 as usize
-    while i < cap {
-        buckets.push(Option.None)
-        i = i + (1 as usize)
-    }
+    let mut ctrl = vec.Vec<u8>.withCapacity(cap + GROUP_WIDTH)
+    initStorage<K, V>(cap, mut ref buckets, mut ref ctrl)
     return HashMap<K, V> {
         buckets: buckets,
+        ctrl: ctrl,
         len: 0 as usize,
+        tombstones: 0 as usize,
         mask: cap - (1 as usize),
     }
 }
@@ -160,7 +198,14 @@ func clear<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
         self.buckets.set(i, Option.None);
         i = i + (1 as usize)
     }
+    let ctrlLen = self.ctrl.len()
+    let mut c: usize = 0 as usize
+    while c < ctrlLen {
+        self.ctrl.set(c, CTRL_EMPTY);
+        c = c + (1 as usize)
+    }
     self.len = 0 as usize
+    self.tombstones = 0 as usize
 }
 
 /// Removes all entries while retaining the allocated bucket array.
@@ -171,18 +216,110 @@ public func HashMap.clear<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
     clear(self)
 }
 
-/// Releases the entries owned by the map; the backing bucket vector is dropped
+/// Releases the entries owned by the map; backing buffers are dropped
 /// automatically by field-drop elaboration.
 @Destructor
 func HashMap.destroy<K: hash.Hash, V>(self: own HashMap<K, V>): void {
     clear(self)
 }
 
+func findIndex<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K, h: u64): Option<usize> {
+    let cap = self.buckets.len()
+    if cap == (0 as usize) {
+        return Option.None
+    }
+    let ctrlSlice = self.ctrl.asSlice()
+    let bucketSlice = self.buckets.asSlice()
+    let groupMask: u32 = if cap == (8 as usize) { 0xFF as u32 } else { 0xFFFF as u32 }
+    let tag = h2(h)
+    let h2Vec = simd.U8x16.splat(tag)
+    let emptyVec = simd.U8x16.splat(CTRL_EMPTY)
+    let mut pos = (h as usize) & self.mask
+    let mut stride: usize = 0 as usize
+    let mut steps: usize = 0 as usize
+    while steps < cap {
+        let group = unsafe {
+            simd.simdU8x16LoadUnaligned(intrinsics.sliceSubslice<u8>(ctrlSlice, pos, GROUP_WIDTH))
+        }
+        let mut matchMask = group.eq(h2Vec).bitmask() & groupMask
+        while matchMask != (0 as u32) {
+            let bit = intrinsics.bitTrailingZeros32(matchMask) as usize
+            let idx = (pos + bit) & self.mask
+            match bucketSlice[idx].asRef() {
+                Some(entry) => {
+                    if entry.hash == h && entry.key.eq(key) {
+                        return Option.Some(idx)
+                    }
+                }
+                None => {}
+            }
+            matchMask = matchMask & (matchMask - (1 as u32))
+        }
+        if (group.eq(emptyVec).bitmask() & groupMask) != (0 as u32) {
+            return Option.None
+        }
+        stride = stride + GROUP_WIDTH
+        pos = (pos + stride) & self.mask
+        steps = steps + (1 as usize)
+    }
+    return Option.None
+}
+
+func insertFreshEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h: u64): void {
+    let cap = self.buckets.len()
+    let groupMask: u32 = if cap == (8 as usize) { 0xFF as u32 } else { 0xFFFF as u32 }
+    let emptyVec = simd.U8x16.splat(CTRL_EMPTY)
+    let mut pos = (h as usize) & self.mask
+    let mut stride: usize = 0 as usize
+    let mut steps: usize = 0 as usize
+    while steps < cap {
+        let group = loadCtrlGroup(ref self.ctrl, pos)
+        let emptyMask = group.eq(emptyVec).bitmask() & groupMask
+        if emptyMask != (0 as u32) {
+            let bit = intrinsics.bitTrailingZeros32(emptyMask) as usize
+            let idx = (pos + bit) & self.mask
+            setCtrl(mut ref self.ctrl, cap, idx, h2(h))
+            self.buckets.set(idx, Option.Some(Entry<K, V> {
+                hash: h,
+                key: key,
+                value: val,
+            }));
+            self.len = self.len + (1 as usize)
+            return
+        }
+        stride = stride + GROUP_WIDTH
+        pos = (pos + stride) & self.mask
+        steps = steps + (1 as usize)
+    }
+    capacityFailure()
+}
+
+func rebuildTable<K: hash.Hash, V>(self: mut ref HashMap<K, V>, targetCap: usize): void {
+    let oldCap = self.buckets.len()
+    let mut newBuckets = vec.Vec<Option<Entry<K, V>>>.withCapacity(targetCap)
+    let mut newCtrl = vec.Vec<u8>.withCapacity(targetCap + GROUP_WIDTH)
+    initStorage<K, V>(targetCap, mut ref newBuckets, mut ref newCtrl)
+
+    let mut oldBuckets = self.buckets
+    self.buckets = newBuckets
+    self.ctrl = newCtrl
+    self.mask = targetCap - (1 as usize)
+    self.len = 0 as usize
+    self.tombstones = 0 as usize
+
+    let mut j: usize = 0 as usize
+    while j < oldCap {
+        match oldBuckets.takeSome(j) {
+            Some(entry) => {
+                insertFreshEntry(self, entry.key, entry.value, entry.hash)
+            }
+            _ => {}
+        }
+        j = j + (1 as usize)
+    }
+}
+
 /// Doubles the bucket array and reinserts all existing entries.
-///
-/// An empty map receives eight buckets. This allocates a new array and takes
-/// O(old bucket count + new bucket count) time; ordinary `insert` calls resize
-/// automatically when the load threshold is crossed.
 func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
     let oldCap = self.buckets.len()
     let mut newCap: usize = 8 as usize
@@ -192,86 +329,105 @@ func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
         }
         newCap = oldCap * (2 as usize)
     }
-    let mut newBuckets = vec.Vec<Option<Entry<K, V>>>.withCapacity(newCap)
-    let mut i: usize = 0 as usize
-    while i < newCap {
-        newBuckets.push(Option.None)
-        i = i + (1 as usize)
-    }
-    let mut oldBuckets = self.buckets
-    self.buckets = newBuckets
-    self.mask = newCap - (1 as usize)
-    self.len = 0 as usize
-
-    let mut j: usize = 0 as usize
-    while j < oldCap {
-        match oldBuckets.takeSome(j) {
-            Some(entry) => {
-                insertEntry(self, entry.key, entry.value, entry.hash);
-            }
-            _ => {}
-        }
-        j = j + (1 as usize)
-    }
+    rebuildTable(self, newCap)
 }
 
-/// Inserts a pair using the supplied precomputed hash and Robin Hood probing.
-///
-/// The hash must match `hashKey(key)`, or later lookups may fail. Returns the
-/// previous value for an equal key, or `None` for a new key. May resize and
-/// allocate before probing when the 75% load threshold would be exceeded.
+/// Rehashes at the current capacity when deleted tombstones crowd empty slots.
+func rehashInPlace<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
+    let cap = self.buckets.len()
+    if cap == (0 as usize) {
+        resize(self)
+        return
+    }
+    rebuildTable(self, cap)
+}
+
+/// Inserts a pair using the supplied precomputed hash and SwissTable SIMD probing.
 func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h: u64): Option<V> {
     let cap = self.buckets.len()
     if cap == (0 as usize) || self.len >= cap - cap / (4 as usize) {
         resize(self)
+    } else if self.tombstones > (0 as usize) && self.len + self.tombstones >= cap - cap / (8 as usize) {
+        rehashInPlace(self)
     }
     let currentCap = self.buckets.len()
-    let mut idx = (h as usize) & self.mask
-    let mut dist: usize = 0 as usize
-    let curHash = h
+    let groupMask: u32 = if currentCap == (8 as usize) { 0xFF as u32 } else { 0xFFFF as u32 }
+    let tag = h2(h)
+    let h2Vec = simd.U8x16.splat(tag)
+    let emptyVec = simd.U8x16.splat(CTRL_EMPTY)
+    let mut pos = (h as usize) & self.mask
+    let mut stride: usize = 0 as usize
+    let mut steps: usize = 0 as usize
+    let mut hasFirstAvail = false
+    let mut firstAvailIdx: usize = 0 as usize
 
-    while dist < currentCap {
-        let mut is_empty = false
-        let mut same_key = false
-        let bucket = self.buckets.get(idx)
-        match bucket {
-            Some(slot) => match slot.asRef() {
-                Some(entry) => {
-                    same_key = entry.hash == curHash && entry.key.eq(ref key)
+    while steps < currentCap {
+        let group = loadCtrlGroup(ref self.ctrl, pos)
+        let mut matchMask = group.eq(h2Vec).bitmask() & groupMask
+        while matchMask != (0 as u32) {
+            let bit = intrinsics.bitTrailingZeros32(matchMask) as usize
+            let idx = (pos + bit) & self.mask
+            let mut same_key = false
+            match self.buckets.get(idx) {
+                Some(slot) => {
+                    match slot.asRef() {
+                        Some(entry) => {
+                            same_key = entry.hash == h && entry.key.eq(ref key)
+                        }
+                        None => {}
+                    }
                 }
-                None => { is_empty = true }
+                None => {}
             }
-            None => {}
-        }
-        if is_empty {
-            self.buckets.set(idx, Option.Some(Entry<K, V> {
-                hash: curHash,
-                key: key,
-                value: val,
-                distance: dist,
-            }));
-            self.len = self.len + (1 as usize)
-            return Option.None
-        }
-        if same_key {
-            let old = self.buckets.takeSome(idx)
-            match old {
-                Some(previous) => {
-                    let old_value = previous.value
-                    self.buckets.set(idx, Option.Some(Entry<K, V> {
-                        hash: curHash,
-                        key: key,
-                        value: val,
-                        distance: dist,
-                    }));
-                    return Option.Some(old_value)
+            if same_key {
+                let old = self.buckets.takeSome(idx)
+                match old {
+                    Some(previous) => {
+                        let old_value = previous.value
+                        self.buckets.set(idx, Option.Some(Entry<K, V> {
+                            hash: h,
+                            key: key,
+                            value: val,
+                        }));
+                        return Option.Some(old_value)
+                    }
+                    _ => { capacityFailure() }
                 }
-                _ => { capacityFailure() }
+            }
+            matchMask = matchMask & (matchMask - (1 as u32))
+        }
+        if !hasFirstAvail {
+            // Both EMPTY (0x80) and DELETED (0xFE) have high bit 7 set.
+            let availMask = group.highBitmask() & groupMask
+            if availMask != (0 as u32) {
+                let bit = intrinsics.bitTrailingZeros32(availMask) as usize
+                firstAvailIdx = (pos + bit) & self.mask
+                hasFirstAvail = true
             }
         }
-        idx = (idx + (1 as usize)) & self.mask
-        dist = dist + (1 as usize)
+        if (group.eq(emptyVec).bitmask() & groupMask) != (0 as u32) {
+            break
+        }
+        stride = stride + GROUP_WIDTH
+        pos = (pos + stride) & self.mask
+        steps = steps + (1 as usize)
     }
+
+    if hasFirstAvail {
+        let target = firstAvailIdx
+        if self.ctrl.asSlice()[target] == CTRL_DELETED {
+            self.tombstones = self.tombstones - (1 as usize)
+        }
+        setCtrl(mut ref self.ctrl, currentCap, target, tag)
+        self.buckets.set(target, Option.Some(Entry<K, V> {
+            hash: h,
+            key: key,
+            value: val,
+        }));
+        self.len = self.len + (1 as usize)
+        return Option.None
+    }
+    capacityFailure()
     return Option.None
 }
 
@@ -280,49 +436,22 @@ func insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Optio
     return insertEntry(self, key, val, h)
 }
 
-/// Inserts a key-value pair into the map.
+/// Associates `key` with `val` in the map, returning the previous value if present.
 ///
-/// If the map did not have this key present, `Option.None` is returned.
-/// If the map did have this key present, the value is updated and the old value is returned.
 /// The key is hashed with `hashKey`; insertion may allocate when the map
 /// crosses its load threshold. Equal keys must have equal hashes.
 ///
 /// # Complexity
 /// Time: O(1) amortized | Space: O(1) amortized
-public func HashMap.insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
-    return insert(self, key, val)
-}
-
-/// Associates `key` with `val` in the map, returning the previous value if present.
 public func HashMap.put<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
     return insert(self, key, val)
 }
 
 func contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): bool {
-    let cap = self.buckets.len()
-    if cap == (0 as usize) {
-        return false
+    match findIndex(self, key, hashKey<K>(key)) {
+        Some(_) => { return true }
+        None => { return false }
     }
-    let h = hashKey<K>(key)
-    let mut idx = (h as usize) & self.mask
-    let mut dist: usize = 0 as usize
-    while dist < cap {
-        let bucket = self.buckets.get(idx)
-        match bucket {
-            Some(slot) => match slot.asRef() {
-                Some(entry) => {
-                    if entry.hash == h && entry.key.eq(key) {
-                        return true
-                    }
-                }
-                None => { return false }
-            }
-            _ => { return false }
-        }
-        idx = (idx + (1 as usize)) & self.mask
-        dist = dist + (1 as usize)
-    }
-    return false
 }
 
 /// Returns `true` if the map contains a value for the specified key.
@@ -335,30 +464,16 @@ public func HashMap.contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref 
 }
 
 func get<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref HashMap<K, V>, key: ref K): Option<V> {
-    let cap = self.buckets.len()
-    if cap == (0 as usize) {
-        return Option.None
-    }
-    let h = hashKey<K>(key)
-    let mut idx = (h as usize) & self.mask
-    let mut dist: usize = 0 as usize
-    while dist < cap {
-        let bucket = self.buckets.get(idx)
-        match bucket {
-            Some(slot) => match slot.asRef() {
-                Some(entry) => {
-                    if entry.hash == h && entry.key.eq(key) {
-                        return Option.Some(entry.value)
-                    }
-                }
+    match findIndex(self, key, hashKey<K>(key)) {
+        Some(idx) => {
+            let bucketSlice = self.buckets.asSlice()
+            match bucketSlice[idx].asRef() {
+                Some(entry) => { return Option.Some(entry.value) }
                 None => { return Option.None }
             }
-            _ => { return Option.None }
         }
-        idx = (idx + (1 as usize)) & self.mask
-        dist = dist + (1 as usize)
+        None => { return Option.None }
     }
-    return Option.None
 }
 
 /// Returns a copy of the matching value when `V` is `Copy`.
@@ -369,31 +484,31 @@ public func HashMap.get<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref Ha
     return get(self, key)
 }
 
-func getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): Option<ref V> {
-    let cap = self.buckets.len()
-    if cap == (0 as usize) {
-        return Option.None
+/// Returns the value corresponding to the key, or `defaultVal` if not present.
+public func HashMap.getOrDefault<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref HashMap<K, V>, key: ref K, defaultVal: V): V {
+    match get(self, key) {
+        Some(v) => {
+            return v
+        }
+        None => {
+            return defaultVal
+        }
     }
-    let h = hashKey<K>(key)
-    let mut idx = (h as usize) & self.mask
-    let mut dist: usize = 0 as usize
-    while dist < cap {
-        let bucket = self.buckets.get(idx)
-        match bucket {
-            Some(slot) => match slot.asRef() {
-                Some(entry) => {
-                    if entry.hash == h && entry.key.eq(key) {
-                        return Option.Some(ref entry.value)
-                    }
+}
+
+func getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): Option<ref V> {
+    match findIndex(self, key, hashKey<K>(key)) {
+        Some(idx) => {
+            match self.buckets.get(idx) {
+                Some(slot) => match slot.asRef() {
+                    Some(entry) => { return Option.Some(ref entry.value) }
+                    None => { return Option.None }
                 }
                 None => { return Option.None }
             }
-            None => { return Option.None }
         }
-        idx = (idx + (1 as usize)) & self.mask
-        dist = dist + (1 as usize)
+        None => { return Option.None }
     }
-    return Option.None
 }
 
 /// Returns a shared reference to the matching value without copying it.
@@ -405,92 +520,85 @@ public func HashMap.getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K)
     return getRef(self, key)
 }
 
-func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<V> {
-    let cap = self.buckets.len()
-    if cap == (0 as usize) {
-        return Option.None
-    }
-    let h = hashKey<K>(key)
-    let mut idx = (h as usize) & self.mask
-    let mut dist: usize = 0 as usize
-    while dist < cap {
-        let mut found = false
-        let bucket = self.buckets.get(idx)
-        match bucket {
-            Some(slot) => match slot.asRef() {
-                Some(entry) => {
-                    found = entry.hash == h && entry.key.eq(key)
+func getMut<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<mut ref V> {
+    match findIndex(self, key, hashKey<K>(key)) {
+        Some(idx) => {
+            match self.buckets.getMut(idx) {
+                Some(slot) => match slot.asMut() {
+                    Some(entry) => { return Option.Some(mut ref entry.value) }
+                    None => { return Option.None }
                 }
                 None => { return Option.None }
             }
-            None => { return Option.None }
         }
-        if found {
+        None => { return Option.None }
+    }
+}
+
+/// Returns an exclusive mutable reference to the matching value without copying it.
+public func HashMap.getMut<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<mut ref V> {
+    return getMut(self, key)
+}
+
+func eraseMetaAt<K: hash.Hash, V>(self: mut ref HashMap<K, V>, idx: usize): void {
+    let cap = self.buckets.len()
+    let emptyVec = simd.U8x16.splat(CTRL_EMPTY)
+    let rightPos = (idx + (1 as usize)) & self.mask
+    let rightGroup = loadCtrlGroup(ref self.ctrl, rightPos)
+    if cap == (8 as usize) {
+        if (rightGroup.eq(emptyVec).bitmask() & (0x7F as u32)) != (0 as u32) {
+            setCtrl(mut ref self.ctrl, cap, idx, CTRL_EMPTY)
+        } else {
+            setCtrl(mut ref self.ctrl, cap, idx, CTRL_DELETED)
+            self.tombstones = self.tombstones + (1 as usize)
+        }
+        return
+    }
+    let leftPos = (idx + cap - (15 as usize)) & self.mask
+    let leftGroup = loadCtrlGroup(ref self.ctrl, leftPos)
+    let leftMask = leftGroup.eq(emptyVec).bitmask() & (0x7FFF as u32)
+    if leftMask == (0 as u32) {
+        setCtrl(mut ref self.ctrl, cap, idx, CTRL_DELETED)
+        self.tombstones = self.tombstones + (1 as usize)
+        return
+    }
+    let leftEmpty = intrinsics.bitLeadingZeros32(leftMask) - (17 as u32)
+    let rightMask = rightGroup.eq(emptyVec).bitmask() & (0x7FFF as u32)
+    let rightEmpty = if rightMask == (0 as u32) {
+        15 as u32
+    } else {
+        intrinsics.bitTrailingZeros32(rightMask)
+    }
+    if leftEmpty + rightEmpty < (15 as u32) {
+        setCtrl(mut ref self.ctrl, cap, idx, CTRL_EMPTY)
+    } else {
+        setCtrl(mut ref self.ctrl, cap, idx, CTRL_DELETED)
+        self.tombstones = self.tombstones + (1 as usize)
+    }
+}
+
+func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<V> {
+    let h = hashKey<K>(key)
+    match findIndex(self, key, h) {
+        Some(idx) => {
             let removed = self.buckets.takeSome(idx)
             let mut removed_value: Option<V> = Option.None
             match removed {
                 Some(entry) => { removed_value = Option.Some(entry.value) }
                 None => { capacityFailure() }
             }
-
-            let mut curr = idx
-            let mut next = (idx + (1 as usize)) & self.mask
-            let mut shifting = true
-            let mut shifted: usize = 0 as usize
-            while shifting && shifted < cap {
-                let mut next_distance: Option<usize> = Option.None
-                match self.buckets.get(next) {
-                    Some(slot) => match slot.asRef() {
-                        Some(entry) => { next_distance = Option.Some(entry.distance) }
-                        None => {}
-                    }
-                    None => {}
-                }
-                match next_distance {
-                    Some(distance) => {
-                        if distance == (0 as usize) {
-                            self.buckets.set(curr, Option.None);
-                            shifting = false
-                        } else {
-                            match self.buckets.takeSome(next) {
-                                Some(entry) => {
-                                    self.buckets.set(curr, Option.Some(Entry<K, V> {
-                                        hash: entry.hash,
-                                        key: entry.key,
-                                        value: entry.value,
-                                        distance: entry.distance - (1 as usize),
-                                    }));
-                                    curr = next
-                                    next = (next + (1 as usize)) & self.mask
-                                    shifted = shifted + (1 as usize)
-                                }
-                                None => { capacityFailure() }
-                            }
-                        }
-                    }
-                    None => {
-                        self.buckets.set(curr, Option.None);
-                        shifting = false
-                    }
-                }
-            }
-            if shifting {
-                capacityFailure()
-            }
+            eraseMetaAt(self, idx)
             self.len = self.len - (1 as usize)
             return removed_value
         }
-        idx = (idx + (1 as usize)) & self.mask
-        dist = dist + (1 as usize)
+        None => { return Option.None }
     }
-    return Option.None
 }
 
 /// Removes a matching key and returns its value, or `None` if absent.
 ///
-/// Later entries in the probe sequence shift to close the gap. The bucket
-/// array is retained and no tombstone is left behind; this does not shrink
-/// the map or allocate.
+/// The bucket and control arrays are retained and slots turn empty whenever
+/// surrounding probe windows remain broken by another empty byte.
 ///
 /// # Complexity
 /// Time: O(1) average | Space: O(1)

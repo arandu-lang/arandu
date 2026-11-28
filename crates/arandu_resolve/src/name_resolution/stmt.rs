@@ -290,6 +290,7 @@ impl<'a> Resolver<'a> {
                 is_comptime,
                 clause,
                 body,
+                ..
             } => {
                 if *is_comptime && !self.resolved.comptime_loops.contains_key(&(*span).into()) {
                     return;

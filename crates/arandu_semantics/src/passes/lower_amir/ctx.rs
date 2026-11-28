@@ -10,6 +10,19 @@ use crate::{SymbolId, SymbolTable};
 use arandu_middle::Span;
 
 impl LowerCtx<'_> {
+    /// A `const` whose value holds a view of elements lives in static
+    /// storage at run time, so every use reads the same elements and none
+    /// points at a temporary. Compile-time evaluation reads the value itself.
+    pub(crate) fn const_in_static(&self, symbol: SymbolId) -> bool {
+        !self.hir.pool.ctfe_lowering
+            && self
+                .tc
+                .type_info
+                .ctfe_global_values
+                .get(&symbol)
+                .is_some_and(arandu_middle::ctfe::ConstValue::holds_view)
+    }
+
     pub(crate) fn lower_const_operand(
         &mut self,
         symbol: SymbolId,
@@ -35,14 +48,24 @@ impl LowerCtx<'_> {
         // it in a typed temp keeps comparisons (e.g. `uint > CONST`) well typed.
         let value = match &hir_expr.kind {
             crate::hir::HirExprKind::Int(value) => value.clone(),
-            crate::hir::HirExprKind::Cast { expr, .. } => {
-                let inner = self.hir.pool.expr(*expr);
-                let crate::hir::HirExprKind::Int(value) = &inner.kind else {
+            crate::hir::HirExprKind::Cast { expr: inner, .. }
+                if matches!(
+                    self.hir.pool.expr(*inner).kind,
+                    crate::hir::HirExprKind::Int(_)
+                ) =>
+            {
+                let crate::hir::HirExprKind::Int(value) = &self.hir.pool.expr(*inner).kind else {
                     return Ok(None);
                 };
                 value.clone()
             }
-            _ => return Ok(None),
+            // Any other constant is inlined at its use, as Rust does: a
+            // `const` names a value, not storage, so no global symbol exists
+            // for it to load from.
+            _ => {
+                let symbols = std::sync::Arc::clone(&self.tc.symbols);
+                return self.lower_expr(expr, None, &symbols).map(Some);
+            }
         };
         let ty = self
             .tc
@@ -125,11 +148,7 @@ impl LowerCtx<'_> {
     /// Allocate a temp from an already-interned type id (no `ArType` clone).
     pub(crate) fn new_temp_id(&mut self, ty: crate::types::TypeId) -> TempId {
         let is_copy = self.tc.type_info.is_copy(ty);
-        let is_nullable = self
-            .tc
-            .type_info
-            .type_interner
-            .with_type(ty, |t| matches!(t, ArType::Nullable(_)));
+        let is_nullable = false;
         let id = self.next_temp_id();
         let span = if Self::span_is_usable(self.current_span) {
             self.current_span
@@ -214,11 +233,7 @@ impl LowerCtx<'_> {
     pub(crate) fn new_temp_ref(&mut self, ty: &ArType) -> TempId {
         let ty = self.intern_ty_ref(ty);
         let is_copy = self.tc.type_info.is_copy(ty);
-        let is_nullable = self
-            .tc
-            .type_info
-            .type_interner
-            .with_type(ty, |t| matches!(t, ArType::Nullable(_)));
+        let is_nullable = false;
         let id = self.next_temp_id();
         let span = if Self::span_is_usable(self.current_span) {
             self.current_span
@@ -592,6 +607,68 @@ impl LowerCtx<'_> {
         }
     }
 
+    /// A `mut []T` read through a reference is reborrowed, as Rust reborrows
+    /// `&mut *self.buf`: the view owns nothing, so the field stays in place
+    /// instead of being moved out of the reference.
+    pub(crate) fn mark_view_reborrow(
+        &mut self,
+        temp: TempId,
+        place: &AmirPlace,
+        ty: crate::types::TypeId,
+    ) {
+        let through_reference = place
+            .projections
+            .iter()
+            .any(|projection| matches!(projection, crate::amir::AmirProjection::Deref));
+        if through_reference
+            && matches!(self.resolve_ty(ty), ArType::MutSlice(_))
+            && let Some(temp) = self.temps.get_mut(temp.as_usize())
+        {
+            temp.is_copy = true;
+        }
+    }
+
+    /// Reads `place` into `target`, or into a fresh temp. A non-Copy value
+    /// read straight into a destination defined elsewhere (a block's value,
+    /// the return register) is moved there: it is loaded into its own temp
+    /// and moved, so the move checker sees the move out of `place` (and O016
+    /// when `place` is behind a reference). A `mut []T` view keeps being
+    /// reborrowed in place.
+    pub(crate) fn load_into_target(
+        &mut self,
+        target: Option<TempId>,
+        place: AmirPlace,
+        ty: crate::types::TypeId,
+    ) -> AmirOperand {
+        if let Some(dest) = target
+            && !self.tc.type_info.is_copy(ty)
+            && !matches!(self.resolve_ty(ty), ArType::MutSlice(_))
+        {
+            let temp = self.new_temp_id(ty);
+            self.emit_assign_temp(temp, AmirRvalue::Load(place));
+            self.temp_states[temp.as_usize()] = MoveState::Moved;
+            self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Move(temp)));
+            return AmirOperand::Copy(dest);
+        }
+        let Some(dest) = target else {
+            // A fresh temp names the place it was read from, as `load_place`
+            // does, so a binding that takes it owns the value from then on.
+            return self.load_place_fresh(place, ty);
+        };
+        self.mark_view_reborrow(dest, &place, ty);
+        self.emit_assign_temp(dest, AmirRvalue::Load(place));
+        AmirOperand::Copy(dest)
+    }
+
+    fn load_place_fresh(&mut self, place: AmirPlace, ty: crate::types::TypeId) -> AmirOperand {
+        let temp = self.new_temp_id(ty);
+        self.mark_view_reborrow(temp, &place, ty);
+        self.emit_assign_temp(temp, AmirRvalue::Load(place.clone()));
+        self.temp_origins[temp.as_usize()] = Some(place.local);
+        self.temp_place_origins[temp.as_usize()] = Some(place);
+        AmirOperand::Copy(temp)
+    }
+
     pub(crate) fn load_place(
         &mut self,
         place: &AmirPlace,
@@ -599,6 +676,7 @@ impl LowerCtx<'_> {
     ) -> Result<AmirOperand, Diagnostic> {
         self.note_local_use(place.local, self.current_span);
         let temp = self.new_temp_id(ty);
+        self.mark_view_reborrow(temp, place, ty);
         self.emit_assign_temp(temp, AmirRvalue::Load(place.clone()));
         // Preserve the root for lowering-time diagnostics. The MIR move checker
         // derives the full projection path from the emitted `Load(place)`.
@@ -613,7 +691,7 @@ impl LowerCtx<'_> {
         };
         let idx = temp.as_usize();
         if self.temp_states[idx] == MoveState::Moved {
-            return Err(self.move_diag(format!("use of moved temporary _{idx}")));
+            return Err(self.move_diag("use of moved temporary value"));
         }
         // Consuming a non-copy temp is a use of its origin local at this site.
         self.note_temp_origin_use(temp);

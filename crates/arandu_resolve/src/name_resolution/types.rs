@@ -16,9 +16,20 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    fn is_ambient_marker_bound(&self, scope: ScopeId, bound: TypeExprId) -> bool {
+        matches!(
+            self.pool.type_expr(bound),
+            TypeExpr::Named { name, args, .. }
+                if args.is_empty()
+                    && name.path.len() == 1
+                    && matches!(name.path[0].as_str(), "Send" | "Sync")
+                    && self.symbols.lookup_type(scope, &name.path[0]).is_none()
+        )
+    }
+
     pub(crate) fn resolve_type_expr(&mut self, scope: ScopeId, ty: TypeExprId) {
         match self.pool.type_expr(ty) {
-            TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
+            TypeExpr::Const { .. } | TypeExpr::Primitive { .. } | TypeExpr::Never { .. } => {}
             TypeExpr::ConstExpression { expression, .. } => self.resolve_expr(scope, *expression),
             TypeExpr::Named { name, args, .. } => {
                 self.resolve_type_name(scope, name);
@@ -51,12 +62,25 @@ impl<'a> Resolver<'a> {
                 }
                 self.resolve_type_expr(scope, *elem);
             }
+            TypeExpr::Tuple { items, .. } => {
+                for item in self.pool.type_expr_list(*items) {
+                    self.resolve_type_expr(scope, *item);
+                }
+            }
             TypeExpr::Func { params, result, .. } => {
                 for param in self.pool.type_expr_list(*params) {
                     self.resolve_type_expr(scope, *param);
                 }
                 if let Some(result) = result {
                     self.resolve_result_type(scope, result);
+                }
+            }
+            TypeExpr::OwnFunc { func, bounds, .. } => {
+                self.resolve_type_expr(scope, *func);
+                for &bound in self.pool.type_expr_list(*bounds) {
+                    if !self.is_ambient_marker_bound(scope, bound) {
+                        self.resolve_type_expr(scope, bound);
+                    }
                 }
             }
         }
@@ -133,6 +157,15 @@ impl<'a> Resolver<'a> {
         }
         if let Some(symbol) = self.symbols.lookup_type(scope, root) {
             self.record_type_ref(name.span, symbol);
+            return true;
+        }
+        if name.path.len() == 1
+            && matches!(root.as_str(), "void" | "Err")
+            && self
+                .symbols
+                .lookup_any(scope, root)
+                .is_none_or(|sym| self.symbols.get(sym).scope == crate::ScopeId(0))
+        {
             return true;
         }
         if let Some(symbol) = self.symbols.lookup_any(scope, root)

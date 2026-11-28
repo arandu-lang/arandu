@@ -1,4 +1,4 @@
-use arandu_parser::FuncDecl;
+use arandu_parser::{FuncDecl, Ownership};
 
 use super::super::TypeChecker;
 use super::super::constraints::ConstraintOrigin;
@@ -93,6 +93,16 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
             {
                 Some(self_ty.clone())
             }
+            ArType::Primitive(arandu_middle::types::Primitive::I32)
+                if checker.symbols.builtins.i32_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Primitive(arandu_middle::types::Primitive::I64)
+                if checker.symbols.builtins.i64_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
             ArType::Primitive(arandu_middle::types::Primitive::Float)
                 if checker.symbols.builtins.float_type == Some(owner) =>
             {
@@ -104,12 +114,6 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
                 Some(self_ty.clone())
             }
             ArType::Ptr(_) if checker.symbols.builtins.ptr_type == Some(owner) => {
-                Some(self_ty.clone())
-            }
-            ArType::Nullable(inner)
-                if matches!(checker.resolve(*inner), ArType::Ptr(_))
-                    && checker.symbols.builtins.ptr_type == Some(owner) =>
-            {
                 Some(self_ty.clone())
             }
             _ => None,
@@ -174,6 +178,12 @@ pub(super) fn func_type_scope(checker: &TypeChecker<'_>, decl: &FuncDecl) -> cra
 
 #[tracing::instrument(level = "trace", target = "arandu_typeck", skip(checker, decl))]
 pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
+    let reported = checker.diagnostics.len();
+    check_func_body_inner(checker, decl);
+    super::lint_levels::apply(checker, &decl.attrs, reported);
+}
+
+fn check_func_body_inner(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
     let old_owner = checker.current_owner_type;
     checker.current_owner_type = match &decl.name {
         arandu_parser::FuncName::Method { receiver, .. } => {
@@ -205,9 +215,70 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         (ArType::Void, decl.span)
     };
 
-    for param in &decl.params {
+    let func_key = func_name_key(decl);
+    let func_symbol = checker.resolved.definitions.get(&func_key).copied();
+    let old_closure_owner = checker.closure_owner.take();
+    checker.closure_owner = func_symbol.map(|symbol| {
+        let name = checker
+            .symbols
+            .host_func_name(checker.symbols.get(symbol))
+            .chars()
+            .fold(String::new(), |mut escaped, c| {
+                match c {
+                    '_' => escaped.push_str("__"),
+                    c if c.is_ascii_alphanumeric() => escaped.push(c),
+                    c => {
+                        use std::fmt::Write as _;
+                        let _ = write!(escaped, "_{:x}_", u32::from(c));
+                    }
+                }
+                escaped
+            });
+        super::super::ClosureOwner {
+            name: name.into(),
+            start: decl.span.start,
+            generics: checker
+                .type_info
+                .generic_params
+                .get(&symbol)
+                .map(|params| params.as_ref().clone())
+                .unwrap_or_default(),
+        }
+    });
+    let declared_params = func_symbol
+        .and_then(|symbol| checker.decl_type(symbol))
+        .and_then(|declared| match declared {
+            ArType::Func(params, _) => Some(checker.type_info.type_interner.type_args(params)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    for (index, param) in decl.params.iter().enumerate() {
+        if let Some(&callback) = declared_params.get(index)
+            && let ArType::RefMut(implicit) = checker.resolve(callback)
+            && let ArType::Named(implicit, _) = checker.resolve(implicit)
+            && checker.type_info.callback_bounds.contains_key(&implicit)
+        {
+            let param_key = crate::NodeKey::from(param.span);
+            if let Some(&symbol_id) = checker.resolved.definitions.get(&param_key) {
+                checker.ctx.bind(symbol_id, callback);
+                checker.record_decl_type(symbol_id, callback);
+            }
+            continue;
+        }
         let mut param_ty = checker.lower_type_expr(param.ty, type_scope);
 
+        // `self: ref Pair` names the generic struct bare, like `self: Pair`.
+        let receiver_borrow = match param_ty {
+            ArType::Ref(inner) if param.is_receiver => {
+                param_ty = checker.resolve(inner);
+                Some(Ownership::Shared)
+            }
+            ArType::RefMut(inner) if param.is_receiver => {
+                param_ty = checker.resolve(inner);
+                Some(Ownership::Mut)
+            }
+            _ => None,
+        };
         if param.is_receiver
             && let ArType::Named(struct_id, ref args) = param_ty
             && args.is_empty()
@@ -231,18 +302,32 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         let mut param_ty_id = checker.intern(param_ty);
         // `shared`/`mut` formals (receivers and free-function params) bind as
         // `&T` / `&mut T` so body field access and call-site auto-ref match.
-        param_ty_id = apply_receiver_ownership(checker, param_ty_id, param.ownership);
+        param_ty_id =
+            apply_receiver_ownership(checker, param_ty_id, receiver_borrow.or(param.ownership));
         let param_key = crate::NodeKey::from(param.span);
         if let Some(&symbol_id) = checker.resolved.definitions.get(&param_key) {
             checker.ctx.bind(symbol_id, param_ty_id);
             checker.record_decl_type(symbol_id, param_ty_id);
         }
+        if let Some(def_expr) = param.default {
+            checker.text_view_sites.insert(def_expr);
+            let def_ty_id =
+                super::super::synth::synth_expr_expected(checker, def_expr, Some(param_ty_id));
+            super::super::synth::check_call_arg(
+                checker,
+                def_expr,
+                param_ty_id,
+                def_ty_id,
+                param.span,
+                param.span,
+                checker.pool.expr_span(def_expr),
+                index,
+            );
+        }
     }
 
     let ret_id = checker.intern(ret_ty);
     checker.ctx.push_return(ret_id, return_decl_span);
-    let func_key = func_name_key(decl);
-    let func_symbol = checker.resolved.definitions.get(&func_key).copied();
     let old_effects = checker.current_observed_effects;
     checker.current_observed_effects = arandu_middle::EffectFlags::NONE;
 
@@ -286,4 +371,5 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
     }
     checker.current_observed_effects = old_effects.union(checker.current_observed_effects);
     checker.current_owner_type = old_owner;
+    checker.closure_owner = old_closure_owner;
 }

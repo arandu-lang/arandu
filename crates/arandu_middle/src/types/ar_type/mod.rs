@@ -24,9 +24,6 @@ pub enum ArType {
     /// The `IndexRange` points into `TypeInterner::type_args_pool`.
     Func(IndexRange, TypeId),
 
-    /// Nullable wrapper: str?
-    Nullable(TypeId),
-
     /// Slice type: []int
     Slice(TypeId),
 
@@ -68,8 +65,7 @@ pub enum ArType {
     /// `Result<T, E>` — canonical success/error type
     Result(TypeId, TypeId),
 
-    /// `Option<T>` — algebraic optional. SYN.3: `nil` fills this type as `.None`.
-    /// `T?` remains [`ArType::Nullable`] (safe-nav / heap handle; see strategic plan §2.1).
+    /// `Option<T>` — algebraic optional (and canonical lowering of `T?`). `nil` fills this type as `.None`.
     Option(TypeId),
 
     /// `Coroutine[T]` — coroutine machine state type returning T
@@ -87,6 +83,9 @@ pub enum ArType {
     /// Functions with no return type
     Void,
 
+    /// Never / diverging bottom type: `!`
+    Never,
+
     /// An integer literal that hasn't been assigned a concrete type yet.
     /// Absorbs the context type during check mode.
     IntLiteral,
@@ -94,6 +93,11 @@ pub enum ArType {
     /// A float literal that hasn't been assigned a concrete type yet.
     /// Absorbs any float context (f32, f64, float).
     FloatLiteral,
+
+    /// An inference variable of the type checker (TYP.NEXT S1). The interner
+    /// resolves a bound variable to its binding; an unbound one never
+    /// survives type checking, so phases after it never observe this variant.
+    Infer(u32),
 
     /// Poison type — operations on Error never produce new errors.
     /// This is the key to preventing cascading error messages.
@@ -337,12 +341,11 @@ mod tests {
     }
 
     #[test]
-    fn literals_ptr_nullable_are_copy() {
+    fn literals_ptr_are_copy() {
         assert!(ArType::IntLiteral.is_copy_v01());
         assert!(ArType::FloatLiteral.is_copy_v01());
         let i = new_interner();
         assert!(ArType::Ptr(i.intern(ArType::Primitive(Primitive::Int))).is_copy_v01());
-        assert!(ArType::Nullable(i.intern(ArType::Primitive(Primitive::Int))).is_copy_v01());
         // Shared refs are Copy; exclusive refs preserve uniqueness by moving.
         assert!(ArType::Ref(i.intern(ArType::Primitive(Primitive::Int))).is_copy_v01());
         assert!(!ArType::RefMut(i.intern(ArType::Primitive(Primitive::Int))).is_copy_v01());
@@ -356,11 +359,12 @@ mod tests {
     }
 
     #[test]
-    fn named_func_slice_array_tuple_are_not_copy() {
+    fn named_slice_array_tuple_are_not_copy_but_function_values_are() {
         assert!(!ArType::Named(SymbolId::new(0, 1), IndexRange::empty()).is_copy_v01());
         let i = new_interner();
         let int = i.intern(ArType::Primitive(Primitive::Int));
-        assert!(!ArType::func(&[int], int, &i).is_copy_v01());
+        // A function value is a code pointer without an environment.
+        assert!(ArType::func(&[int], int, &i).is_copy_v01());
         assert!(ArType::Slice(int).is_copy_v01());
         assert!(!ArType::MutSlice(int).is_copy_v01());
         assert!(!ArType::Array(3, int).is_copy_v01());
@@ -488,7 +492,7 @@ mod tests {
             .unwrap();
         let i = new_interner();
         let int_tid = i.intern(ArType::Named(int_sym, IndexRange::empty()));
-        assert_eq!(ArType::Nullable(int_tid).display(&syms, &i), "int?");
+        assert_eq!(ArType::Option(int_tid).display(&syms, &i), "Option<int>");
         assert_eq!(ArType::Slice(int_tid).display(&syms, &i), "[]int");
         assert_eq!(ArType::MutSlice(int_tid).display(&syms, &i), "mut []int");
         assert_eq!(ArType::Array(4, int_tid).display(&syms, &i), "[4]int");

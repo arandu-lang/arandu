@@ -1,5 +1,6 @@
 //! Multi-backend differential testing oracles and execution triangulators.
 
+use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -343,7 +344,14 @@ fn check_source_internal(
     }
 
     if compare_c || compare_wasm || compare_llvm {
+        // By default, differential execution against external process backends (C, Wasm, LLVM)
+        // runs on the canonical optimized level (O2) to avoid 4x redundant process spawns
+        // (clang/wasmtime) per seed, while Cranelift continues to verify O0==O1==O2==Os in memory.
+        let exhaustive_levels = std::env::var_os("ARANDU_FUZZ_ALL_LEVELS").is_some();
         for ((level, program), output) in optimized_programs.iter().zip(cranelift_outputs.iter()) {
+            if !exhaustive_levels && *level != arandu_mir::OptLevel::O2 {
+                continue;
+            }
             if compare_c {
                 let c_output = catch_backend_panic("C", *level, || {
                     execute_c(
@@ -464,21 +472,55 @@ fn lower_validated_source(
     }
 }
 
+struct ReusableLoweringHost {
+    host: AnalysisHost,
+    stdlib_registered: bool,
+}
+
+thread_local! {
+    static LOWERING_HOST: RefCell<Option<ReusableLoweringHost>> = const { RefCell::new(None) };
+}
+
 fn lower_validated_source_inner(
     source: &str,
 ) -> Result<arandu_query::db::HashEq<arandu_query::LowerAmirArtifacts>, Failure> {
-    let mut host = AnalysisHost::new();
-    if source.contains("import std") {
-        register_fuzz_stdlib(&mut host).map_err(|error| {
-            Failure::new(
-                "stdlib-setup-failed",
-                format!("failed to register fuzz stdlib dependencies: {error}"),
-                false,
-            )
-        })?;
-    }
-    let file = host.new_file("smith/generated.aru".into(), source.to_owned());
-    lower_validated_file(&host, file)
+    LOWERING_HOST.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let needs_stdlib = source.contains("import std");
+        // The stdlib must be registered before the entry file: adding its
+        // inputs later leaves module resolution with a stale entry-file view.
+        let recreate = match slot.as_ref() {
+            None => true,
+            Some(entry) => needs_stdlib && !entry.stdlib_registered,
+        };
+        if recreate {
+            let mut host = AnalysisHost::new();
+            let mut stdlib_registered = false;
+            if needs_stdlib {
+                register_fuzz_stdlib(&mut host).map_err(|error| {
+                    Failure::new(
+                        "stdlib-setup-failed",
+                        format!("failed to register fuzz stdlib dependencies: {error}"),
+                        false,
+                    )
+                })?;
+                stdlib_registered = true;
+            }
+            *slot = Some(ReusableLoweringHost {
+                host,
+                stdlib_registered,
+            });
+        }
+        let entry = slot.as_mut().expect("lowering host was just initialized");
+        // A fresh `SourceFile` per source keeps symbol identities disjoint:
+        // reusing a FileId across unrelated generated programs leaves stale
+        // symbol tables in imported units. The DB and stdlib survive, so the
+        // expensive declaration context is still shared.
+        let file = entry
+            .host
+            .new_file("smith/generated.aru".into(), source.to_owned());
+        lower_validated_file(&entry.host, file)
+    })
 }
 
 pub(crate) fn lower_validated_file(
@@ -554,7 +596,7 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
         .join("../../stdlib")
         .canonicalize()
         .map_err(|error| format!("canonicalize stdlib root: {error}"))?;
-    let sources: [(&str, &str); 40] = [
+    let sources: [(&str, &str); 44] = [
         (
             "alloc/bitset.aru",
             include_str!("../../../../stdlib/alloc/bitset.aru"),
@@ -628,6 +670,10 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
             include_str!("../../../../stdlib/core/fixed.aru"),
         ),
         (
+            "core/fmt.aru",
+            include_str!("../../../../stdlib/core/fmt.aru"),
+        ),
+        (
             "core/mem.aru",
             include_str!("../../../../stdlib/core/mem.aru"),
         ),
@@ -658,6 +704,18 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
         (
             "core/option.aru",
             include_str!("../../../../stdlib/core/option.aru"),
+        ),
+        (
+            "core/ops.aru",
+            include_str!("../../../../stdlib/core/ops.aru"),
+        ),
+        (
+            "core/pointer.aru",
+            include_str!("../../../../stdlib/core/pointer.aru"),
+        ),
+        (
+            "core/range.aru",
+            include_str!("../../../../stdlib/core/range.aru"),
         ),
         (
             "core/num.aru",
@@ -1487,6 +1545,10 @@ pub(super) fn execute_c(
     compile_command
         .arg("-fwrapv")
         .arg("-O0")
+        // Stack canaries on fuzz-generated binaries: catches stack smashing in
+        // transpiled / synthesized programs before the differential oracle
+        // reports a mismatch. Only applied when the host cc supports it.
+        .arg("-fstack-protector-strong")
         .arg(&source_path)
         .arg("-o")
         .arg(&executable_path)
@@ -1601,13 +1663,25 @@ pub(super) fn execute_llvm(
         .arg("-o")
         .arg(&executable_path);
     compile_command.args(arandu_middle::TargetSpec::for_host().cc_link_args());
+    // The runtime here was built by MSVC Rust: its C shims import the
+    // `printf` family, which the UCRT only provides inline.
+    if cfg!(target_env = "msvc") {
+        compile_command.arg("-llegacy_stdio_definitions");
+    }
     let compile = run_with_timeout(&mut compile_command, BACKEND_PROCESS_TIMEOUT)
         .map_err(|error| format!("clang: {error}"))?;
     if !compile.status.success() {
+        let stdout = String::from_utf8_lossy(&compile.stdout);
+        let stderr = captured_stderr(&compile);
         return Err(format!(
-            "clang exited with {}: {}",
+            "clang exited with {}: {}{}",
             compile.status,
-            captured_stderr(&compile)
+            stderr,
+            if stdout.trim().is_empty() {
+                String::new()
+            } else {
+                format!("\nstdout:\n{stdout}")
+            }
         ));
     }
 

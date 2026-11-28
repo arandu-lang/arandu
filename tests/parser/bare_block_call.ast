@@ -1,4 +1,4 @@
 Program @1:1-7:2
   Module @1:1-1:28 parser.bareBlockCall
   Func @3:1-7:2 main() -> void
-    Expr @4:5-6:6 Call @4:5-6:6(Path @4:5-4:16(transaction), [], Block @4:17-6:6[Expr @5:9-5:15 Call @5:9-5:15(Path @5:9-5:13(save), [])])
+    Expr @4:5-6:6 Call @4:5-6:6(Path @4:5-4:16(transaction), [Lambda @4:17-6:6([], Block @4:17-6:6[Expr @5:9-5:15 Call @5:9-5:15(Path @5:9-5:13(save), [])])])

@@ -48,8 +48,23 @@ impl<'a> WasmModuleBuilder<'a> {
 
         // Helpers follow all program definitions. Translate first so size mode
         // can decide from actual calls, including implicit heap-backed frames.
+        // Host imports backed by linear memory route allocations through
+        // `cabi_realloc` in both the Node and Wasmtime core-module hosts.
         let cabi_first_func_idx = num_imported_funcs + self.functions.len() as u32;
+        let host_needs_realloc = imports.iter().any(|import| {
+            matches!(
+                import.field.as_str(),
+                "ar_vec_malloc"
+                    | "ar_vec_realloc"
+                    | "ar_vec_buf_free"
+                    | "ar_rt_alloc_aligned"
+                    | "ar_rt_free_aligned"
+                    | "ar_string_push_str"
+                    | "ar_env_arg"
+            )
+        });
         let canonical_abi = !self.optimize_for_size || matches!(style, ExportStyle::Component(_));
+        let needs_realloc = canonical_abi || host_needs_realloc;
 
         // ── 1. Type section ───────────────────────────────────────────────
         let (mut type_section, import_type_indices, func_type_indices, mut next_type_idx) =
@@ -82,7 +97,54 @@ impl<'a> WasmModuleBuilder<'a> {
             func_index_map.insert(func.symbol, num_imported_funcs + i as u32);
         }
 
-        // ── 4. Table section (empty for MVP) ──────────────────────────────
+        // ── 4. Table section ──────────────────────────────────────────────
+        // A function value is its function index, so a call through it uses a
+        // table that holds every function at its own index (RFC 0032, L2).
+        let mut indirect_type_indices: FxHashMap<arandu_middle::types::TypeId, u32> =
+            FxHashMap::default();
+        for func in &self.functions {
+            for block in &func.blocks {
+                for stmt in func.block_stmts(block.id) {
+                    let arandu_middle::amir::AmirStmt::Call { callee, .. } = stmt else {
+                        continue;
+                    };
+                    let (AmirOperand::Copy(temp) | AmirOperand::Move(temp)) = callee else {
+                        continue;
+                    };
+                    let func_ty = func.temps[temp.as_usize()].ty;
+                    if indirect_type_indices.contains_key(&func_ty) {
+                        continue;
+                    }
+                    let Some((params, results)) =
+                        super::func_type_wasm_signature(func_ty, self.interner, self.layout)
+                    else {
+                        continue;
+                    };
+                    type_section.ty().function(params, results);
+                    indirect_type_indices.insert(func_ty, next_type_idx);
+                    next_type_idx += 1;
+                }
+            }
+        }
+        let table_size = num_imported_funcs + self.functions.len() as u32;
+        let indirect_table = (!indirect_type_indices.is_empty()).then(|| {
+            let mut tables = wasm_encoder::TableSection::new();
+            tables.table(wasm_encoder::TableType {
+                element_type: wasm_encoder::RefType::FUNCREF,
+                table64: false,
+                minimum: u64::from(table_size),
+                maximum: Some(u64::from(table_size)),
+                shared: false,
+            });
+            let indices = (0..table_size).collect::<Vec<_>>();
+            let mut elements = wasm_encoder::ElementSection::new();
+            elements.active(
+                None,
+                &wasm_encoder::ConstExpr::i32_const(0),
+                wasm_encoder::Elements::Functions(std::borrow::Cow::Owned(indices)),
+            );
+            (tables, elements)
+        });
 
         // ── 5. Memory section ─────────────────────────────────────────────
         let mut used_literals = FxHashSet::default();
@@ -166,6 +228,80 @@ impl<'a> WasmModuleBuilder<'a> {
                 static_offsets.insert((func.symbol, id), (offset, size));
             }
         }
+        // `static mut` storage: writable bytes of its own, never shared with
+        // an equal read-only blob.
+        let mut static_addresses = FxHashMap::default();
+        for item in &self.program.statics {
+            let image = arandu_middle::ctfe::const_value_bytes(
+                &item.init,
+                item.ty,
+                self.interner,
+                self.layout_provider,
+                self.layout,
+                true,
+            );
+            let base_align = 1u64 << crate::memory::RODATA_BASE.trailing_zeros();
+            // Places `bytes` and returns its index in rodata and its address.
+            let place =
+                |rodata: &mut Vec<u8>, bytes: &[u8], alignment: u64| -> Option<(usize, u32)> {
+                    if !alignment.is_power_of_two() || alignment > base_align {
+                        return None;
+                    }
+                    let mask = usize::try_from(alignment.max(16)).ok()? - 1;
+                    let aligned = rodata.len().checked_add(mask)? & !mask;
+                    let address = u32::try_from(
+                        usize::try_from(crate::memory::RODATA_BASE)
+                            .ok()?
+                            .checked_add(aligned)?,
+                    )
+                    .ok()?;
+                    rodata.resize(aligned, 0);
+                    rodata.extend_from_slice(bytes);
+                    if bytes.is_empty() {
+                        rodata.push(0);
+                    }
+                    Some((aligned, address))
+                };
+            // The objects its pointers reach go first; every pointer word is
+            // then the absolute address of its target.
+            let placed = image.and_then(|image| {
+                let mut objects = Vec::with_capacity(image.objects.len());
+                for object in &image.objects {
+                    objects.push(place(&mut rodata.bytes, &object.bytes, object.alignment)?);
+                }
+                let root = place(&mut rodata.bytes, &image.bytes, image.alignment)?;
+                let patches = std::iter::once((root.0, &image.relocations)).chain(
+                    image
+                        .objects
+                        .iter()
+                        .zip(&objects)
+                        .map(|(object, &(start, _))| (start, &object.relocations)),
+                );
+                let mut writes = Vec::new();
+                for (start, relocations) in patches {
+                    for relocation in relocations {
+                        let (_, target) = *objects.get(relocation.target)?;
+                        let at = start.checked_add(usize::try_from(relocation.offset).ok()?)?;
+                        writes.push((at, target));
+                    }
+                }
+                for (at, target) in writes {
+                    rodata
+                        .bytes
+                        .get_mut(at..at.checked_add(4)?)?
+                        .copy_from_slice(&target.to_le_bytes());
+                }
+                Some(root.1)
+            });
+            let Some(address) = placed else {
+                return Err(Diagnostic::ice(
+                    arandu_middle::diagnostics::DiagCode::ICEGEN002,
+                    format!("Wasm cannot place `static mut` storage '{}'", item.name),
+                    arandu_middle::Span::new(0, 0, 0),
+                ));
+            };
+            static_addresses.insert(item.symbol, address);
+        }
         let (heap_base, initial_pages) = rodata.memory_regions().ok_or_else(|| {
             Diagnostic::ice(
                 arandu_middle::diagnostics::DiagCode::ICEGEN002,
@@ -243,7 +379,9 @@ impl<'a> WasmModuleBuilder<'a> {
             literal_pool: &self.program.literal_pool,
             rodata_offsets: &rodata.offsets,
             static_offsets: &static_offsets,
+            static_addresses: &static_addresses,
             func_index_map: &func_index_map,
+            indirect_type_indices: &indirect_type_indices,
             alloc_func_idx: cabi_first_func_idx,
             free_func_idx: cabi_first_func_idx + 1,
             // After the allocator, which every caller also uses for its cell.
@@ -251,7 +389,7 @@ impl<'a> WasmModuleBuilder<'a> {
         };
 
         let mut code_section = CodeSection::new();
-        let mut needs_allocator = canonical_abi;
+        let mut needs_allocator = needs_realloc;
         let mut needs_float_text = false;
         for func in &self.functions {
             let (wasm_func, uses) = self.translate_func(func, &ctx, style)?;
@@ -266,19 +404,15 @@ impl<'a> WasmModuleBuilder<'a> {
         if needs_float_text {
             cabi.add_float_text(ctx.float_text_func_idx);
         }
-        if canonical_abi {
+        if needs_realloc {
             cabi.add_realloc(cabi_first_func_idx, cabi_first_func_idx + 1);
-            if let ExportStyle::Component(names) = &style {
-                for func in &self.functions {
-                    if let Some((export_name, sig)) = names.get(&func.symbol)
-                        && sig.retptr
-                    {
-                        cabi.add_post_return(
-                            export_name,
-                            vec![ValType::I32],
-                            cabi_first_func_idx + 1,
-                        );
-                    }
+        }
+        if canonical_abi && let ExportStyle::Component(names) = &style {
+            for func in &self.functions {
+                if let Some((export_name, sig)) = names.get(&func.symbol)
+                    && sig.retptr
+                {
+                    cabi.add_post_return(export_name, vec![ValType::I32], cabi_first_func_idx + 1);
                 }
             }
         }
@@ -294,9 +428,15 @@ impl<'a> WasmModuleBuilder<'a> {
             module.section(&import_section);
         }
         module.section(&func_section);
+        if let Some((tables, _)) = &indirect_table {
+            module.section(tables);
+        }
         module.section(&mem_section);
         module.section(&global_section);
         module.section(&export_section);
+        if let Some((_, elements)) = &indirect_table {
+            module.section(elements);
+        }
         module.section(&code_section);
 
         // ── 10. Data section ──────────────────────────────────────────────

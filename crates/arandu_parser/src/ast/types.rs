@@ -77,10 +77,33 @@ pub enum TypeExpr {
         span: Span,
         params: IndexRange,
         result: Option<ResultType>,
+        /// `true` for bare non-capturing function pointers `func(A) -> R`;
+        /// `false` for borrowed callback syntax `(A) -> R`.
+        is_bare_func: bool,
     },
     Group {
         span: Span,
         inner: TypeExprId,
+    },
+    /// `(A, B)`: two or more types without `->`.
+    Tuple {
+        span: Span,
+        items: IndexRange,
+    },
+    /// Never / diverging bottom type: `!`.
+    Never {
+        span: Span,
+    },
+    /// Owning, escaping closure type `own (A) -> R`, with optional capability
+    /// bounds: `own (A) -> R + Send` (RFC 0032, L3). `func` is always a
+    /// non-bare [`TypeExpr::Func`].
+    OwnFunc {
+        span: Span,
+        func: TypeExprId,
+        bounds: IndexRange,
+        /// `own once (A) -> R`: the call consumes the closure, and its body
+        /// may consume the captures.
+        once: bool,
     },
 }
 
@@ -100,7 +123,10 @@ impl TypeExpr {
             | TypeExpr::MutSlice { span, .. }
             | TypeExpr::Array { span, .. }
             | TypeExpr::Func { span, .. }
-            | TypeExpr::Group { span, .. } => *span,
+            | TypeExpr::Group { span, .. }
+            | TypeExpr::Tuple { span, .. }
+            | TypeExpr::Never { span, .. }
+            | TypeExpr::OwnFunc { span, .. } => *span,
         }
     }
 }

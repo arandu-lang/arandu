@@ -122,6 +122,8 @@ pub enum FailureDto {
     Diagnostics {
         diagnostics: Vec<DiagnosticDto>,
         source_path: Option<PathBuf>,
+        #[serde(default)]
+        file_paths: std::collections::BTreeMap<u32, PathBuf>,
     },
 }
 
@@ -143,9 +145,11 @@ impl FailureDto {
             CliFailure::Diagnostics {
                 diagnostics,
                 source_path,
+                file_paths,
             } => Self::Diagnostics {
                 diagnostics: diagnostics.iter().map(DiagnosticDto::of).collect(),
                 source_path: source_path.clone(),
+                file_paths: file_paths.clone(),
             },
         }
     }
@@ -165,12 +169,14 @@ impl FailureDto {
             Self::Diagnostics {
                 diagnostics,
                 source_path,
+                file_paths,
             } => CliFailure::Diagnostics {
                 diagnostics: diagnostics
                     .into_iter()
                     .map(DiagnosticDto::into_diagnostic)
                     .collect(),
                 source_path,
+                file_paths,
             },
         }
     }
@@ -357,6 +363,7 @@ mod tests {
         let CliFailure::Diagnostics {
             diagnostics,
             source_path,
+            ..
         } = back
         else {
             panic!("diagnostics failure");

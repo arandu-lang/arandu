@@ -26,7 +26,7 @@ pub(crate) fn register_prelude(checker: &mut TypeChecker<'_>, _program: &Program
                 ("print", println_ty.clone()),
                 ("create", create_ty),
                 ("remove", remove_ty),
-                ("eprint", println_ty),
+                ("eprint", println_ty.clone()),
             ],
         ),
         ("err", vec![("new", err_new_ty)]),
@@ -36,6 +36,16 @@ pub(crate) fn register_prelude(checker: &mut TypeChecker<'_>, _program: &Program
                 let ty_id = checker.intern(ty);
                 checker.record_decl_type(symbol_id, ty_id);
             }
+        }
+    }
+
+    let direct_println_ty = checker.intern(println_ty);
+    for io_fn in ["println", "print", "eprint"] {
+        if let Some(symbol_id) = checker
+            .symbols
+            .lookup_value(arandu_middle::ScopeId(0), io_fn)
+        {
+            checker.record_decl_type(symbol_id, direct_println_ty);
         }
     }
 }

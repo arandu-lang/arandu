@@ -335,6 +335,9 @@ impl<'a> Resolver<'a> {
     pub(crate) fn resolve_param(&mut self, scope: ScopeId, param: &Param) {
         self.resolve_attrs(scope, &param.attrs);
         self.resolve_type_expr(scope, param.ty);
+        if let Some(default) = param.default {
+            self.resolve_expr(scope, default);
+        }
         self.define(scope, &param.name, SymbolKind::Param, param.span);
         let is_mut = param.ownership == Some(arandu_parser::Ownership::Mut);
         if let Some(symbol_id) = self
@@ -415,6 +418,9 @@ fn is_effect_arg(expr: &ExprKind) -> bool {
 impl<'a> Resolver<'a> {
     pub(crate) fn resolve_attrs(&mut self, scope: ScopeId, attrs: &[Attribute]) {
         for attr in attrs {
+            if attr.name == "Derive" {
+                continue;
+            }
             for arg in &attr.args {
                 // Annotation args are annotation payloads, not value
                 // expressions. Known effect names (`@Effects(FileRead)`) are

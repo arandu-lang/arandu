@@ -61,7 +61,8 @@ impl<'a> FuncTranslator<'a> {
             self.code.push(Instruction::I32Store8(wasm_encoder::MemArg {
                 offset: 0,
                 align: 0,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             }));
 
             self.code.push(Instruction::LocalGet(self.scratch_i64));
@@ -119,7 +120,8 @@ impl<'a> FuncTranslator<'a> {
             self.code.push(Instruction::I32Store8(wasm_encoder::MemArg {
                 offset: 0,
                 align: 0,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             }));
 
             self.code.push(Instruction::LocalGet(self.scratch));
@@ -147,7 +149,8 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::I32Store8(wasm_encoder::MemArg {
             offset: 0,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }));
         self.code.push(Instruction::End);
 
@@ -173,7 +176,8 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::I32Store8(wasm_encoder::MemArg {
             offset: 0,
             align: 0,
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         }));
 
         self.code.push(Instruction::LocalGet(self.scratch_b));

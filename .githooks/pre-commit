@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+
+# 1. Catch conflict markers and whitespace errors in staged changes.
+if ! git diff --cached --check >/dev/null; then
+    echo "pre-commit: whitespace errors or conflict markers found in staged changes." >&2
+    git diff --cached --check >&2 || true
+    exit 1
+fi
+
+# 2. Verify Rust formatting when any .rs file is staged.
+if [ -n "$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')" ]; then
+    if command -v cargo >/dev/null 2>&1; then
+        if ! cargo fmt --all -- --check; then
+            echo "pre-commit: rustfmt check failed. Run 'cargo fmt --all' and restage." >&2
+            exit 1
+        fi
+    fi
+fi

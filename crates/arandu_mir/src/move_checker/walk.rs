@@ -1,4 +1,5 @@
 use super::{LocalMoveState, MoveState};
+use crate::BitSet;
 use crate::Span;
 use crate::SymbolTable;
 use crate::amir::{
@@ -6,16 +7,29 @@ use crate::amir::{
     BlockId, LocalId, TempId, for_each_rvalue_operand, for_each_rvalue_place,
 };
 use crate::diagnostics::{DiagCode, Diagnostic};
+use crate::types::ArType;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 
 /// Sink for block-tagged move diagnostics during CFG walk.
-type MoveDiagSink<'a> = Option<(&'a SymbolTable, BlockId, &'a mut Vec<(BlockId, Diagnostic)>)>;
+/// Where diagnostics go during the reporting walk; `None` while the dataflow
+/// iterates to its fixpoint.
+pub(super) struct MoveDiagnostics<'a> {
+    pub(super) symbols: &'a SymbolTable,
+    pub(super) types: &'a dyn arandu_middle::type_context::AmirTypeContext,
+    pub(super) block: BlockId,
+    pub(super) out: &'a mut Vec<(BlockId, Diagnostic)>,
+}
+
+type MoveDiagSink<'a> = Option<MoveDiagnostics<'a>>;
 
 pub(super) fn compute_move_in<'bump>(
     func: &AmirFunc,
     bump: &'bump bumpalo::Bump,
-) -> Option<bumpalo::collections::Vec<'bump, MoveState>> {
+) -> Option<(
+    bumpalo::collections::Vec<'bump, MoveState>,
+    bumpalo::collections::Vec<'bump, Option<AmirPlace>>,
+)> {
     let num_locals = func.locals.len();
     let num_blocks = func.blocks.len();
 
@@ -30,10 +44,12 @@ pub(super) fn compute_move_in<'bump>(
         block_in.push(MoveState::new(num_locals));
     }
     let mut worklist = VecDeque::new();
+    let mut in_worklist = BitSet::<BlockId>::with_capacity(num_blocks);
 
     for block in &func.blocks {
         if func.predecessors(block.id).is_empty() {
             worklist.push_back(block.id);
+            in_worklist.insert(block.id);
         }
     }
 
@@ -42,6 +58,7 @@ pub(super) fn compute_move_in<'bump>(
         num_blocks * num_locals * 2 + crate::analysis_limits::DATAFLOW_FIXPOINT_HEADROOM;
 
     while let Some(bid) = worklist.pop_front() {
+        in_worklist.remove(bid);
         iterations += 1;
         assert!(
             iterations <= sanity_limit,
@@ -70,14 +87,15 @@ pub(super) fn compute_move_in<'bump>(
             block_in[bi] = new_in;
             edge_out[bi] = new_edges;
             for succ in successors(&block.terminator) {
-                if succ.as_usize() < num_blocks {
+                if succ.as_usize() < num_blocks && !in_worklist.contains(succ) {
                     worklist.push_back(succ);
+                    in_worklist.insert(succ);
                 }
             }
         }
     }
 
-    Some(block_in)
+    Some((block_in, temp_origins))
 }
 
 pub(super) fn temp_origins<'bump>(
@@ -153,7 +171,12 @@ pub(super) fn temp_origins<'bump>(
                                 found_origin = Some(place);
                             }
                         }
-                        AmirRvalue::Use(AmirOperand::Copy(t) | AmirOperand::Move(t)) => {
+                        AmirRvalue::Use(AmirOperand::Copy(t)) => {
+                            found_origin = origins[t.as_usize()].clone();
+                        }
+                        AmirRvalue::Use(AmirOperand::Move(t))
+                            if func.temps[t.as_usize()].is_copy =>
+                        {
                             found_origin = origins[t.as_usize()].clone();
                         }
                         _ => {}
@@ -187,7 +210,7 @@ fn block_edge_states(
 
     let mut edges = Vec::new();
     match &block.terminator {
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
         AmirTerminator::Goto { target, args } => {
             let mut edge = state;
             for arg in args {
@@ -259,7 +282,16 @@ pub(super) fn apply_block(
     for stmt in func.block_stmts(block) {
         apply_stmt(stmt, func, temp_origins, state, &mut diagnostics);
     }
+    apply_terminator(block, func, temp_origins, state, &mut diagnostics);
+}
 
+pub(super) fn apply_terminator(
+    block: crate::amir::BlockId,
+    func: &AmirFunc,
+    temp_origins: &[Option<AmirPlace>],
+    state: &mut MoveState,
+    diagnostics: &mut MoveDiagSink<'_>,
+) {
     match &func.block(block).terminator {
         AmirTerminator::Branch {
             condition,
@@ -267,19 +299,12 @@ pub(super) fn apply_block(
             false_args,
             ..
         } => {
-            check_operand_read(condition, func, temp_origins, state, &mut diagnostics);
+            check_operand_read(condition, func, temp_origins, state, diagnostics);
             let mut true_state = state.clone();
             let mut false_state = state.clone();
 
             for arg in true_args {
-                consume_operand(
-                    arg,
-                    func,
-                    temp_origins,
-                    &mut true_state,
-                    &mut diagnostics,
-                    false,
-                );
+                consume_operand(arg, func, temp_origins, &mut true_state, diagnostics, false);
             }
             for arg in false_args {
                 consume_operand(
@@ -287,7 +312,7 @@ pub(super) fn apply_block(
                     func,
                     temp_origins,
                     &mut false_state,
-                    &mut diagnostics,
+                    diagnostics,
                     false,
                 );
             }
@@ -302,20 +327,13 @@ pub(super) fn apply_block(
             otherwise,
             ..
         } => {
-            check_operand_read(discriminant, func, temp_origins, state, &mut diagnostics);
+            check_operand_read(discriminant, func, temp_origins, state, diagnostics);
             let mut arm_states = Vec::with_capacity(targets.len() + 1);
 
             for (_, _, args) in targets {
                 let mut arm_state = state.clone();
                 for arg in args {
-                    consume_operand(
-                        arg,
-                        func,
-                        temp_origins,
-                        &mut arm_state,
-                        &mut diagnostics,
-                        false,
-                    );
+                    consume_operand(arg, func, temp_origins, &mut arm_state, diagnostics, false);
                 }
                 arm_states.push(arm_state);
             }
@@ -326,7 +344,7 @@ pub(super) fn apply_block(
                     func,
                     temp_origins,
                     &mut otherwise_state,
-                    &mut diagnostics,
+                    diagnostics,
                     false,
                 );
             }
@@ -336,16 +354,65 @@ pub(super) fn apply_block(
         }
         AmirTerminator::Goto { args, .. } => {
             for arg in args {
-                consume_operand(arg, func, temp_origins, state, &mut diagnostics, false);
+                consume_operand(arg, func, temp_origins, state, diagnostics, false);
             }
         }
         AmirTerminator::Suspend { future, args, .. } => {
-            check_operand_read(future, func, temp_origins, state, &mut diagnostics);
+            check_operand_read(future, func, temp_origins, state, diagnostics);
             for arg in args {
-                consume_operand(arg, func, temp_origins, state, &mut diagnostics, false);
+                consume_operand(arg, func, temp_origins, state, diagnostics, false);
             }
         }
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return => {
+            report_unrestored_reference_moves(func, temp_origins, state, diagnostics);
+        }
+        AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
+    }
+}
+
+/// A field moved out through a reference (`self.field` with `self: mut ref`)
+/// must be put back before returning: the caller still owns and destroys it.
+fn report_unrestored_reference_moves(
+    func: &AmirFunc,
+    temp_origins: &[Option<AmirPlace>],
+    state: &MoveState,
+    diagnostics: &mut MoveDiagSink<'_>,
+) {
+    let Some(MoveDiagnostics {
+        symbols,
+        block,
+        out: diagnostics,
+        ..
+    }) = diagnostics.as_mut()
+    else {
+        return;
+    };
+    let reference_roots = temp_origins
+        .iter()
+        .flatten()
+        .filter(|place| {
+            place
+                .projections
+                .iter()
+                .any(|projection| matches!(projection, AmirProjection::Deref))
+        })
+        .map(|place| place.local)
+        .collect::<rustc_hash::FxHashSet<_>>();
+    let mut reported = rustc_hash::FxHashSet::default();
+    for place in state.moved_fields.iter().chain(&state.maybe_moved_fields) {
+        if reference_roots.contains(&place.local) && reported.insert(place.local) {
+            diagnostics.push((
+                *block,
+                move_diag(
+                    DiagCode::O016MoveOutOfReference,
+                    place.local,
+                    func,
+                    symbols,
+                    "a value moved out of the reference is not restored before returning:",
+                    "assign a new value to the field before the function returns, or use `mem.replace`",
+                ),
+            ));
+        }
     }
 }
 
@@ -357,9 +424,28 @@ pub(super) fn apply_stmt(
     diagnostics: &mut MoveDiagSink<'_>,
 ) {
     match stmt {
-        AmirStmt::Assign { rhs, .. } => {
-            check_rvalue_reads(rhs, func, state, diagnostics);
+        AmirStmt::Assign { lhs, rhs } => {
+            let is_synthesized_drop_borrow = matches!(rhs, AmirRvalue::Borrow(_))
+                && func
+                    .temps
+                    .get(lhs.as_usize())
+                    .is_some_and(|temp| temp.span == Span::new(0, 0, 0));
+            if !is_synthesized_drop_borrow {
+                check_rvalue_reads(rhs, func, state, diagnostics);
+            }
             consume_rvalue(rhs, func, temp_origins, state, diagnostics);
+            // A value loaded into the return register is never consumed
+            // later by an operand: the load itself moves it out of its place,
+            // and out of a reference that is O016 (`return p.field`).
+            if let AmirRvalue::Load(place) = rhs
+                && lhs.as_usize() == 0
+                && func
+                    .temps
+                    .first()
+                    .is_some_and(|ret| !ret.is_copy && ret.ty == func.return_type)
+            {
+                consume_place(place, func, state, diagnostics, false);
+            }
         }
         AmirStmt::Store { lhs, rhs } => {
             if !lhs.projections.is_empty() {
@@ -374,7 +460,9 @@ pub(super) fn apply_stmt(
                 consume_operand(arg, func, temp_origins, state, diagnostics, false);
             }
         }
-        AmirStmt::Free(op) => consume_operand(op, func, temp_origins, state, diagnostics, true),
+        AmirStmt::Free(op) | AmirStmt::ArenaRewind(op) => {
+            consume_operand(op, func, temp_origins, state, diagnostics, true)
+        }
         AmirStmt::Destroy(place) => {
             let recursive_root_cleanup = place.projections.is_empty()
                 && state.root_state(place.local) == LocalMoveState::Available
@@ -407,10 +495,21 @@ fn consume_rvalue(
     diagnostics: &mut MoveDiagSink<'_>,
 ) {
     match rvalue {
-        AmirRvalue::Len(op)
-        | AmirRvalue::SliceData(op)
-        | AmirRvalue::Discriminant { value: op } => {
+        AmirRvalue::Len(op) | AmirRvalue::SliceData(op) => {
             check_operand_read(op, func, temp_origins, state, diagnostics);
+        }
+        AmirRvalue::Discriminant { value: op } => {
+            let is_synthesized_drop_borrow = matches!(
+                op,
+                AmirOperand::Copy(t)
+                    if func
+                        .temps
+                        .get(t.as_usize())
+                        .is_some_and(|temp| temp.span == Span::new(0, 0, 0))
+            );
+            if !is_synthesized_drop_borrow {
+                check_operand_read(op, func, temp_origins, state, diagnostics);
+            }
         }
         _ => {
             for_each_rvalue_operand(rvalue, |op| {
@@ -454,8 +553,123 @@ fn consume_operand(
     let Some(place) = origin_for(*temp, temp_origins) else {
         return;
     };
+    consume_place(place, func, state, diagnostics, double_free);
+}
+
+/// Moves `place` out, checking it is still available. Moving through a
+/// reference is O016.
+fn consume_place(
+    place: &AmirPlace,
+    func: &AmirFunc,
+    state: &mut MoveState,
+    diagnostics: &mut MoveDiagSink<'_>,
+    double_free: bool,
+) {
+    // Moving a whole referent (`*r`) leaves its owner nothing to restore from
+    // here: its owner still uses and destroys it (Rust's E0507). A field moved
+    // through a reference is tracked like any field and must be restored
+    // before the function returns (checked at `Return`).
+    if place
+        .projections
+        .iter()
+        .any(|projection| matches!(projection, AmirProjection::Deref))
+        && super::tracked_move_place(place).projections.is_empty()
+    {
+        if let Some(MoveDiagnostics {
+            symbols,
+            block,
+            out: diagnostics,
+            ..
+        }) = diagnostics.as_mut()
+        {
+            diagnostics.push((
+                *block,
+                move_diag(
+                    DiagCode::O016MoveOutOfReference,
+                    place.local,
+                    func,
+                    symbols,
+                    "cannot move a value out of the reference",
+                    "use it through the reference (a method, a field or `ref`); a closure that consumes a captured value must capture it with `move`",
+                ),
+            ));
+        }
+        return;
+    }
+    if let Some(sink) = diagnostics.as_mut()
+        && moves_out_of_destructor(place, func, sink.symbols, sink.types)
+    {
+        sink.out.push((
+            sink.block,
+            move_diag(
+                DiagCode::O018MoveOutOfDestructor,
+                place.local,
+                func,
+                sink.symbols,
+                "cannot move a part out of a value with a destructor:",
+                "the destructor runs on the complete value; move the whole value, borrow the part, or replace it with `mem.replace`",
+            ),
+        ));
+    }
     check_consume_place(place, func, state, diagnostics, double_free);
     state.move_place(place);
+}
+
+/// Whether `place` is a part of a value whose type has a `@Destructor`
+/// (Rust's E0509). Parts reached through a reference are restored before
+/// the function returns, which O016 checks.
+fn moves_out_of_destructor(
+    place: &AmirPlace,
+    func: &AmirFunc,
+    symbols: &SymbolTable,
+    types: &dyn arandu_middle::type_context::AmirTypeContext,
+) -> bool {
+    let Some(local) = func.locals.get(place.local.as_usize()) else {
+        return false;
+    };
+    let interner = types.type_interner();
+    let mut current = local.ty;
+    for projection in &place.projections {
+        if matches!(projection, AmirProjection::Variant(_)) {
+            continue;
+        }
+        if matches!(projection, AmirProjection::Deref) {
+            return false;
+        }
+        if types.destructor_for_type(current).is_some() {
+            return true;
+        }
+        let next = match projection {
+            AmirProjection::Field(field) => symbols.try_get(*field).and_then(|field| {
+                arandu_middle::layout::instantiated_field_type(
+                    &interner.resolve(current),
+                    &field.name,
+                    interner,
+                    types,
+                )
+            }),
+            AmirProjection::Payload { field_ty, .. } => Some(*field_ty),
+            AmirProjection::TupleField(index) => match interner.resolve(current) {
+                ArType::Tuple(items) => interner.type_args(items).get(*index).copied(),
+                _ => None,
+            },
+            AmirProjection::Index(_) | AmirProjection::IndexConstant(_) => {
+                match interner.resolve(current) {
+                    ArType::Array(_, item)
+                    | ArType::ConstArray(_, item)
+                    | ArType::Slice(item)
+                    | ArType::MutSlice(item) => Some(item),
+                    _ => None,
+                }
+            }
+            AmirProjection::Variant(_) | AmirProjection::Deref => None,
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        current = next;
+    }
+    false
 }
 
 fn check_place_read(
@@ -473,7 +687,13 @@ fn check_place_state(
     func: &AmirFunc,
     diagnostics: &mut MoveDiagSink<'_>,
 ) {
-    let Some((symbols, block, diagnostics)) = diagnostics.as_mut() else {
+    let Some(MoveDiagnostics {
+        symbols,
+        block,
+        out: diagnostics,
+        ..
+    }) = diagnostics.as_mut()
+    else {
         return;
     };
     let block = *block;
@@ -493,12 +713,12 @@ fn check_place_state(
         LocalMoveState::MaybeMoved => diagnostics.push((
             block,
             move_diag(
-                DiagCode::O007InconsistentMoveBetweenBranches,
+                DiagCode::O001UseAfterMove,
                 place.local,
                 func,
                 symbols,
-                "value may have been moved on some control-flow paths",
-                "ensure all branches leave the value in a consistent ownership state",
+                "use of moved value",
+                "value may have been moved on a prior control-flow path",
             ),
         )),
     }
@@ -511,7 +731,13 @@ fn check_consume_place(
     diagnostics: &mut MoveDiagSink<'_>,
     double_free: bool,
 ) {
-    let Some((symbols, block, diagnostics)) = diagnostics.as_mut() else {
+    let Some(MoveDiagnostics {
+        symbols,
+        block,
+        out: diagnostics,
+        ..
+    }) = diagnostics.as_mut()
+    else {
         return;
     };
     let block = *block;
@@ -539,15 +765,16 @@ fn check_consume_place(
                 "value was already consumed on this path",
             ),
         )),
+        LocalMoveState::MaybeMoved if double_free => {}
         LocalMoveState::MaybeMoved => diagnostics.push((
             block,
             move_diag(
-                DiagCode::O007InconsistentMoveBetweenBranches,
+                DiagCode::O001UseAfterMove,
                 place.local,
                 func,
                 symbols,
-                "value may have been moved on some control-flow paths",
-                "ensure all branches leave the value in a consistent ownership state",
+                "use of moved value",
+                "value may have been moved on a prior control-flow path",
             ),
         )),
     }
@@ -606,7 +833,9 @@ fn local_name(local: LocalId, func: &AmirFunc, symbols: &SymbolTable) -> String 
 
 fn successors(term: &AmirTerminator) -> Vec<crate::amir::BlockId> {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => Vec::new(),
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {
+            Vec::new()
+        }
         AmirTerminator::Goto { target, .. } => vec![*target],
         AmirTerminator::Suspend { resume, .. } => vec![*resume],
         AmirTerminator::Branch {

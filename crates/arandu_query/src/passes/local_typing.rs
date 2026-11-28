@@ -133,7 +133,7 @@ pub(crate) fn item_typing_input(
     };
     let signatures = super::signatures::declaration_signatures(db, file);
     let declared = &signatures.type_info;
-    if !declared.thread_captures.is_empty() {
+    if !declared.closures.is_empty() {
         return None;
     }
     let item_program = super::programs::defaults_program(db, file, item_sym)?;
@@ -255,7 +255,9 @@ pub(crate) fn item_direct_typing(
     );
     if !typed.diagnostics.is_empty()
         || !typed.type_info.ctfe_roots.is_empty()
-        || !typed.type_info.thread_captures.is_empty()
+        || !typed.type_info.closures.is_empty()
+        || !typed.type_info.adjustments.is_empty()
+        || !typed.type_info.closure_temporaries.is_empty()
     {
         return None;
     }
@@ -480,7 +482,13 @@ impl Frame<'_> {
             value_refs,
             type_refs,
             mutable_symbols,
+            hole_scopes,
         } = typed;
+        // A hole's scope belongs to the whole-file resolution; an item with
+        // one is checked on the full path.
+        if !hole_scopes.is_empty() {
+            return None;
+        }
         Some(ResolvedNames {
             deferred_comptime_functions: deferred_comptime_functions.clone(),
             deferred_loop_bodies: self
@@ -497,6 +505,7 @@ impl Frame<'_> {
             value_refs: self.keys(value_refs, &signatures.value_refs)?,
             type_refs: self.keys(type_refs, &signatures.type_refs)?,
             mutable_symbols: mutable_symbols.clone(),
+            hole_scopes: rustc_hash::FxHashMap::default(),
         })
     }
 
@@ -521,22 +530,41 @@ impl Frame<'_> {
             struct_fields: _,
             private_fields: _,
             interior_mutable_types: _,
+            non_copy_types: _,
+            non_send_types: _,
+            non_sync_types: _,
+            unsafe_send_types: _,
+            unsafe_sync_types: _,
+            non_null_types: _,
             enum_variants: _,
             enum_variant_tags: _,
             destructors: _,
             destructor_instances: _,
             generic_params: _,
             generic_defaults: _,
+            callback_bounds: _,
             param_constraints: _,
             interfaces: _,
             variant_instantiations: _,
             function_effects: _,
             unsafe_functions: _,
+            variadic_functions: _,
+            exported_functions: _,
+            cold_functions: _,
             struct_repr_c: _,
+            struct_unions: _,
             struct_field_defaults,
-            thread_captures,
+            func_param_defaults,
+            derived_methods: _,
+            closures,
+            adjustments,
+            closure_temporaries,
         } = typed;
-        if !thread_captures.is_empty() || *struct_field_defaults != signatures.struct_field_defaults
+        if !closures.is_empty()
+            || !adjustments.is_empty()
+            || !closure_temporaries.is_empty()
+            || *struct_field_defaults != signatures.struct_field_defaults
+            || *func_param_defaults != signatures.func_param_defaults
         {
             return None;
         }
@@ -564,6 +592,9 @@ impl Frame<'_> {
             }
         }
         local.struct_field_defaults = FxHashMap::default();
+        local
+            .func_param_defaults
+            .retain(|_, default| !matches!(default, arandu_typeck::ParamDefault::LocalExpr { .. }));
         without_signatures(&mut local, signatures);
         Some(local)
     }
@@ -607,6 +638,7 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
     if local.type_interner.extends(&signatures.type_interner) {
         same_map(&mut local.decl_types, &signatures.decl_types);
         same_map(&mut local.generic_defaults, &signatures.generic_defaults);
+        same_map(&mut local.callback_bounds, &signatures.callback_bounds);
     }
     same_map(
         &mut local.ctfe_global_values,
@@ -629,8 +661,29 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
         &mut local.interior_mutable_types,
         &signatures.interior_mutable_types,
     );
+    same_set(&mut local.non_copy_types, &signatures.non_copy_types);
+    same_set(&mut local.non_send_types, &signatures.non_send_types);
+    same_set(&mut local.non_sync_types, &signatures.non_sync_types);
+    same_set(&mut local.unsafe_send_types, &signatures.unsafe_send_types);
+    same_set(&mut local.unsafe_sync_types, &signatures.unsafe_sync_types);
+    same_set(&mut local.non_null_types, &signatures.non_null_types);
     same_set(&mut local.unsafe_functions, &signatures.unsafe_functions);
+    same_set(
+        &mut local.exported_functions,
+        &signatures.exported_functions,
+    );
+    same_set(&mut local.cold_functions, &signatures.cold_functions);
+    same_set(
+        &mut local.variadic_functions,
+        &signatures.variadic_functions,
+    );
     same_set(&mut local.struct_repr_c, &signatures.struct_repr_c);
+    same_set(&mut local.struct_unions, &signatures.struct_unions);
+    same_map(
+        &mut local.func_param_defaults,
+        &signatures.func_param_defaults,
+    );
+    same_map(&mut local.derived_methods, &signatures.derived_methods);
 }
 
 /// Every position a diagnostic carries.

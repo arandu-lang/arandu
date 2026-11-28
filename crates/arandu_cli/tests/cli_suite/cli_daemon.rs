@@ -1,7 +1,7 @@
 //! The build daemon (HOT.3) and its fail-closed client (HOT.5): warm builds
 //! publish what a batch build publishes, program errors reach the client
 //! rendered, and a dead, replaced or disabled daemon never fails a build.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;
@@ -31,9 +31,11 @@ impl Project {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("arandu.toml"), MANIFEST).unwrap();
         fs::write(root.join("src/main.aru"), source).unwrap();
-        // A private runtime directory keeps the sockets of this test apart.
+        // A private runtime directory keeps the sockets of this test apart;
+        // Windows pipes are named after the project root instead.
         let runtime = tmp.join("run");
         fs::create_dir_all(&runtime).unwrap();
+        #[cfg(unix)]
         fs::set_permissions(
             &runtime,
             std::os::unix::fs::PermissionsExt::from_mode(0o700),
@@ -82,11 +84,37 @@ impl Project {
 
     /// Whether a daemon holds the project's lock.
     fn daemon_running(&self) -> bool {
-        let lock = self.root.join(".arandu/daemon.lock");
-        let Ok(file) = fs::OpenOptions::new().write(true).open(lock) else {
-            return false;
+        let check_lock = |path: &std::path::Path| -> Option<bool> {
+            match fs::OpenOptions::new().write(true).open(path) {
+                Ok(file) => Some(file.try_lock().is_err()),
+                Err(error) => {
+                    #[cfg(windows)]
+                    {
+                        // On Windows, opening a file locked exclusively by another process
+                        // fails with ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33).
+                        if let Some(code) = error.raw_os_error() {
+                            if code == 32 || code == 33 {
+                                return Some(true);
+                            }
+                        }
+                    }
+                    let _ = error;
+                    None
+                }
+            }
         };
-        file.try_lock().is_err()
+
+        let lock = self.root.join(".arandu").join("daemon.lock");
+        if let Some(running) = check_lock(&lock) {
+            return running;
+        }
+        if let Ok(canonical) = self.root.canonicalize() {
+            let lock = canonical.join(".arandu").join("daemon.lock");
+            if let Some(running) = check_lock(&lock) {
+                return running;
+            }
+        }
+        false
     }
 
     fn stop(&self) {
@@ -98,6 +126,7 @@ impl Project {
         assert!(!self.daemon_running(), "the daemon stops when asked");
     }
 
+    #[cfg(unix)]
     fn kill(&self) {
         let _ = Command::new("pkill")
             .args(["-KILL", "-f"])
@@ -206,6 +235,7 @@ fn a_broken_program_is_reported_by_the_client_and_the_daemon_stays() {
     project.stop();
 }
 
+#[cfg(unix)]
 #[test]
 fn a_killed_daemon_never_fails_the_next_build() {
     let project = Project::new("killed", &program(2));

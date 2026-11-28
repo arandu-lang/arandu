@@ -193,7 +193,7 @@ fn check_stmt(
                 check_operand_move(arg, point, live, facts, temp_origins, func, symbols, diags);
             }
         }
-        AmirStmt::Free(op) => {
+        AmirStmt::Free(op) | AmirStmt::ArenaRewind(op) => {
             check_operand_move(op, point, live, facts, temp_origins, func, symbols, diags);
         }
         AmirStmt::Destroy(place) => {
@@ -358,7 +358,7 @@ fn check_terminator_moves(
                 check_operand_move(a, point, live, facts, temp_origins, func, symbols, diags);
             }
         }
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }
 }
 

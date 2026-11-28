@@ -4,6 +4,7 @@ pub(super) mod calls;
 mod constant_strings;
 pub(super) mod constructors;
 pub(super) mod control;
+mod type_info;
 
 use super::{LowerCtx, amir_unsupported};
 use crate::amir::{AmirConstant, AmirOperand, AmirRvalue, AmirStmt, TempId};
@@ -61,6 +62,16 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
+        // Expressions nest as deeply as a program writes them.
+        arandu_base::ensure_sufficient_stack(|| self.lower_expr_here(expr_id, target, symbols))
+    }
+
+    fn lower_expr_here(
+        &mut self,
+        expr_id: HirExprId,
+        target: Option<TempId>,
+        symbols: &SymbolTable,
+    ) -> Result<AmirOperand, Diagnostic> {
         self.charge_static_expansion(self.hir.pool.expr(expr_id).span)?;
         let hir = self.hir;
         let expr = hir.pool.expr(expr_id);
@@ -104,7 +115,7 @@ impl LowerCtx<'_> {
                         amir_unsupported(
                             expr.span,
                             "invalid target float format",
-                            "CT.2 deterministic floats",
+                            "run 'arandu explain U001' for details",
                         )
                     })?;
                 let value = arandu_middle::ctfe::ConstFloat::parse(ty, v).map_err(|error| {
@@ -120,7 +131,7 @@ impl LowerCtx<'_> {
                         amir_unsupported(
                             expr.span,
                             "invalid typed float literal",
-                            "CT.2 deterministic floats",
+                            "run 'arandu explain U001' for details",
                         )
                     }
                 })?;
@@ -141,21 +152,35 @@ impl LowerCtx<'_> {
                 Ok(op)
             }
             HirExprKind::FrozenBytes(value) => {
+                let resolved_expr_ty = self.tc.type_info.type_interner.resolve(expr.ty);
                 let source = AmirOperand::Constant(self.intern_frozen_bytes(value));
+                if matches!(resolved_expr_ty, ArType::Ptr(_)) {
+                    let u8_ty = self
+                        .tc
+                        .type_info
+                        .type_interner
+                        .intern(ArType::Primitive(Primitive::U8));
+                    let slice_ty = self.tc.type_info.type_interner.intern(ArType::Slice(u8_ty));
+                    let bytes = self.new_temp_id(slice_ty);
+                    self.emit_assign_temp(bytes, AmirRvalue::StrBytes { source });
+                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
+                    self.emit_assign_temp(dest, AmirRvalue::SliceData(AmirOperand::Copy(bytes)));
+                    return Ok(AmirOperand::Copy(dest));
+                }
                 let bytes = self.new_temp_id(expr.ty);
                 self.emit_assign_temp(bytes, AmirRvalue::StrBytes { source });
                 let start = u64::try_from(value.start()).map_err(|_| {
                     amir_unsupported(
                         expr.span,
                         "frozen slice offset exceeds usize",
-                        "CT.2 frozen slices",
+                        "run 'arandu explain U001' for details",
                     )
                 })?;
                 let len = u64::try_from(value.len()).map_err(|_| {
                     amir_unsupported(
                         expr.span,
                         "frozen slice length exceeds usize",
-                        "CT.2 frozen slices",
+                        "run 'arandu explain U001' for details",
                     )
                 })?;
                 let usize_ty = arandu_middle::ctfe::IntegerType::new(Primitive::USize, self.layout)
@@ -163,7 +188,7 @@ impl LowerCtx<'_> {
                         amir_unsupported(
                             expr.span,
                             "invalid target usize format",
-                            "CT.2 frozen slices",
+                            "run 'arandu explain U001' for details",
                         )
                     })?;
                 arandu_middle::ctfe::ConstInt::new(usize_ty, i128::from(start))
@@ -172,7 +197,7 @@ impl LowerCtx<'_> {
                         amir_unsupported(
                             expr.span,
                             "frozen slice exceeds target usize",
-                            "CT.2 frozen slices",
+                            "run 'arandu explain U001' for details",
                         )
                     })?;
                 let start = AmirOperand::Constant(self.intern_literal_int(start.to_string()));
@@ -358,16 +383,23 @@ impl LowerCtx<'_> {
                     Ok(AmirOperand::Copy(dest))
                 } else {
                     let sym = symbols.get(*symbol);
-                    Ok(match sym.kind {
-                        SymbolKind::Func
-                        | SymbolKind::ExternFunc
-                        | SymbolKind::AssociatedFunc
-                        | SymbolKind::NamespaceMember => AmirOperand::FunctionRef(*symbol),
-                        SymbolKind::Const => self
-                            .lower_const_operand(*symbol)?
-                            .unwrap_or(AmirOperand::GlobalRef(*symbol)),
-                        _ => AmirOperand::GlobalRef(*symbol),
-                    })
+                    if sym.kind == SymbolKind::StaticMut
+                        || (sym.kind == SymbolKind::Const && self.const_in_static(*symbol))
+                    {
+                        let (place, ty) = self.static_place(*symbol, expr.span)?;
+                        self.load_place(&place, ty)
+                    } else {
+                        Ok(match sym.kind {
+                            SymbolKind::Func
+                            | SymbolKind::ExternFunc
+                            | SymbolKind::AssociatedFunc
+                            | SymbolKind::NamespaceMember => AmirOperand::FunctionRef(*symbol),
+                            SymbolKind::Const => self
+                                .lower_const_operand(*symbol)?
+                                .unwrap_or(AmirOperand::GlobalRef(*symbol)),
+                            _ => AmirOperand::GlobalRef(*symbol),
+                        })
+                    }
                 }?;
                 if let Some(dest) = target {
                     let already_assigned = self.tc.type_info.enum_variant_tags.contains_key(symbol)
@@ -425,10 +457,23 @@ impl LowerCtx<'_> {
                 self.lower_index(*base, *index, expr.ty, target, symbols)
             }
             HirExprKind::Array { items } => {
+                let elem_ty = match self.resolve_ty(expr.ty) {
+                    ArType::Array(_, elem) | ArType::ConstArray(_, elem) | ArType::Slice(elem) => {
+                        Some(elem)
+                    }
+                    _ => None,
+                };
                 let items_slice = self.hir.pool.expr_list(*items);
                 let mut item_ops = Vec::with_capacity(items_slice.len());
                 for &item in items_slice {
-                    item_ops.push(self.lower_expr(item, None, symbols)?);
+                    let item_ty = self.hir.pool.expr(item).ty;
+                    let op = self.lower_expr(item, None, symbols)?;
+                    let op = if let Some(exp) = elem_ty {
+                        self.coerce_to_option(op, item_ty, exp)
+                    } else {
+                        op
+                    };
+                    item_ops.push(op);
                 }
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
                 self.emit_assign_temp(dest, AmirRvalue::Array { items: item_ops });
@@ -438,28 +483,29 @@ impl LowerCtx<'_> {
                 self.lower_array_repeat(*value, expr, target, symbols)
             }
             HirExprKind::Tuple { items } => {
+                let elem_tys = match self.resolve_ty(expr.ty) {
+                    ArType::Tuple(ids) => Some(self.tc.type_info.type_interner.type_args(ids)),
+                    _ => None,
+                };
                 let items_slice = self.hir.pool.expr_list(*items);
                 let mut item_ops = Vec::with_capacity(items_slice.len());
-                for &item in items_slice {
-                    item_ops.push(self.lower_expr(item, None, symbols)?);
+                for (idx, &item) in items_slice.iter().enumerate() {
+                    let item_ty = self.hir.pool.expr(item).ty;
+                    let op = self.lower_expr(item, None, symbols)?;
+                    let op = if let Some(exp) =
+                        elem_tys.as_ref().and_then(|tys| tys.get(idx).copied())
+                    {
+                        self.coerce_to_option(op, item_ty, exp)
+                    } else {
+                        op
+                    };
+                    item_ops.push(op);
                 }
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
                 self.emit_assign_temp(dest, AmirRvalue::Tuple { items: item_ops });
                 Ok(AmirOperand::Copy(dest))
             }
-            HirExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
-                if let Some(block_id) = trailing_block {
-                    let blk_span = self.hir.pool.block(*block_id).span;
-                    return Err(amir_unsupported(
-                        blk_span,
-                        "trailing block call",
-                        "v0.3 LAMBDA: trailing block closure lowering",
-                    ));
-                }
+            HirExprKind::Call { callee, args } => {
                 self.lower_call(*callee, *args, expr, target, symbols)
             }
             HirExprKind::StructLiteral {
@@ -501,7 +547,7 @@ impl LowerCtx<'_> {
             HirExprKind::Lambda { .. } => Err(amir_unsupported(
                 expr.span,
                 "lambda/closure",
-                "v0.3 LAMBDA: closure lowering",
+                "run 'arandu explain U001' for details",
             )),
             // A3.0/A3.1/A3.3: evaluate block as coroutine body (Suspend on nested await),
             // wrap payload as Coroutine[T]. Stack-first when not the function return slot.
@@ -533,7 +579,21 @@ impl LowerCtx<'_> {
                 self.builder.current_block = Some(exit);
                 Ok(AmirOperand::Copy(dest))
             }
-            HirExprKind::UnsafeBlock { block } => {
+            HirExprKind::UnsafeBlock { block } | HirExprKind::Scope { block } => {
+                if matches!(self.resolve_ty(expr.ty), ArType::Void) {
+                    self.lower_block(*block, symbols)?;
+                    return if let Some(dest) = target {
+                        if self.builder.current_block.is_some() {
+                            self.emit_assign_temp(
+                                dest,
+                                AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
+                            );
+                        }
+                        Ok(AmirOperand::Copy(dest))
+                    } else {
+                        Ok(AmirOperand::Constant(AmirConstant::Nil))
+                    };
+                }
                 let dest = match target {
                     Some(t) => t,
                     None => self.new_temp_id(expr.ty),

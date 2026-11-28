@@ -216,6 +216,11 @@ fn parses_generic_trailing_block_call_fixture() {
 }
 
 #[test]
+fn parses_generic_function_value_fixture() {
+    assert_golden("generic_function_value");
+}
+
+#[test]
 fn parses_bare_block_call_fixture() {
     assert_golden("bare_block_call");
 }
@@ -405,10 +410,6 @@ fn rejects_v02_invalid_parser_fixtures() {
         ("invalid_enum_payload", ParseErrorCode::ExpectedToken),
         (
             "invalid_extern_abi_interpolation",
-            ParseErrorCode::ExpectedToken,
-        ),
-        (
-            "invalid_generic_call_without_parens",
             ParseErrorCode::ExpectedToken,
         ),
         ("invalid_match_arm", ParseErrorCode::ExpectedToken),

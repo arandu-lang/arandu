@@ -7,7 +7,7 @@ use super::{FunctionPass, OptLevel, PassResources};
 use crate::amir::AmirFunc;
 use crate::{
     Diagnostic, dce::mark_sweep_dce_with_removable_calls, gvn::gvn, licm::licm, sccp::sccp,
-    simplify_cfg::simplify_cfg, sroa::sroa,
+    simplify_cfg::simplify_cfg_with_interner, sroa::sroa,
 };
 
 /// Sparse conditional constant propagation + branch folding.
@@ -177,7 +177,24 @@ impl FunctionPass for SimplifyCfgPass {
         func: &mut AmirFunc,
         resources: &mut PassResources<'_>,
     ) -> Result<bool, Diagnostic> {
-        simplify_cfg(func, resources.bump)
+        simplify_cfg_with_interner(func, resources.bump, resources.interner)
+    }
+}
+
+/// Demotes last-use `Copy(t)` operands to `Move(t)` using temp liveness.
+struct LastUseMovePass;
+
+impl FunctionPass for LastUseMovePass {
+    fn name(&self) -> &'static str {
+        "last_use_move"
+    }
+
+    fn run(
+        &self,
+        func: &mut AmirFunc,
+        _resources: &mut PassResources<'_>,
+    ) -> Result<bool, Diagnostic> {
+        Ok(crate::copy_elision::demote_last_use_copies(func))
     }
 }
 
@@ -202,6 +219,7 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(LoopDeletionPass),
             Box::new(MarkSweepDcePass),
             Box::new(SimplifyCfgPass),
+            Box::new(LastUseMovePass),
         ],
         OptLevel::Os => vec![
             Box::new(SccpPass),
@@ -210,6 +228,7 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(MarkSweepDcePass),
             Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
+            Box::new(LastUseMovePass),
         ],
         OptLevel::O2 => vec![
             Box::new(SroaPass),
@@ -221,6 +240,7 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(MarkSweepDcePass),
             Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
+            Box::new(LastUseMovePass),
         ],
     }
 }

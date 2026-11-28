@@ -67,6 +67,7 @@ pub fn uninitialized_return_exits(func: &AmirFunc) -> Vec<BlockId> {
                 AmirStmt::Call { lhs, .. } => *lhs == Some(TempId(0)),
                 AmirStmt::Store { .. }
                 | AmirStmt::Free(_)
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::Destroy(_)
                 | AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)
@@ -122,32 +123,38 @@ pub fn initialized_at_block_exit(func: &AmirFunc) -> Vec<BitSet<LocalId>> {
         .collect()
 }
 
-/// Definitely initialized locals immediately before each statement.
-pub(crate) fn initialized_before_statements(func: &AmirFunc) -> Vec<Vec<BitSet<LocalId>>> {
+/// Definitely initialized locals after each block and immediately before each statement,
+/// computed from a single dataflow pass for drop elaboration.
+#[must_use]
+pub(crate) fn initialized_exit_and_before_statements(
+    func: &AmirFunc,
+) -> (Vec<BitSet<LocalId>>, Vec<Vec<BitSet<LocalId>>>) {
     let Some(block_in) = compute_init_in(func) else {
-        return func
+        let exit = vec![BitSet::with_capacity(func.locals.len()); func.blocks.len()];
+        let before = func
             .blocks
             .iter()
             .map(|block| {
                 vec![BitSet::with_capacity(func.locals.len()); block.statements.len_usize()]
             })
             .collect();
+        return (exit, before);
     };
-    func.blocks
-        .iter()
-        .map(|block| {
-            let mut initialized = block_in[block.id.as_usize()].clone();
-            for param in func.block_params(block.params) {
-                initialized.insert(param.local);
-            }
-            let mut snapshots = Vec::with_capacity(block.statements.len_usize());
-            for stmt in func.block_stmts(block.id) {
-                snapshots.push(initialized.clone());
-                transfer_init_stmt(stmt, &mut initialized);
-            }
-            snapshots
-        })
-        .collect()
+    let mut exit = Vec::with_capacity(func.blocks.len());
+    let mut before = Vec::with_capacity(func.blocks.len());
+    for (block, mut initialized) in func.blocks.iter().zip(block_in) {
+        for param in func.block_params(block.params) {
+            initialized.insert(param.local);
+        }
+        let mut snapshots = Vec::with_capacity(block.statements.len_usize());
+        for stmt in func.block_stmts(block.id) {
+            snapshots.push(initialized.clone());
+            transfer_init_stmt(stmt, &mut initialized);
+        }
+        before.push(snapshots);
+        exit.push(initialized);
+    }
+    (exit, before)
 }
 
 /// Run definite-initialization analysis over a single AMIR function.
@@ -253,7 +260,7 @@ fn compute_init_in(func: &AmirFunc) -> Option<Vec<BitSet<LocalId>>> {
             block_out[bi] = new_out;
 
             match &block.terminator {
-                AmirTerminator::Return | AmirTerminator::Unreachable => {}
+                AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
                 AmirTerminator::Goto { target, .. } => {
                     worklist.push_back(*target);
                 }
@@ -283,7 +290,7 @@ fn compute_init_in(func: &AmirFunc) -> Option<Vec<BitSet<LocalId>>> {
     Some(block_in)
 }
 
-fn transfer_init_stmt(stmt: &AmirStmt, initialized: &mut BitSet<LocalId>) {
+pub(crate) fn transfer_init_stmt(stmt: &AmirStmt, initialized: &mut BitSet<LocalId>) {
     match stmt {
         AmirStmt::Store { lhs, .. } if lhs.projections.is_empty() => {
             initialized.insert(lhs.local);
@@ -305,8 +312,15 @@ fn check_stmt_loads(
     diagnostics: &mut Vec<(BlockId, Diagnostic)>,
 ) {
     match stmt {
-        AmirStmt::Assign { rhs, .. } => {
-            check_rvalue_loads(rhs, current, func, symbols, block, diagnostics);
+        AmirStmt::Assign { lhs, rhs } => {
+            let is_synthesized_drop_borrow = matches!(rhs, AmirRvalue::Borrow(_))
+                && func
+                    .temps
+                    .get(lhs.as_usize())
+                    .is_some_and(|temp| temp.span == crate::Span::new(0, 0, 0));
+            if !is_synthesized_drop_borrow {
+                check_rvalue_loads(rhs, current, func, symbols, block, diagnostics);
+            }
         }
         AmirStmt::Store { rhs, lhs, .. } => {
             // If storing to a projection (e.g. x.field), the base must be initialized
@@ -317,9 +331,14 @@ fn check_stmt_loads(
             // (operands are TempId-based, so they are always SSA-valid)
             let _ = rhs;
         }
-        AmirStmt::Call { .. } | AmirStmt::Free(_) => {}
+        AmirStmt::Call { .. } | AmirStmt::Free(_) | AmirStmt::ArenaRewind(_) => {}
         AmirStmt::Destroy(place) => {
-            if !current.contains(place.local) {
+            if place
+                .projections
+                .iter()
+                .any(|projection| matches!(projection, crate::amir::AmirProjection::Deref))
+                && !current.contains(place.local)
+            {
                 emit_uninit_diag(place.local, func, symbols, block, diagnostics);
             }
         }

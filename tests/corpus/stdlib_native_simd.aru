@@ -73,19 +73,19 @@ func main(): int {
 // borrowed array. Applications normally obtain this view through Vec.asMutSlice.
 func storeFour(vector: simd.F32x4, array: mut ref [4]f32): bool {
     let data = unsafe { intrinsics.addressOfShared<f32>(ref array[0]) }
-    let mut view = unsafe { slice.MutableSlice.fromRaw<[4]f32, f32>(array, data, 4 as usize) }
-    return vector.storeUnaligned<[4]f32>(mut ref view)
+    let view = unsafe { intrinsics.mutSliceFromRaw<[4]f32, f32>(array, data, 4 as usize) }
+    return vector.storeUnaligned(view)
 }
 func storeThree(vector: simd.F32x4, array: mut ref [3]f32): bool {
     let data = unsafe { intrinsics.addressOfShared<f32>(ref array[0]) }
-    let mut view = unsafe { slice.MutableSlice.fromRaw<[3]f32, f32>(array, data, 3 as usize) }
-    return vector.storeUnaligned<[3]f32>(mut ref view)
+    let view = unsafe { intrinsics.mutSliceFromRaw<[3]f32, f32>(array, data, 3 as usize) }
+    return vector.storeUnaligned(view)
 }
 
 // values starts at offset 16; element 1 is therefore offset 20 from a
 // 16-aligned owner, exercising a destination that is not vector-aligned.
 func storeMisaligned(vector: simd.F32x4, owner: mut ref AlignedStorage): bool {
     let data = unsafe { intrinsics.addressOfShared<f32>(ref owner.values[1]) }
-    let mut view = unsafe { slice.MutableSlice.fromRaw<AlignedStorage, f32>(owner, data, 4 as usize) }
-    return vector.storeUnaligned<AlignedStorage>(mut ref view)
+    let view = unsafe { intrinsics.mutSliceFromRaw<AlignedStorage, f32>(owner, data, 4 as usize) }
+    return vector.storeUnaligned(view)
 }

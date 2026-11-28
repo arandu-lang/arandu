@@ -247,6 +247,18 @@ pub(super) fn lower_scalar_function(
         if !program.funcs.is_empty() || function.symbol != symbol {
             return Err(BuildFailure::MissingFunction);
         }
+        let calls_generic = function.stmts.iter_ids().any(|id| {
+            matches!(
+                function.try_stmt(id),
+                Some(arandu_middle::amir::AmirStmt::Call {
+                    callee: arandu_middle::amir::AmirOperand::FunctionRef(callee),
+                    ..
+                }) if checked.type_info.generic_params.contains_key(callee)
+            )
+        });
+        if calls_generic {
+            return Err(BuildFailure::CallsGeneric);
+        }
         CtfeFunction::new_with_provider(
             function,
             program.literal_pool,

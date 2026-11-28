@@ -21,8 +21,35 @@ mod file_highlights;
 #[path = "query_suite/generic_cross_module.rs"]
 mod generic_cross_module;
 
+#[path = "query_suite/inference_vars.rs"]
+mod inference_vars;
+
+#[path = "query_suite/holes.rs"]
+mod holes;
+
 #[path = "query_suite/indirect_call.rs"]
 mod indirect_call;
+
+#[path = "query_suite/comptime_generic_calls.rs"]
+mod comptime_generic_calls;
+
+#[path = "query_suite/lint_levels.rs"]
+mod lint_levels;
+
+#[path = "query_suite/or_patterns.rs"]
+mod or_patterns;
+
+#[path = "query_suite/tuples.rs"]
+mod tuples;
+
+#[path = "query_suite/trailing_blocks.rs"]
+mod trailing_blocks;
+
+#[path = "query_suite/owned_text.rs"]
+mod owned_text;
+
+#[path = "query_suite/owning_closures.rs"]
+mod owning_closures;
 
 #[path = "query_suite/missing_import_cascade.rs"]
 mod missing_import_cascade;
@@ -38,6 +65,9 @@ mod salsa_cutoff;
 
 #[path = "query_suite/syntax_tree.rs"]
 mod syntax_tree;
+
+#[path = "query_suite/stdlib_functional.rs"]
+mod stdlib_functional;
 
 #[path = "query_suite/variant_sugar.rs"]
 mod variant_sugar;

@@ -14,7 +14,12 @@ pub(super) enum TaskState {
 // shared Running state. Cancellation can only mark that state for retirement.
 unsafe impl Send for TaskState {}
 
-pub(super) type TaskTable = Mutex<Vec<Option<TaskState>>>;
+pub(super) struct TaskSlot {
+    pub(super) generation: u32,
+    pub(super) state: Option<TaskState>,
+}
+
+pub(super) type TaskTable = Mutex<Vec<TaskSlot>>;
 static TASKS: TaskTable = Mutex::new(Vec::new());
 
 /// Spawn a coroutine state onto the SyncExecutor queue. Returns handle (>= 0).
@@ -33,17 +38,40 @@ pub(super) fn spawn_on(tasks: &TaskTable, state: *mut u8) -> i64 {
     let mut guard = tasks.lock().unwrap_or_else(|e| e.into_inner());
     let index = guard
         .iter()
-        .position(Option::is_none)
+        .position(|slot| slot.state.is_none() && slot.generation != 0)
         .unwrap_or(guard.len());
-    let Ok(handle) = i64::try_from(index) else {
+    if index > u32::MAX as usize {
         std::process::abort();
-    };
-    if index == guard.len() {
-        guard.push(Some(TaskState::Pending(state)));
-    } else {
-        guard[index] = Some(TaskState::Pending(state));
     }
-    handle
+    if index == guard.len() {
+        guard.push(TaskSlot {
+            generation: 1,
+            state: Some(TaskState::Pending(state)),
+        });
+    }
+    let slot = &mut guard[index];
+    slot.state = Some(TaskState::Pending(state));
+    encode_handle(index as u32, slot.generation)
+}
+
+fn encode_handle(index: u32, generation: u32) -> i64 {
+    ((generation as i64) << 32) | index as i64
+}
+
+fn decode_handle(handle: i64) -> Option<(usize, u32)> {
+    if handle < 0 {
+        return None;
+    }
+    Some(((handle as u32) as usize, (handle >> 32) as u32))
+}
+
+fn retire(slot: &mut TaskSlot) {
+    slot.state = None;
+    if slot.generation < 0x7fff_ffff {
+        slot.generation += 1;
+    } else {
+        slot.generation = 0;
+    }
 }
 
 /// Drive task to completion. Rejoining a completed live handle returns its
@@ -64,12 +92,18 @@ pub(super) unsafe fn join_on(
     handle: i64,
     drive: impl FnOnce(*mut u8) -> i64,
 ) -> i64 {
-    let Ok(index) = usize::try_from(handle) else {
+    let Some((index, generation)) = decode_handle(handle) else {
         std::process::abort();
     };
     let state = {
         let mut guard = tasks.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(Some(slot)) = guard.get_mut(index) else {
+        let Some(entry) = guard
+            .get_mut(index)
+            .filter(|entry| entry.generation == generation && generation != 0)
+        else {
+            std::process::abort();
+        };
+        let Some(slot) = entry.state.as_mut() else {
             std::process::abort();
         };
         match slot {
@@ -89,16 +123,19 @@ pub(super) unsafe fn join_on(
     // this join; cancel_on cannot access or free the pointer while it is running.
     unsafe { ar_co_free(state) };
     let mut guard = tasks.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(slot) = guard.get_mut(index) else {
+    let Some(entry) = guard
+        .get_mut(index)
+        .filter(|entry| entry.generation == generation)
+    else {
         std::process::abort();
     };
-    match slot {
+    match entry.state.as_mut() {
         Some(TaskState::Running { cancel_requested }) => {
-            *slot = if *cancel_requested {
-                None
+            if *cancel_requested {
+                retire(entry);
             } else {
-                Some(TaskState::Completed(result))
-            };
+                entry.state = Some(TaskState::Completed(result));
+            }
         }
         _ => std::process::abort(),
     }
@@ -126,23 +163,33 @@ pub unsafe extern "C" fn ar_rt_cancel_i64(handle: i64) {
 }
 
 pub(super) unsafe fn cancel_on(tasks: &TaskTable, handle: i64) {
-    let Ok(index) = usize::try_from(handle) else {
+    let Some((index, generation)) = decode_handle(handle) else {
         return;
     };
     let pending = {
         let mut guard = tasks.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(slot) = guard.get_mut(index) else {
+        let Some(entry) = guard
+            .get_mut(index)
+            .filter(|entry| entry.generation == generation && generation != 0)
+        else {
             return;
         };
-        match slot.take() {
-            Some(TaskState::Pending(state)) => Some(state),
+        match entry.state.take() {
+            Some(TaskState::Pending(state)) => {
+                retire(entry);
+                Some(state)
+            }
             Some(TaskState::Running { .. }) => {
-                *slot = Some(TaskState::Running {
+                entry.state = Some(TaskState::Running {
                     cancel_requested: true,
                 });
                 None
             }
-            Some(TaskState::Completed(_)) | None => None,
+            Some(TaskState::Completed(_)) => {
+                retire(entry);
+                None
+            }
+            None => None,
         }
     };
     if let Some(state) = pending {

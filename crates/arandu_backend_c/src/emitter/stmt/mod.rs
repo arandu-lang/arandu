@@ -32,7 +32,7 @@ impl<'a> CEmitter<'a> {
                     return;
                 }
                 let lhs_ty = self.temp_ty(func, *lhs);
-                if matches!(lhs_ty, ArType::Void) {
+                if matches!(lhs_ty, ArType::Void | ArType::Never) {
                     return;
                 }
                 let lhs_c_ty = self.format_type(&lhs_ty);
@@ -179,7 +179,7 @@ impl<'a> CEmitter<'a> {
             }
             AmirStmt::Store { lhs, rhs } => {
                 if lhs.projections.is_empty()
-                    && matches!(self.local_ty(func, lhs.local), ArType::Void)
+                    && matches!(self.local_ty(func, lhs.local), ArType::Void | ArType::Never)
                 {
                     return;
                 }
@@ -268,10 +268,16 @@ impl<'a> CEmitter<'a> {
                     None
                 };
                 let external_params = if let AmirOperand::FunctionRef(symbol) = callee {
-                    self.program
-                        .extern_funcs
-                        .get(symbol)
-                        .map(|(params, _)| params)
+                    let is_variadic = self
+                        .type_context
+                        .is_some_and(|ctx| ctx.is_variadic_function(*symbol));
+                    self.program.extern_funcs.get(symbol).map(|(params, _)| {
+                        if is_variadic && !params.is_empty() {
+                            &params[..params.len() - 1]
+                        } else {
+                            params.as_slice()
+                        }
+                    })
                 } else {
                     None
                 };
@@ -294,16 +300,16 @@ impl<'a> CEmitter<'a> {
                             .unwrap_or_else(|| self.operand_ty(func, arg));
                         // Nil also represents nullable values; only omit a bare nil
                         // when the callee's declared parameter is actually void.
-                        let empty = matches!(ty, ArType::Void)
+                        let empty = matches!(ty, ArType::Void | ArType::Never)
                             && (callee_func.is_some()
                                 || external_params.is_some()
                                 || matches!(arg, AmirOperand::Copy(_) | AmirOperand::Move(_)));
                         (!empty).then(|| self.format_operand(arg, func))
                     })
                     .collect();
-                if let Some(dest) =
-                    lhs.filter(|dest| !matches!(self.temp_ty(func, *dest), ArType::Void))
-                {
+                if let Some(dest) = lhs.filter(|dest| {
+                    !matches!(self.temp_ty(func, *dest), ArType::Void | ArType::Never)
+                }) {
                     let _ = write!(
                         &mut self.output,
                         "    t{} = ",
@@ -339,6 +345,13 @@ impl<'a> CEmitter<'a> {
                 }
             }
             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) => {}
+            AmirStmt::ArenaRewind(op) => {
+                let checkpoint = self.format_operand(op, func);
+                let _ = writeln!(
+                    &mut self.output,
+                    "    ar_task_arena_rewind((uint64_t)({checkpoint}));"
+                );
+            }
             AmirStmt::Destroy(place) => {
                 let local_ty = self.local_ty(func, place.local);
                 let mut current_ty = local_ty;
@@ -346,19 +359,17 @@ impl<'a> CEmitter<'a> {
                     match proj {
                         arandu_middle::amir::AmirProjection::Deref => {
                             current_ty = match &current_ty {
-                                ArType::Ptr(inner)
-                                | ArType::Ref(inner)
-                                | ArType::RefMut(inner)
-                                | ArType::Nullable(inner) => self.interner.resolve(*inner),
+                                ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                                    self.interner.resolve(*inner)
+                                }
                                 other => other.clone(),
                             };
                         }
                         arandu_middle::amir::AmirProjection::Field(field_sym) => {
                             let struct_ty = match &current_ty {
-                                ArType::Ptr(inner)
-                                | ArType::Ref(inner)
-                                | ArType::RefMut(inner)
-                                | ArType::Nullable(inner) => self.interner.resolve(*inner),
+                                ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                                    self.interner.resolve(*inner)
+                                }
                                 other => other.clone(),
                             };
                             let field_name = self
@@ -426,13 +437,16 @@ impl<'a> CEmitter<'a> {
                     if self.arena_runtime {
                         let _ = writeln!(&mut self.output, "    ar_gen_shutdown_raw();");
                     }
+                    if self.task_arena_runtime {
+                        let _ = writeln!(&mut self.output, "    ar_task_arena_shutdown();");
+                    }
                     // ISO C requires `int main`; void Arandu main becomes `return 0`.
-                    if matches!(ret, ArType::Void) {
+                    if matches!(ret, ArType::Void | ArType::Never) {
                         let _ = writeln!(&mut self.output, "    return 0;");
                     } else {
                         let _ = writeln!(&mut self.output, "    return (int)t0;");
                     }
-                } else if matches!(ret, ArType::Void) {
+                } else if matches!(ret, ArType::Void | ArType::Never) {
                     let _ = writeln!(&mut self.output, "    return;");
                 } else {
                     let _ = writeln!(&mut self.output, "    return t0;");
@@ -495,6 +509,9 @@ impl<'a> CEmitter<'a> {
             AmirTerminator::Unreachable => {
                 let _ = writeln!(&mut self.output, "    AR_UNREACHABLE();");
             }
+            AmirTerminator::Trap(kind) => {
+                let _ = writeln!(&mut self.output, "    {};", super::trap_call(*kind));
+            }
         }
     }
 
@@ -516,7 +533,7 @@ impl<'a> CEmitter<'a> {
         let _ = writeln!(&mut self.output, "{indent}{{");
         for (index, (param, arg)) in target_params.iter().zip(args).enumerate() {
             let ty = self.interner.resolve(param.ty);
-            if matches!(ty, ArType::Void) {
+            if matches!(ty, ArType::Void | ArType::Never) {
                 continue;
             }
             let c_ty = self.format_type(&ty);
@@ -527,7 +544,10 @@ impl<'a> CEmitter<'a> {
             );
         }
         for (index, param) in target_params.iter().take(args.len()).enumerate() {
-            if matches!(self.interner.resolve(param.ty), ArType::Void) {
+            if matches!(
+                self.interner.resolve(param.ty),
+                ArType::Void | ArType::Never
+            ) {
                 continue;
             }
             let _ = writeln!(

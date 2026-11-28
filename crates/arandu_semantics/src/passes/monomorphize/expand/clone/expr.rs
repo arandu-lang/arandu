@@ -39,6 +39,10 @@ pub(in crate::passes::monomorphize::expand) fn clone_place(
                 expr: clone_expr(hir, *expr, subst, symbol_map, tc, name_prefix)?,
                 ty: substitute_type_id(*ty, subst, &tc.type_info.type_interner),
             },
+            HirPlaceSuffix::Deref { span, ty } => HirPlaceSuffix::Deref {
+                span: *span,
+                ty: substitute_type_id(*ty, subst, &tc.type_info.type_interner),
+            },
         });
     }
     Ok(HirPlace {
@@ -164,11 +168,7 @@ pub(in crate::passes::monomorphize::expand) fn clone_expr_kind(
             base: clone_expr(hir, *base, subst, symbol_map, tc, name_prefix)?,
             index: clone_expr(hir, *index, subst, symbol_map, tc, name_prefix)?,
         },
-        Call {
-            callee,
-            args,
-            trailing_block,
-        } => {
+        Call { callee, args } => {
             let old_args: Vec<_> = hir.pool.expr_list(*args).to_vec();
             let mut new_args = Vec::with_capacity(old_args.len());
             for &a in &old_args {
@@ -177,9 +177,6 @@ pub(in crate::passes::monomorphize::expand) fn clone_expr_kind(
             Call {
                 callee: clone_expr(hir, *callee, subst, symbol_map, tc, name_prefix)?,
                 args: hir.pool.alloc_expr_list(&new_args),
-                trailing_block: trailing_block
-                    .map(|b| super::clone_block(hir, b, subst, symbol_map, tc, name_prefix))
-                    .transpose()?,
             }
         }
         StructLiteral {
@@ -277,6 +274,9 @@ pub(in crate::passes::monomorphize::expand) fn clone_expr_kind(
             block: super::clone_block(hir, *block, subst, symbol_map, tc, name_prefix)?,
         },
         UnsafeBlock { block } => UnsafeBlock {
+            block: super::clone_block(hir, *block, subst, symbol_map, tc, name_prefix)?,
+        },
+        Scope { block } => Scope {
             block: super::clone_block(hir, *block, subst, symbol_map, tc, name_prefix)?,
         },
         If {

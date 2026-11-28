@@ -76,6 +76,60 @@ pub fn function_dependencies(
     interner: &TypeInterner,
     provider: &dyn StructLayoutProvider,
 ) -> Result<Vec<SymbolId>, Diagnostic> {
+    let mut referenced = FxHashSet::default();
+    let mut visit = |operand: &AmirOperand| {
+        if let AmirOperand::FunctionRef(symbol) = operand {
+            referenced.insert(*symbol);
+        }
+    };
+    for id in function.stmts.iter_ids() {
+        if let Some(statement) = function.stmts.get(id) {
+            for_each_stmt_operand(statement, &mut visit);
+        }
+    }
+    for block in &function.blocks {
+        for_each_terminator_operand(&block.terminator, &mut visit);
+    }
+    referenced.extend(implicit_destructors(function, interner, provider)?);
+    // Resolve the same alias identities accepted by native call lowering.
+    let aliases = referenced
+        .iter()
+        .filter_map(|symbol| symbols.try_get(*symbol))
+        .filter(|symbol| symbol.kind == SymbolKind::NamespaceMember)
+        .collect::<Vec<_>>();
+    if !aliases.is_empty() {
+        for symbol in program
+            .funcs
+            .iter()
+            .map(|function| function.symbol)
+            .chain(program.extern_funcs.keys().copied())
+        {
+            if let Some(declaration) = symbols.try_get(symbol)
+                && aliases.iter().any(|alias| {
+                    alias.span == declaration.span
+                        && alias.name.len() > declaration.name.len()
+                        && alias.name.ends_with(&*declaration.name)
+                        && alias.name.as_bytes()[alias.name.len() - declaration.name.len() - 1]
+                            == b'.'
+                })
+            {
+                referenced.insert(symbol);
+            }
+        }
+    }
+    let mut dependencies = referenced.into_iter().collect::<Vec<_>>();
+    dependencies.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    Ok(dependencies)
+}
+
+/// Destructors a body runs implicitly: those of every type it holds, through
+/// fields, payloads and type arguments, including Gen payloads whose drop
+/// shims have no call in the body. Sorted by symbol identity.
+pub fn implicit_destructors(
+    function: &AmirFunc,
+    interner: &TypeInterner,
+    provider: &dyn StructLayoutProvider,
+) -> Result<Vec<SymbolId>, Diagnostic> {
     let invalid_dependencies = || {
         Diagnostic::ice(
             DiagCode::ICEGEN001,
@@ -83,12 +137,7 @@ pub fn function_dependencies(
             Span::new(0, 0, 0),
         )
     };
-    let mut referenced = FxHashSet::default();
-    let mut visit = |operand: &AmirOperand| {
-        if let AmirOperand::FunctionRef(symbol) = operand {
-            referenced.insert(*symbol);
-        }
-    };
+    let mut destructors = FxHashSet::default();
     let mut types = vec![function.return_type];
     types.extend(function.temps.iter().map(|temp| temp.ty));
     types.extend(function.locals.iter().map(|local| local.ty));
@@ -96,56 +145,56 @@ pub fn function_dependencies(
     // Backend-generated Gen drop shims inspect the statement table, including
     // entries not assigned to a block; retain the same declaration contract.
     for id in function.stmts.iter_ids() {
-        if let Some(statement) = function.stmts.get(id) {
-            for_each_stmt_operand(statement, &mut visit);
-            if let AmirStmt::Assign { rhs, .. } = statement {
-                // Drop shims use semantic payload metadata even when no result
-                // temporary has this type (the result can be a GenRef handle).
-                match rhs {
-                    AmirRvalue::GenInsert { payload_ty, .. }
-                    | AmirRvalue::GenSet { payload_ty, .. }
-                    | AmirRvalue::GenUpsert { payload_ty, .. } => types.push(*payload_ty),
-                    AmirRvalue::VectorSelect { .. }
-                    | AmirRvalue::VectorCompare { .. }
-                    | AmirRvalue::VectorOp { .. }
-                    | AmirRvalue::VectorSplat { .. }
-                    | AmirRvalue::VectorShuffle { .. }
-                    | AmirRvalue::VectorExtractLane { .. }
-                    | AmirRvalue::VectorInsertLane { .. }
-                    | AmirRvalue::Use(_)
-                    | AmirRvalue::Binary { .. }
-                    | AmirRvalue::Unary { .. }
-                    | AmirRvalue::FieldAccess { .. }
-                    | AmirRvalue::IndexAccess { .. }
-                    | AmirRvalue::StructLiteral { .. }
-                    | AmirRvalue::Array { .. }
-                    | AmirRvalue::Tuple { .. }
-                    | AmirRvalue::EnumConstruct { .. }
-                    | AmirRvalue::Discriminant { .. }
-                    | AmirRvalue::EnumPayload { .. }
-                    | AmirRvalue::Len(_)
-                    | AmirRvalue::SliceData(_)
-                    | AmirRvalue::SliceView { .. }
-                    | AmirRvalue::SliceSubslice { .. }
-                    | AmirRvalue::StrBytes { .. }
-                    | AmirRvalue::StrView { .. }
-                    | AmirRvalue::Alloc(_)
-                    | AmirRvalue::Load(_)
-                    | AmirRvalue::Borrow(_)
-                    | AmirRvalue::BorrowMut(_)
-                    | AmirRvalue::RelativeBorrow { .. }
-                    | AmirRvalue::CoroutineReady { .. }
-                    | AmirRvalue::GenGet { .. }
-                    | AmirRvalue::GenRemove { .. }
-                    | AmirRvalue::StringInterp { .. }
-                    | AmirRvalue::ToStr { .. }
-                    | AmirRvalue::BlackBox { .. } => {}
-                }
+        if let Some(AmirStmt::Assign { rhs, .. }) = function.stmts.get(id) {
+            // Drop shims use semantic payload metadata even when no result
+            // temporary has this type (the result can be a GenRef handle).
+            match rhs {
+                AmirRvalue::GenInsert { payload_ty, .. }
+                | AmirRvalue::GenSet { payload_ty, .. }
+                | AmirRvalue::GenUpsert { payload_ty, .. }
+                | AmirRvalue::ArenaAlloc { payload_ty, .. } => types.push(*payload_ty),
+                AmirRvalue::VectorSelect { .. }
+                | AmirRvalue::Select { .. }
+                | AmirRvalue::VectorCompare { .. }
+                | AmirRvalue::VectorOp { .. }
+                | AmirRvalue::VectorSplat { .. }
+                | AmirRvalue::VectorShuffle { .. }
+                | AmirRvalue::VectorExtractLane { .. }
+                | AmirRvalue::VectorInsertLane { .. }
+                | AmirRvalue::VectorBitmask { .. }
+                | AmirRvalue::VectorLoadUnaligned { .. }
+                | AmirRvalue::Use(_)
+                | AmirRvalue::Binary { .. }
+                | AmirRvalue::Unary { .. }
+                | AmirRvalue::FieldAccess { .. }
+                | AmirRvalue::IndexAccess { .. }
+                | AmirRvalue::StructLiteral { .. }
+                | AmirRvalue::Array { .. }
+                | AmirRvalue::Tuple { .. }
+                | AmirRvalue::EnumConstruct { .. }
+                | AmirRvalue::Discriminant { .. }
+                | AmirRvalue::EnumPayload { .. }
+                | AmirRvalue::Len(_)
+                | AmirRvalue::SliceData(_)
+                | AmirRvalue::SliceView { .. }
+                | AmirRvalue::SliceSubslice { .. }
+                | AmirRvalue::StrBytes { .. }
+                | AmirRvalue::StrView { .. }
+                | AmirRvalue::Alloc(_)
+                | AmirRvalue::Load(_)
+                | AmirRvalue::Borrow(_)
+                | AmirRvalue::BorrowMut(_)
+                | AmirRvalue::RelativeBorrow { .. }
+                | AmirRvalue::CoroutineReady { .. }
+                | AmirRvalue::GenGet { .. }
+                | AmirRvalue::GenRemove { .. }
+                | AmirRvalue::StringInterp { .. }
+                | AmirRvalue::ToStr { .. }
+                | AmirRvalue::BlackBox { .. }
+                | AmirRvalue::ArenaCheckpoint
+                | AmirRvalue::StaticAddr(_) => {}
             }
         }
-    }
-    for block in &function.blocks {
-        for_each_terminator_operand(&block.terminator, &mut visit);
     }
     let mut visited = FxHashSet::default();
     while let Some(ty) = types.pop() {
@@ -156,7 +205,7 @@ pub fn function_dependencies(
             return Err(invalid_dependencies());
         }
         if let Some(destructor) = provider.destructor_for_type(ty) {
-            referenced.insert(destructor);
+            destructors.insert(destructor);
         }
         match interner.resolve(ty) {
             nominal @ ArType::Named(_, arguments) => {
@@ -187,8 +236,7 @@ pub fn function_dependencies(
                 types.push(result);
             }
             ArType::Tuple(arguments) => types.extend(interner.type_args(arguments)),
-            ArType::Nullable(inner)
-            | ArType::Slice(inner)
+            ArType::Slice(inner)
             | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
@@ -208,40 +256,16 @@ pub fn function_dependencies(
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::IntLiteral
             | ArType::FloatLiteral
-            | ArType::Error => {}
+            | ArType::Error
+            | ArType::Infer(_) => {}
         }
     }
-    // Resolve the same alias identities accepted by native call lowering.
-    let aliases = referenced
-        .iter()
-        .filter_map(|symbol| symbols.try_get(*symbol))
-        .filter(|symbol| symbol.kind == SymbolKind::NamespaceMember)
-        .collect::<Vec<_>>();
-    if !aliases.is_empty() {
-        for symbol in program
-            .funcs
-            .iter()
-            .map(|function| function.symbol)
-            .chain(program.extern_funcs.keys().copied())
-        {
-            if let Some(declaration) = symbols.try_get(symbol)
-                && aliases.iter().any(|alias| {
-                    alias.span == declaration.span
-                        && alias.name.len() > declaration.name.len()
-                        && alias.name.ends_with(&*declaration.name)
-                        && alias.name.as_bytes()[alias.name.len() - declaration.name.len() - 1]
-                            == b'.'
-                })
-            {
-                referenced.insert(symbol);
-            }
-        }
-    }
-    let mut dependencies = referenced.into_iter().collect::<Vec<_>>();
-    dependencies.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
-    Ok(dependencies)
+    let mut destructors = destructors.into_iter().collect::<Vec<_>>();
+    destructors.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    Ok(destructors)
 }
 
 #[cfg(test)]

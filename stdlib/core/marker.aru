@@ -28,6 +28,10 @@ module std.core.marker
 /// Zero-sized type used to mark that a struct logically owns or refers to `T`.
 public struct PhantomData<T> {}
 
+/// Zero-sized marker that opts a containing struct or enum out of implicit `Copy`.
+@NoCopy
+public struct NonCopy {}
+
 /// Creates a new `PhantomData` instance.
 public func PhantomData.new<T>(): PhantomData<T> {
     return PhantomData<T> {}
@@ -41,6 +45,11 @@ public func phantom<T>(): PhantomData<T> {
 /// Compiler-checked marker for scalar storage and aggregates whose bytes can be
 /// duplicated without aliasing ownership or requiring destruction.
 public interface Copy {}
+
+/// Interface for types that can create an independent duplicate of themselves.
+public interface Clone {
+    func clone(self: ref Self): Self
+}
 
 /// Compiler-checked transfer bound for owned scalar storage and aggregates.
 /// Views, raw pointers, coroutine state and resources with destructors are

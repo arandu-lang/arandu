@@ -94,16 +94,22 @@ impl<'a> Parser<'a> {
                         }
                         continue;
                     }
+                    // A generic function value: `make<int>` ending the expression
+                    // (RFC 0032, L2). A comparison never closes at a boundary.
                     if self.looks_like_bare_generic_args()
                         && self.looks_like_generic_args_boundary()
                     {
-                        return Err(ParseError::new(
-                            ParseErrorCode::ExpectedToken,
-                            "generic arguments in expressions must be followed by call arguments or block",
-                            self.current(),
-                            self.file_id,
-                            self.source,
-                        ));
+                        let generic_start = self.pool.expr_span(left);
+                        let type_range = self.parse_generic_args()?;
+                        let span = span_between(generic_start, self.previous().span(self.file_id));
+                        left = self.pool.alloc_expr(
+                            ExprKind::Generic {
+                                callee: left,
+                                args: type_range,
+                            },
+                            span,
+                        );
+                        continue;
                     }
                 }
                 TokenKind::LParen => {
@@ -139,6 +145,27 @@ impl<'a> Parser<'a> {
                 TokenKind::Dot => {
                     self.advance();
                     let span_start = self.pool.expr_span(left);
+                    // `t.0`, and `t.0.1`, which the lexer reads as a float.
+                    if matches!(self.current().kind, TokenKind::IntDec | TokenKind::Float)
+                        && self
+                            .current_text()
+                            .split('.')
+                            .all(crate::ast::is_tuple_index)
+                    {
+                        let text = smol_str::SmolStr::new(self.current_text());
+                        self.advance();
+                        let span = span_between(span_start, self.previous().span(self.file_id));
+                        for index in text.split('.') {
+                            left = self.pool.alloc_expr(
+                                ExprKind::Field {
+                                    base: left,
+                                    field: smol_str::SmolStr::new(index),
+                                },
+                                span,
+                            );
+                        }
+                        continue;
+                    }
                     let field = self.expect_member_name()?;
                     let span = span_between(span_start, self.previous().span(self.file_id));
                     left = self
@@ -226,11 +253,7 @@ impl<'a> Parser<'a> {
                     let right = self.parse_expr(right_bp)?;
                     let span = span_between(span_start, self.pool.expr_span(right));
                     left = match self.pool.expr(right).clone() {
-                        ExprKind::Call {
-                            callee,
-                            args,
-                            trailing_block,
-                        } => {
+                        ExprKind::Call { callee, args } => {
                             let existing = self.pool.expr_list(args).to_vec();
                             let placeholder_pos = existing.iter().position(|&arg_id| {
                                 if let ExprKind::Path { path } = self.pool.expr(arg_id) {
@@ -255,7 +278,6 @@ impl<'a> Parser<'a> {
                                 ExprKind::Call {
                                     callee,
                                     args: new_range,
-                                    trailing_block,
                                 },
                                 span,
                             )
@@ -269,7 +291,6 @@ impl<'a> Parser<'a> {
                                 ExprKind::Call {
                                     callee: right,
                                     args: new_range,
-                                    trailing_block: None,
                                 },
                                 span,
                             )
@@ -280,7 +301,6 @@ impl<'a> Parser<'a> {
                                 ExprKind::Call {
                                     callee: right,
                                     args: new_range,
-                                    trailing_block: None,
                                 },
                                 span,
                             )

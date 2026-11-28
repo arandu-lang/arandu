@@ -23,6 +23,12 @@
 > bounded com medição de colunas (estilo Wadler-Leijen / Biome) e mapeamento
 > composicional sobre a CST do Rowan.
 
+> **Atualização local de 2026-11-27:** enquanto o formatter permanecer baseado
+> em linhas, itens com `RawString` ou string multilinha são preservados byte a
+> byte; em entrada inválida que contenha esses tokens, o documento fica sem
+> formatação. A implementação e seus testes estão em `arandu_fmt`; formatação
+> estrutural desses literais depende do futuro printer CST-aware.
+
 ---
 
 ## 1. Resumo (Summary)

@@ -27,6 +27,7 @@ mod types;
 mod walk;
 
 pub use check::{check_escapes, check_escapes_by_block, check_escapes_with_type_info};
+pub(crate) use places::type_is_borrow_carrier;
 pub use types::{EscapeCheckOptions, EscapeEvent, EscapeKind};
 pub use walk::{find_escapes, find_escapes_with_type_info};
 
@@ -324,6 +325,7 @@ mod tests {
                     0,
                     arandu_middle::types::BorrowKind::Shared,
                 )),
+                ..EscapeCheckOptions::default()
             },
         );
         assert!(

@@ -56,6 +56,10 @@ fn stdlib_fmt_usage_in_program() {
         INTRINSICS_ARU.to_string(),
     );
     let _ = db.new_stdlib_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
+    let _ = db.new_stdlib_file(
+        "stdlib/core/simd.aru".to_string(),
+        include_str!("../../../../stdlib/core/simd.aru").to_string(),
+    );
     let _ = db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
     let _ = db.new_stdlib_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
     let _ = db.new_stdlib_file("stdlib/core/result.aru".to_string(), RESULT_ARU.to_string());

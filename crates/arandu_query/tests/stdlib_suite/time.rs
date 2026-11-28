@@ -22,7 +22,6 @@ fn stdlib_time_parses_and_exports_expected_symbols() {
         "Duration.fromNanos",
         "Duration.fromMicros",
         "Duration.fromMillis",
-        "Duration.fromSecs",
         "Duration.fromSeconds",
         "Instant",
         "Instant.now",
@@ -44,7 +43,7 @@ fn stdlib_time_usage_in_program() {
 import std.time as time
 
 func testDuration(): i64 {
-    let d1 = time.Duration.fromSecs(2)
+    let d1 = time.Duration.fromSeconds(2)
     let d2 = time.Duration.fromMillis(500)
     let total = d1.add(d2)
     return total.asMillis()

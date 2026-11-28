@@ -197,7 +197,7 @@ fn validate_tar_archive(
             None
         };
 
-        if entry_path.ends_with("/release-manifest.json") {
+        if entry_path.ends_with("/release-manifest.json") && entry_path.matches('/').count() == 1 {
             let buf = read_limited(&mut entry, MAX_MANIFEST_BYTES, "release manifest")?;
             manifest_bytes = Some(buf);
         }
@@ -311,7 +311,10 @@ fn validate_zip_archive(
             .checked_add(entry.size())
             .filter(|size| *size <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
             .ok_or_else(|| "archive exceeds the 4 GiB uncompressed validation limit".to_string())?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| format!("invalid zip entry #{i} name: {e}"))?
+            .into_owned();
         validate_path_safety(&name)?;
 
         if root_candidate.is_none() {
@@ -322,7 +325,7 @@ fn validate_zip_archive(
                 .map(String::from);
         }
 
-        if name.ends_with("/release-manifest.json") {
+        if name.ends_with("/release-manifest.json") && name.matches('/').count() == 1 {
             let buf = read_limited(&mut entry, MAX_MANIFEST_BYTES, "release manifest")?;
             manifest_bytes = Some(buf);
         }
@@ -368,7 +371,10 @@ fn validate_zip_archive(
         let entry = zip
             .by_index(i)
             .map_err(|e| format!("entry #{i} error: {e}"))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| format!("invalid zip entry #{i} name: {e}"))?
+            .into_owned();
 
         let folded = name.to_lowercase();
         if !seen.insert(folded) {

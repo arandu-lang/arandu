@@ -68,6 +68,7 @@ pub use package_graph::{
     PlannedModuleBinding,
 };
 pub use rename::{prepare_rename, rename_occurrences, validate_rename, RenameError, RenameTarget};
+pub use runtime::{symbol_surface, SymbolSurface};
 // re-export for tests/CLI convenience
 pub use debounce::{DebouncedMap, DEFAULT_DEBOUNCE};
 pub use edit_vfs::{EditVfs, Vfs};

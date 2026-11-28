@@ -95,3 +95,87 @@ func testTextOperations(): bool {
         "unexpected errors in main.aru using text.aru: {error_diags_main:?}"
     );
 }
+
+#[test]
+fn onda6_stdlib_and_vec_range_indexing() {
+    let mut db = DatabaseImpl::default();
+    for (path, source) in common::STDLIB_MODULES {
+        db.new_stdlib_file((*path).to_string(), (*source).to_string());
+    }
+    let main_src = r#"
+import std.core.option as option
+import std.core.result as result
+import std.core.hash as hash
+import std.core.intrinsics as intrinsics
+import std.alloc.vec as vec
+import std.alloc.hash_map as hash_map
+import std.alloc.gen_arena as gen_arena
+
+struct Key {
+    id: int
+}
+
+func Key.eq(self: ref Key, other: ref Key): bool {
+    return self.id == other.id
+}
+
+func Key.hash<H: hash.Hasher>(self: ref Key, state: mut ref H): void {
+    state.writeInt(self.id)
+}
+
+func ref_vec_range(v: ref vec.Vec<int>): []int {
+    let r = 0..2
+    return v[r]
+}
+
+func diverge_check(cond: bool): int {
+    return if cond { unsafe { intrinsics.abort() } } else { 7 }
+}
+
+public func exercise(): int {
+    let mut opt: option.Option<int> = option.Option.Some(10)
+    match opt.asMut() {
+        option.Option.Some(p) => { *p = 20 }
+        option.Option.None => {}
+    }
+
+    let mut res: result.Result<int, int> = result.Result.Ok(5)
+    let _r_ref = res.asRef()
+    let _r_mut = res.asMut()
+
+    let mut map = hash_map.HashMap<Key, int>.new()
+    map.put(Key { id: 1 }, 100)
+    match map.getMut(Key { id: 1 }) {
+        option.Option.Some(v) => { *v = 200 }
+        option.Option.None => {}
+    }
+
+    let mut arena = gen_arena.GenArena<int>.new()
+    let handle = arena.insert(9)
+    match arena.tryGetMut(handle) {
+        option.Option.Some(v) => { *v = 11 }
+        option.Option.None => {}
+    }
+    let _ro = arena.tryGet(handle)
+    let _gm = arena.getMut(handle)
+
+    let mut v = vec.Vec<int>.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    let r = 0..2
+    let s1 = v[0..2]
+    let s2 = v[r]
+    let s3 = ref_vec_range(ref v)
+    let mut acc = 0
+    for j in r {
+        acc = acc + j
+    }
+    return s1.len() as int + s2.len() as int + s3.len() as int + diverge_check(false) + acc
+}
+"#;
+    let main_file = db.new_file("onda6_main.aru".to_string(), main_src.to_string());
+    let diags = file_ide_diagnostics(&db, main_file);
+    let errors: Vec<_> = diags.iter().filter(|d| d.severity == 0).collect();
+    assert!(errors.is_empty(), "unexpected Onda 6 errors: {errors:?}");
+}

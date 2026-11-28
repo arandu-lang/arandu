@@ -1,6 +1,7 @@
 use super::{
-    Candidate, CompletionItem, CompletionKind, KEYWORDS, PRIMITIVE_TYPES, RANK_KEYWORD, RANK_LOCAL,
-    RANK_MODULE, RANK_TYPE, RANK_VALUE, accepted, finish, offer, value_kind,
+    Candidate, CompletionItem, CompletionKind, KEYWORDS, PRIMITIVE_TYPES, RANK_AUTO_IMPORT,
+    RANK_KEYWORD, RANK_LOCAL, RANK_MODULE, RANK_TYPE, RANK_VALUE, accepted, auto_import, finish,
+    offer, value_kind,
 };
 use crate::presentation::symbol_presentation;
 use arandu_middle::SymbolKind;
@@ -14,6 +15,7 @@ pub(super) fn general_completions(
     snap: &AnalysisSnapshot,
     source: SourceFile,
     tc: &TypeCheckResult,
+    text: &str,
     offset: u32,
     prefix: &str,
     prefix_l: &str,
@@ -101,6 +103,18 @@ pub(super) fn general_completions(
         offer(&mut best, name, rank, symbol.span.start, item);
     }
 
+    for candidate in auto_import::collect_auto_imports(snap, source, tc, text, prefix, false, false)
+    {
+        let label = candidate.label.clone();
+        offer(
+            &mut best,
+            &label,
+            RANK_AUTO_IMPORT,
+            0,
+            auto_import::to_completion_item(candidate),
+        );
+    }
+
     for (keyword, doc) in KEYWORDS {
         if !accepted(prefix, prefix_l, keyword) {
             continue;
@@ -154,6 +168,18 @@ pub(super) fn type_position_completions(
         item.detail = Some(presentation.signature);
         item.documentation = presentation.documentation;
         offer(&mut best, name, 0, symbol.span.start, item);
+    }
+
+    for candidate in auto_import::collect_auto_imports(snap, source, tc, text, prefix, false, true)
+    {
+        let label = candidate.label.clone();
+        offer(
+            &mut best,
+            &label,
+            2,
+            0,
+            auto_import::to_completion_item(candidate),
+        );
     }
 
     if best.is_empty() {

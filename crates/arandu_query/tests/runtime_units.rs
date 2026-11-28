@@ -107,7 +107,7 @@ struct Counter<T> { value: T }
 func Counter.destroy<T>(own self: Counter<T>): void {}
 struct Wrapper { counter: Counter<int> }
 func make(): Wrapper { return Wrapper { counter: Counter<int> { value: 1 } } }
-func main(): int { let wrapped = make() return 0 }
+func main(): int { let wrapped = make(); return 0 }
 "#
         .into(),
     );
@@ -229,7 +229,7 @@ fn final_unit_rejects_a_borrow_without_formal_origin() {
     let mut db = DatabaseImpl::new();
     let file = db.new_file(
         "main.aru".into(),
-        "@NoFallback\nfunc selected(): ref int { let local = 42 return ref local }".into(),
+        "@NoFallback\nfunc selected(): ref int { let local = 42; return ref local }".into(),
     );
     let checked = runtime_unit(&db, instance(&db, file, "selected", Vec::new()));
     assert!(checked.result.as_ref().expect_err("invalid escaping borrow").iter().any(|diagnostic| diagnostic.code == arandu_middle::DiagCode::O010EscapeOfBorrowedValue), "{:?}", checked.result);
@@ -260,7 +260,7 @@ fn a_recursive_call_alone_cannot_invent_a_formal_borrow_origin() {
 #[test]
 fn generic_calls_in_loop_initializer_and_step_are_both_specialized() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "func identity<T>(x: T): T { return x }\nfunc selected(): int { let mut i = 0 for i = identity<int>(0); i < 3; i = identity<int>(i + 1) {} return i }".into());
+    let file = db.new_file("main.aru".into(), "func identity<T>(x: T): T { return x }\nfunc selected(): int { let mut i = 0; for i = identity<int>(0); i < 3; i = identity<int>(i + 1) {} return i }".into());
     let checked = runtime_raw_unit(&db, instance(&db, file, "selected", Vec::new()));
     let raw = checked.result.as_ref().expect("loop unit");
     let identity = symbol(&db, file, "identity");
@@ -326,12 +326,7 @@ fn a_generic_instance_lowers_only_its_body_with_concrete_callee_headers() {
         ),
         Ok(TypeShape::Primitive(Primitive::Int))
     );
-    assert_eq!(
-        log.count_executions_matching("item_typing"),
-        1,
-        "{}",
-        log.format_chain(true)
-    );
+    assert_eq!(body_typings(&log), 1, "{}", log.format_chain(true));
     for forbidden in [
         "prepare_hir",
         "lower_amir",
@@ -613,7 +608,7 @@ fn nominal_arguments_with_equal_short_names_keep_distinct_backend_names() {
 #[test]
 fn nested_nominal_definitions_keep_qualified_backend_identity() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "module app\nmodule left { public struct User { public value: int } }\nmodule right { public struct User { public value: int } }\nfunc identity<T>(value: T): T { return value }\nfunc main(): int { let a = identity(left.User { value: 20 }) let b = identity(right.User { value: 22 }) return a.value + b.value }".into());
+    let file = db.new_file("main.aru".into(), "module app\nmodule left { public struct User { public value: int } }\nmodule right { public struct User { public value: int } }\nfunc identity<T>(value: T): T { return value }\nfunc main(): int { let a = identity(left.User { value: 20 }); let b = identity(right.User { value: 22 }); return a.value + b.value }".into());
     let composed = arandu_query::runtime::runtime_program(&db, file);
     assert!(
         composed.diagnostics.is_empty(),
@@ -811,7 +806,7 @@ fn composition_links_only_reachable_imported_bodies() {
         composed.diagnostics
     );
     assert_eq!(composed.artifacts.amir.funcs.len(), 2);
-    assert_eq!(log.count_executions_matching("item_typing"), 2);
+    assert_eq!(body_typings(&log), 2);
 }
 
 #[test]
@@ -834,7 +829,7 @@ fn a_concrete_type_from_the_caller_brings_declarations_not_sibling_bodies() {
         "module generic\npublic func identity<T>(value: T): T { return value }".into(),
     );
     db.new_file("owner.aru".into(), "module owner\npublic struct Owner { public value: int }\nfunc broken(): int { return absent }".into());
-    let file = db.new_file("main.aru".into(), "import generic\nimport owner\nfunc main(): int { let value = generic.identity(owner.Owner { value: 42 }) return value.value }".into());
+    let file = db.new_file("main.aru".into(), "import generic\nimport owner\nfunc main(): int { let value = generic.identity(owner.Owner { value: 42 }); return value.value }".into());
     log.clear();
     let composed = arandu_query::runtime::runtime_program(&db, file);
     assert!(
@@ -843,7 +838,7 @@ fn a_concrete_type_from_the_caller_brings_declarations_not_sibling_bodies() {
         composed.diagnostics
     );
     assert_eq!(composed.artifacts.amir.funcs.len(), 2);
-    assert_eq!(log.count_executions_matching("item_typing"), 2);
+    assert_eq!(body_typings(&log), 2);
 }
 
 #[test]
@@ -862,7 +857,7 @@ fn specialized_function_values_are_executable_dependencies_too() {
 #[test]
 fn equivalent_literal_receiver_shapes_share_one_destructor_instance() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "struct Counter<T, A = int> { value: T tag: A }\n@Destructor\nfunc Counter.destroy<T, A>(self: Counter<T, A>): void {}\nfunc inspect<T>(c: ref Counter<T>): T { return c.value }\nfunc main(): int { let c: Counter<int> = Counter { value: 42, tag: 1 } return inspect(c) }".into());
+    let file = db.new_file("main.aru".into(), "struct Counter<T, A = int> { value: T tag: A }\n@Destructor\nfunc Counter.destroy<T, A>(self: Counter<T, A>): void {}\nfunc inspect<T>(c: ref Counter<T>): T { return c.value }\nfunc main(): int { let c: Counter<int> = Counter { value: 42, tag: 1 }; return inspect(c) }".into());
     let composed = arandu_query::runtime::runtime_program(&db, file);
     assert!(
         composed.diagnostics.is_empty(),
@@ -937,7 +932,7 @@ fn function_hir_retains_only_its_body_and_headers_are_shared_separately() {
     let headers = arandu_query::runtime::declaration_context(&db, entry);
     let headers_hir = headers.hir.as_ref().expect("declaration closure");
     assert!(headers_hir.decls.iter().any(|&id| matches!(headers_hir.pool.decl(id), HirDecl::Func(function) if function.symbol == helper && function.body.is_none())));
-    assert_eq!(log.count_executions_matching("item_typing"), 1);
+    assert_eq!(body_typings(&log), 1);
     for forbidden in [
         "prepare_hir",
         "file_typing",
@@ -973,7 +968,7 @@ fn a_selected_function_with_own_error_does_not_get_a_dummy_hir() {
 #[test]
 fn declaration_context_preserves_constants_and_consuming_receiver_modes() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "const ANSWER = 42\nstruct Owner { value: int }\nfunc Owner.consume(self: own Owner): int { return self.value }\nfunc selected(): int { return ANSWER }".into());
+    let file = db.new_file("main.aru".into(), "const ANSWER = 42\nstruct Owner { value: int }\nfunc Owner.consume(self: own Owner): int { return self.value }\nfunc selected(): int { let owner = Owner { value: ANSWER }; return owner.consume() }".into());
     let selected = symbol(&db, file, "selected");
     let lowered = instance_hir(&db, instance(&db, file, "selected", Vec::new()));
     let lowered = &lowered.artifacts;
@@ -1082,7 +1077,10 @@ fn concrete_analysis_uses_structural_identity_and_shares_the_unit() {
             arandu_middle::types::ArType::Primitive(primitive)
         );
     }
-    assert_eq!(log.count_executions_matching("declaration_context"), 1);
+    // Both instances link the headers of the one template, built once
+    // (INC.3b); no file-wide header context is linked.
+    assert_eq!(log.count_executions_matching("unit_headers("), 1);
+    assert_eq!(log.count_executions_matching("declaration_context("), 0);
     for forbidden in ["runtime_program", "lower_amir", "prepare_hir"] {
         assert_eq!(
             log.count_executions_matching(forbidden),
@@ -1091,4 +1089,11 @@ fn concrete_analysis_uses_structural_identity_and_shares_the_unit() {
             log.format_chain(true)
         );
     }
+}
+
+/// Bodies type-checked: the direct item typing or its staged fallback. The
+/// item-local resolution a header reads (`item_typing_input`) checks none.
+fn body_typings(log: &arandu_query::RebuildLog) -> usize {
+    log.count_executions_matching("item_direct_typing(")
+        + log.count_executions_matching("item_typing(")
 }

@@ -137,6 +137,7 @@ pub fn inlay_hints(
                 }
             }
         }
+        hole_goal_hints(&tc, program, &index, (start, end), &mut hints);
     }
 
     hints.sort_by(|a, b| {
@@ -177,5 +178,72 @@ fn label_text(label: &InlayHintLabel) -> &str {
     match label {
         InlayHintLabel::String(text) => text,
         InlayHintLabel::LabelParts(_) => "",
+    }
+}
+
+/// `todo` holes show their goal type after them (RFC 0036, H1): the type a
+/// fill must have. A hole whose goal is still unknown shows nothing.
+fn hole_goal_hints(
+    tc: &arandu_semantics::TypeCheckResult,
+    program: &arandu_parser::Program,
+    index: &LineIndex,
+    (start, end): (u32, u32),
+    hints: &mut Vec<InlayHint>,
+) {
+    let is_hole = |expr: ExprId| {
+        matches!(program.pool.expr(expr), ExprKind::Path { .. })
+            && tc
+                .resolved
+                .expr_symbols
+                .get(expr.as_usize())
+                .copied()
+                .flatten()
+                .and_then(|symbol| tc.symbols.try_get(symbol))
+                .is_some_and(|symbol| {
+                    symbol.lang_item == Some(arandu_middle::symbol_table::LangItem::Hole)
+                })
+    };
+    let mut callees = Vec::new();
+    for i in 0..program.pool.exprs.len() {
+        let expr = ExprId::new(i);
+        if let ExprKind::Call { callee, .. } = program.pool.expr(expr) {
+            if is_hole(*callee) {
+                callees.push(*callee);
+            }
+        }
+    }
+    for i in 0..program.pool.exprs.len() {
+        let expr = ExprId::new(i);
+        let hole = match program.pool.expr(expr) {
+            ExprKind::Call { callee, .. } => is_hole(*callee),
+            ExprKind::Path { .. } => is_hole(expr) && !callees.contains(&expr),
+            _ => false,
+        };
+        let span = program.pool.expr_span(expr);
+        if !hole || span.end < start || span.start > end {
+            continue;
+        }
+        let Some(goal) = tc.type_info.expr_type(expr) else {
+            continue;
+        };
+        if matches!(goal, ArType::Error | ArType::Infer(_)) {
+            continue;
+        }
+        let label = display_type(tc, &goal);
+        if label.is_empty() {
+            continue;
+        }
+        hints.push(InlayHint {
+            position: offset_to_position(index, span.end),
+            label: InlayHintLabel::String(format!(": {label}")),
+            kind: Some(InlayHintKind::TYPE),
+            text_edits: None,
+            tooltip: Some(lsp_types::InlayHintTooltip::String(
+                "the type a fill of this hole must have".to_owned(),
+            )),
+            padding_left: None,
+            padding_right: None,
+            data: None,
+        });
     }
 }

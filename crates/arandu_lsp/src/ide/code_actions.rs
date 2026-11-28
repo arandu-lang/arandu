@@ -2,18 +2,125 @@
 
 use std::collections::HashMap;
 
+use arandu_base::LineIndex;
+use arandu_query::{AnalysisSnapshot, SourceFile};
 use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionResponse, TextEdit as LspTextEdit,
-    Uri, WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionResponse, NumberOrString, Range,
+    TextEdit as LspTextEdit, Uri, WorkspaceEdit,
 };
 
 use super::types::DiagnosticData;
+use crate::conv::{offset_to_position, position_to_offset};
+
+/// Code actions backed by structured compiler replacements carried in
+/// `Diagnostic.data` plus snapshot-backed missing-import quick-fixes for
+/// `N001`/`N002` diagnostics; messages are presentation only and are never parsed.
+#[must_use]
+#[allow(clippy::mutable_key_type)] // WorkspaceEdit keys are `Uri` in lsp-types 0.97
+pub fn code_actions_with_snapshot(
+    snap: &AnalysisSnapshot,
+    source: SourceFile,
+    text: &str,
+    uri: &Uri,
+    context: &lsp_types::CodeActionContext,
+) -> CodeActionResponse {
+    let mut out = code_actions(uri, context, snap.revision.as_u64());
+    let index = LineIndex::new(text);
+
+    let wants_organize = context.only.as_ref().is_none_or(|only| {
+        only.iter()
+            .any(|k| *k == CodeActionKind::SOURCE_ORGANIZE_IMPORTS || *k == CodeActionKind::SOURCE)
+    });
+    if wants_organize {
+        if let Some(edit) = arandu_ide::organize_imports(snap, source, text) {
+            let mut changes: HashMap<Uri, Vec<LspTextEdit>> = HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![LspTextEdit {
+                    range: Range {
+                        start: offset_to_position(&index, edit.start),
+                        end: offset_to_position(&index, edit.end),
+                    },
+                    new_text: edit.new_text,
+                }],
+            );
+            out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Organize imports".to_string(),
+                kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..WorkspaceEdit::default()
+                }),
+                ..CodeAction::default()
+            }));
+        }
+    }
+
+    for d in &context.diagnostics {
+        let is_unresolved = matches!(
+            &d.code,
+            Some(NumberOrString::String(code)) if code == "N001" || code == "N002"
+        );
+        if !is_unresolved {
+            continue;
+        }
+        let start = position_to_offset(&index, d.range.start, text) as usize;
+        let end = position_to_offset(&index, d.range.end, text) as usize;
+        if start >= end
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
+            continue;
+        }
+        let ident = text[start..end].trim();
+        if ident.is_empty()
+            || !ident
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            continue;
+        }
+        for candidate in arandu_ide::auto_import_candidates_for_name(snap, source, text, ident) {
+            let mut changes: HashMap<Uri, Vec<LspTextEdit>> = HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![LspTextEdit {
+                    range: Range {
+                        start: offset_to_position(&index, candidate.edit.start),
+                        end: offset_to_position(&index, candidate.edit.end),
+                    },
+                    new_text: candidate.edit.new_text,
+                }],
+            );
+            out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!(
+                    "Import `{}` from `{}`",
+                    candidate.label, candidate.module_path
+                ),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![d.clone()]),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..WorkspaceEdit::default()
+                }),
+                ..CodeAction::default()
+            }));
+        }
+    }
+
+    out
+}
 
 /// Code actions backed by structured compiler replacements carried in
 /// `Diagnostic.data`; messages are presentation only and are never parsed.
 #[must_use]
 #[allow(clippy::mutable_key_type)] // WorkspaceEdit keys are `Uri` in lsp-types 0.97
-pub fn code_actions(_uri: &Uri, context: &lsp_types::CodeActionContext) -> CodeActionResponse {
+fn code_actions(
+    _uri: &Uri,
+    context: &lsp_types::CodeActionContext,
+    current_revision: u64,
+) -> CodeActionResponse {
     let mut out = Vec::new();
     for d in &context.diagnostics {
         let Some(data) = d
@@ -23,6 +130,9 @@ pub fn code_actions(_uri: &Uri, context: &lsp_types::CodeActionContext) -> CodeA
         else {
             continue;
         };
+        if data.revision != current_revision {
+            continue;
+        }
         for fix in data.fixes {
             let mut by_str: HashMap<String, Vec<LspTextEdit>> = HashMap::new();
             by_str.insert(
@@ -49,4 +159,74 @@ pub fn code_actions(_uri: &Uri, context: &lsp_types::CodeActionContext) -> CodeA
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arandu_query::AnalysisHost;
+    use lsp_types::{Diagnostic, Position};
+
+    #[test]
+    fn stale_diagnostic_replacements_are_not_offered() {
+        let uri = crate::uri_util::parse_uri("file:///current.aru").unwrap();
+        let data = DiagnosticData {
+            revision: 4,
+            fixes: vec![super::super::DiagnosticFixData {
+                title: "Replace token".into(),
+                uri: uri.clone(),
+                range: Range {
+                    start: Position::new(0, 0),
+                    end: Position::new(0, 1),
+                },
+                new_text: "new".into(),
+            }],
+            ..DiagnosticData::default()
+        };
+        let diagnostic = Diagnostic {
+            data: serde_json::to_value(data).ok(),
+            ..Diagnostic::default()
+        };
+        let context = lsp_types::CodeActionContext {
+            diagnostics: vec![diagnostic],
+            ..lsp_types::CodeActionContext::default()
+        };
+
+        assert!(code_actions(&uri, &context, 5).is_empty());
+        assert_eq!(code_actions(&uri, &context, 4).len(), 1);
+    }
+
+    #[test]
+    fn unresolved_type_diagnostic_offers_missing_import_quickfix() {
+        let mut host = AnalysisHost::default();
+        let text = "module app.demo\n\nfunc main(): void {\n    let m: HashMap<int, int>\n}\n";
+        let source = host.new_file("app/demo.aru".into(), text.to_string());
+        let snap = host.snapshot();
+        let uri = crate::uri_util::parse_uri("file:///app/demo.aru").unwrap();
+        let diag = Diagnostic {
+            range: Range {
+                start: Position::new(3, 11),
+                end: Position::new(3, 18),
+            },
+            code: Some(NumberOrString::String("N002".to_string())),
+            message: "type 'HashMap' is not declared".to_string(),
+            ..Diagnostic::default()
+        };
+        let context = lsp_types::CodeActionContext {
+            diagnostics: vec![diag],
+            ..lsp_types::CodeActionContext::default()
+        };
+        let actions = code_actions_with_snapshot(&snap, source, text, &uri, &context);
+        let titles: Vec<_> = actions
+            .iter()
+            .filter_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) => Some(ca.title.as_str()),
+                CodeActionOrCommand::Command(_) => None,
+            })
+            .collect();
+        assert!(
+            titles.contains(&"Import `HashMap` from `std.collections`"),
+            "expected missing-import quick-fix, got: {titles:?}"
+        );
+    }
 }

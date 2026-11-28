@@ -16,20 +16,15 @@ fn mono_origin() -> Instant {
     *ORIGIN.get_or_init(Instant::now)
 }
 
-/// Terminate the process with `code` (truncated to 8 bits on Unix by the OS).
+/// Terminate the process with the host's native status-width behavior.
 ///
 /// # Safety
 /// Called only from JIT-linked Arandu code; never returns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_process_exit(code: i64) -> ! {
-    // Match common shell convention: clamp to u8 range for predictability.
-    let status = if code < 0 {
-        255
-    } else if code > 255 {
-        (code & 0xff) as i32
-    } else {
-        code as i32
-    };
+    // The source-language `int` is i32; this ABI widens it to i64 for the JIT.
+    // Let the operating system apply its own exit-status representation.
+    let status = code as i32;
     std::process::exit(status)
 }
 
@@ -136,6 +131,44 @@ pub unsafe extern "C" fn ar_env_args_len() -> i64 {
     argv_snapshot().len() as i64
 }
 
+/// The process arguments as C's `main` receives them: `argc` NUL-terminated
+/// strings followed by a null pointer, for code transpiled from C. Built once
+/// from the same snapshot as [`ar_env_arg`]; the strings live for the whole
+/// process.
+///
+/// # Safety
+/// No pointer args. The returned array must not be written.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_env_c_argv() -> *const *const std::ffi::c_char {
+    static C_ARGV: std::sync::OnceLock<CArgv> = std::sync::OnceLock::new();
+    C_ARGV
+        .get_or_init(|| {
+            let strings = argv_snapshot()
+                .iter()
+                .map(|arg| std::ffi::CString::new(arg.replace('\0', "")).unwrap_or_default())
+                .collect::<Vec<_>>();
+            let mut pointers = strings.iter().map(|s| s.as_ptr()).collect::<Vec<_>>();
+            pointers.push(std::ptr::null());
+            CArgv {
+                _strings: strings,
+                pointers,
+            }
+        })
+        .pointers
+        .as_ptr()
+}
+
+/// The C `argv` array and the strings it points into, kept together.
+struct CArgv {
+    _strings: Vec<std::ffi::CString>,
+    pointers: Vec<*const std::ffi::c_char>,
+}
+
+// SAFETY: built once and never mutated; the pointers refer to `_strings`,
+// owned by the same value.
+unsafe impl Send for CArgv {}
+unsafe impl Sync for CArgv {}
+
 /// `argv[index]` as a UTF-8 fat string (lossy), empty `""` when out of range.
 ///
 /// Reading argv is safe on non-UTF-8 bytes (Rust `env::args()` panics; we use
@@ -187,7 +220,13 @@ pub unsafe extern "C" fn ar_env_var_is_set(ptr: *const u8, len: i64) -> i64 {
     if len <= 0 || ptr.is_null() {
         return 0;
     }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let Some(byte_len) = usize::try_from(len)
+        .ok()
+        .filter(|&n| n <= isize::MAX as usize)
+    else {
+        return 0;
+    };
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, byte_len) };
     let Ok(name) = std::str::from_utf8(bytes) else {
         return 0;
     };
@@ -198,9 +237,72 @@ pub unsafe extern "C" fn ar_env_var_is_set(ptr: *const u8, len: i64) -> i64 {
     i64::from(std::env::var_os(name).is_some())
 }
 
+/// Canonical host virtual memory page size in bytes.
+///
+/// - macOS Apple Silicon (ARM64): 16,384 bytes (16 KB)
+/// - Linux / Windows / x86_64: 4,096 bytes (4 KB)
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub const HOST_PAGE_SIZE: usize = 16_384;
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+pub const HOST_PAGE_SIZE: usize = 4_096;
+
+/// Minimum virtual memory allocation granularity in bytes.
+///
+/// On Windows, `VirtualAlloc` reserves memory with 64 KB alignment (`dwAllocationGranularity`).
+/// On Unix hosts, allocation granularity matches the virtual page size.
+#[cfg(windows)]
+pub const HOST_ALLOCATION_GRANULARITY: usize = 65_536;
+
+#[cfg(not(windows))]
+pub const HOST_ALLOCATION_GRANULARITY: usize = HOST_PAGE_SIZE;
+
+/// Returns the host virtual page size in bytes for language runtime memory calibration.
+#[unsafe(no_mangle)]
+pub extern "C" fn ar_rt_host_page_size() -> usize {
+    HOST_PAGE_SIZE
+}
+
+/// Returns the host virtual memory allocation granularity in bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn ar_rt_host_allocation_granularity() -> usize {
+    HOST_ALLOCATION_GRANULARITY
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c_argv_lists_every_argument_then_a_null() {
+        // SAFETY: the array has `ar_env_args_len()` C strings and a null.
+        unsafe {
+            let argv = ar_env_c_argv();
+            let len = ar_env_args_len() as usize;
+            for index in 0..len {
+                let arg = std::ffi::CStr::from_ptr(*argv.add(index));
+                assert_eq!(
+                    arg.to_string_lossy(),
+                    argv_snapshot()[index].replace('\0', "")
+                );
+            }
+            assert!((*argv.add(len)).is_null());
+            assert_eq!(ar_env_c_argv(), argv, "built once");
+        }
+    }
+
+    #[test]
+    fn host_page_size_and_granularity_are_valid_powers_of_two() {
+        const { assert!(HOST_PAGE_SIZE >= 4096) };
+        assert!(HOST_PAGE_SIZE.is_power_of_two());
+        const { assert!(HOST_ALLOCATION_GRANULARITY >= HOST_PAGE_SIZE) };
+        assert!(HOST_ALLOCATION_GRANULARITY.is_power_of_two());
+        assert_eq!(ar_rt_host_page_size(), HOST_PAGE_SIZE);
+        assert_eq!(
+            ar_rt_host_allocation_granularity(),
+            HOST_ALLOCATION_GRANULARITY
+        );
+    }
 
     #[test]
     fn monotonic_non_decreasing() {

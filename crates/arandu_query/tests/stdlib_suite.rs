@@ -90,3 +90,9 @@ mod deque_slab;
 
 #[path = "stdlib_suite/text.rs"]
 mod text;
+
+#[path = "stdlib_suite/prelude_ergonomics.rs"]
+mod prelude_ergonomics;
+
+#[path = "stdlib_suite/ergonomics_syntax_derive.rs"]
+mod ergonomics_syntax_derive;

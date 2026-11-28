@@ -126,8 +126,13 @@ pub(super) fn instantiate_method_sig_for_receiver(
     }
 
     let key_sym = method_sym.unwrap_or(struct_id);
+    // A receiver still being inferred is instantiated afresh: the table
+    // outlives the body, its variables do not.
+    let cacheable = !recv_args_ids.iter().any(|&id| {
+        arandu_middle::types::infer::contains_infer(id, &checker.type_info.type_interner)
+    });
     let cache_key = (key_sym, recv_args_ids);
-    if let Some(cached) = checker.type_info.variant_instantiations.get(&cache_key) {
+    if cacheable && let Some(cached) = checker.type_info.variant_instantiations.get(&cache_key) {
         return cached.clone();
     }
 
@@ -144,9 +149,11 @@ pub(super) fn instantiate_method_sig_for_receiver(
     let ret_inst = substitute_type(&ret_ty, &subst, &checker.type_info.type_interner);
     let new_ret = checker.intern(ret_inst);
     let res = (new_params, new_ret);
-    checker
-        .type_info
-        .variant_instantiations
-        .insert(cache_key, res.clone());
+    if cacheable {
+        checker
+            .type_info
+            .variant_instantiations
+            .insert(cache_key, res.clone());
+    }
     res
 }

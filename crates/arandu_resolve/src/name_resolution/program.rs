@@ -15,6 +15,7 @@ impl<'a> Resolver<'a> {
         let current_module = program.and_then(|p| p.module.as_ref().map(|m| m.path.join(".")));
         let mut resolver = Self {
             reusable_definitions: rustc_hash::FxHashSet::default(),
+            or_patterns: Vec::new(),
             symbols: SymbolTable::new(file_id),
             resolved: ResolvedNames::default(),
             docs: DocCommentMap::default(),
@@ -161,12 +162,34 @@ impl<'a> Resolver<'a> {
 
     pub(crate) fn define_prelude(&mut self, _program: Option<&Program>) {
         let span = Span::new(0, 0, 0);
+        let global_scope = self.symbols.global_scope();
         for (module, members) in super::PRELUDE_MODULE_MEMBERS {
+            let _ = self.symbols.define_with_visibility(
+                global_scope,
+                module,
+                SymbolKind::Module,
+                span,
+                arandu_parser::Visibility::Public,
+            );
             for member in *members {
                 let _ = self.symbols.define_module_member(module, member, span);
             }
         }
-        let global_scope = self.symbols.global_scope();
+        // Direct prelude I/O helpers (`println`, `print`, `eprint`) in `ScopeId(0)`.
+        // Any local declaration or import in `ScopeId(1)` shadows them cleanly.
+        for io_fn in ["println", "print", "eprint"] {
+            if let Ok(sym) = self.symbols.define_with_visibility(
+                global_scope,
+                io_fn,
+                SymbolKind::NamespaceMember,
+                span,
+                arandu_parser::Visibility::Public,
+            ) {
+                self.symbols
+                    .host_function_names
+                    .insert(sym, SmolStr::new(format!("io.{io_fn}")));
+            }
+        }
         // Prelude builtins are always public (language surface).
         self.symbols.builtin_alloc = self
             .symbols
@@ -195,6 +218,20 @@ impl<'a> Resolver<'a> {
         if let Some(sym) = self.symbols.builtin_free {
             self.symbols
                 .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Free);
+        }
+
+        // `todo` lives in the prelude scope, above the file's own: a
+        // declaration, import or local named `todo` shadows it, so existing
+        // code keeps its meaning (RFC 0036, H1).
+        if let Ok(hole) = self.symbols.define_with_visibility(
+            global_scope,
+            "todo",
+            SymbolKind::Func,
+            span,
+            arandu_parser::Visibility::Public,
+        ) {
+            self.symbols
+                .set_lang_item(hole, arandu_middle::symbol_table::LangItem::Hole);
         }
 
         let res_sym = self
@@ -227,6 +264,23 @@ impl<'a> Resolver<'a> {
         if let Some(sym) = opt_sym {
             self.symbols
                 .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Option);
+        }
+
+        for (name, lang_item) in [
+            ("Ok", arandu_middle::symbol_table::LangItem::ResultOk),
+            ("Err", arandu_middle::symbol_table::LangItem::ResultErr),
+            ("Some", arandu_middle::symbol_table::LangItem::OptionSome),
+            ("None", arandu_middle::symbol_table::LangItem::OptionNone),
+        ] {
+            if let Ok(sym) = self.symbols.define_with_visibility(
+                global_scope,
+                name,
+                SymbolKind::EnumVariant,
+                span,
+                arandu_parser::Visibility::Public,
+            ) {
+                self.symbols.set_lang_item(sym, lang_item);
+            }
         }
 
         let coro_sym = self
@@ -329,6 +383,8 @@ impl<'a> Resolver<'a> {
             ("u32", arandu_middle::symbol_table::LangItem::U32),
             ("u64", arandu_middle::symbol_table::LangItem::U64),
             ("usize", arandu_middle::symbol_table::LangItem::Usize),
+            ("i32", arandu_middle::symbol_table::LangItem::I32),
+            ("i64", arandu_middle::symbol_table::LangItem::I64),
         ] {
             let symbol = self
                 .symbols

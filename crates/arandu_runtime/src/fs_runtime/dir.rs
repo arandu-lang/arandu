@@ -9,6 +9,7 @@ use crate::vec_runtime::ar_vec_malloc;
 /// (no full stat — the Go `os.ReadDir`/`DirEntry` lesson).
 struct HostEntry {
     name: Vec<u8>,
+    name_str: Option<Vec<u8>>,
     is_dir: bool,
 }
 
@@ -44,19 +45,29 @@ fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
         let file_type = dir_entry
             .file_type()
             .map_err(|e| io_error_to_portable(&e))?;
-        let name = dir_entry
-            .file_name()
-            .to_string_lossy()
-            .into_owned()
-            .into_bytes();
-        names_len = names_len.checked_add(name.len()).ok_or(ERR_OTHER)?;
+        let os_name = dir_entry.file_name();
+        #[cfg(unix)]
+        let (name, name_str) = {
+            use std::os::unix::ffi::OsStrExt;
+            let name = os_name.as_bytes().to_vec();
+            let name_str = std::str::from_utf8(&name)
+                .is_err()
+                .then(|| String::from_utf8_lossy(&name).into_owned().into_bytes());
+            (name, name_str)
+        };
+        #[cfg(not(unix))]
+        let (name, name_str) = (os_name.to_string_lossy().into_owned().into_bytes(), None);
+        names_len = names_len
+            .checked_add(name.len())
+            .and_then(|total| total.checked_add(name_str.as_ref().map_or(0, Vec::len)))
+            .ok_or(ERR_OTHER)?;
         let next_count = entries.len().checked_add(1).ok_or(ERR_OTHER)?;
         if directory_blob_len(next_count, names_len).is_none() {
             return Err(ERR_OTHER);
         }
         entries.push(HostEntry {
-            // Lossy on purpose: never panic on non-UTF-8 names (Rust env::args lesson).
             name,
+            name_str,
             is_dir: file_type.is_dir(),
         });
     }
@@ -92,13 +103,27 @@ fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
         bytes[base + 8] = u8::from(entry.is_dir);
         bytes[base + 9..base + 16].fill(0);
         let descriptor = descriptors_base + i * descriptor_size;
-        let name_ptr = data.wrapping_add(cursor) as usize;
+        let raw_name_offset = cursor;
+        bytes[cursor..cursor + entry.name.len()].copy_from_slice(&entry.name);
+        cursor += entry.name.len();
+        let name_ptr = if let Some(name_str) = &entry.name_str {
+            let ptr = data.wrapping_add(cursor);
+            bytes[cursor..cursor + name_str.len()].copy_from_slice(name_str);
+            cursor += name_str.len();
+            ptr as usize
+        } else {
+            data.wrapping_add(raw_name_offset) as usize
+        };
         bytes[descriptor..descriptor + std::mem::size_of::<usize>()]
             .copy_from_slice(&name_ptr.to_ne_bytes());
         bytes[descriptor + std::mem::size_of::<usize>()..descriptor + descriptor_size]
-            .copy_from_slice(&entry.name.len().to_ne_bytes());
-        bytes[cursor..cursor + entry.name.len()].copy_from_slice(&entry.name);
-        cursor += entry.name.len();
+            .copy_from_slice(
+                &entry
+                    .name_str
+                    .as_ref()
+                    .map_or(entry.name.len(), Vec::len)
+                    .to_ne_bytes(),
+            );
     }
 
     Ok((data, count, blob_len))

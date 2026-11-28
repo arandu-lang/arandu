@@ -19,15 +19,19 @@ pub fn constraint_to_diagnostic(
     symbols: &SymbolTable,
     type_info: &TypeInfo,
 ) -> Diagnostic {
+    if let Some(diagnostic) = escaping_callback(constraint, symbols, type_info) {
+        return diagnostic;
+    }
     let expected_str = constraint
         .expected
         .display(symbols, &type_info.type_interner);
     let found_str = constraint.found.display(symbols, &type_info.type_interner);
+    let str_to_string = is_str_to_string(constraint, symbols);
 
     match &constraint.origin {
         ConstraintOrigin::Assignment { lhs_span, rhs_span } => {
             let flow = provenance::causal_chain(constraint);
-            Diagnostic::error(
+            let diag = Diagnostic::error(
                 DiagCode::T002IncompatibleAssignment,
                 format!(
                     "incompatible type in assignment: expected '{expected_str}', found '{found_str}'"
@@ -39,10 +43,14 @@ pub fn constraint_to_diagnostic(
             .with_note(format!(
                 "flow: {} → {}",
                 flow[0].description, flow[1].description
-            ))
-            .with_hint(format!(
-                "convert with '{found_str} as {expected_str}' or change the declaration type"
-            ))
+            ));
+            if str_to_string {
+                attach_to_string_fix(diag, *rhs_span)
+            } else {
+                diag.with_hint(format!(
+                    "convert with '{found_str} as {expected_str}' or change the declaration type"
+                ))
+            }
         }
 
         ConstraintOrigin::CallArg {
@@ -50,27 +58,34 @@ pub fn constraint_to_diagnostic(
             param_span,
             arg_span,
             arg_index,
-        } => Diagnostic::error(
-            DiagCode::T003IncompatibleCallArg,
-            format!(
-                "incompatible type in argument {}: expected '{}', found '{}'",
+        } => {
+            let diag = Diagnostic::error(
+                DiagCode::T003IncompatibleCallArg,
+                format!(
+                    "incompatible type in argument {}: expected '{}', found '{}'",
+                    arg_index + 1,
+                    expected_str,
+                    found_str,
+                ),
+                *call_span,
+            )
+            .with_label(
+                *param_span,
+                format!("parameter {} expects '{}'", arg_index + 1, expected_str),
+            )
+            .with_label(*arg_span, format!("argument has type '{found_str}'"))
+            .with_note(format!(
+                "flow: argument {} ({}) → parameter ({} expected)",
                 arg_index + 1,
-                expected_str,
                 found_str,
-            ),
-            *call_span,
-        )
-        .with_label(
-            *param_span,
-            format!("parameter {} expects '{}'", arg_index + 1, expected_str),
-        )
-        .with_label(*arg_span, format!("argument has type '{found_str}'"))
-        .with_note(format!(
-            "flow: argument {} ({}) → parameter ({} expected)",
-            arg_index + 1,
-            found_str,
-            expected_str,
-        )),
+                expected_str,
+            ));
+            if str_to_string {
+                attach_to_string_fix(diag, *arg_span)
+            } else {
+                diag
+            }
+        }
 
         ConstraintOrigin::CtfeResult { value_span, block_span } => Diagnostic::error(
             DiagCode::T004IncompatibleReturnType,
@@ -100,21 +115,27 @@ pub fn constraint_to_diagnostic(
         ConstraintOrigin::ReturnType {
             return_span,
             declared_span,
-        } => Diagnostic::error(
-            DiagCode::T004IncompatibleReturnType,
-            format!(
-                "incompatible return type: expected '{expected_str}', found '{found_str}'"
-            ),
-            *return_span,
-        )
-        .with_label(
-            *declared_span,
-            format!("return type '{expected_str}' declared here"),
-        )
-        .with_label(*return_span, format!("returns '{found_str}'"))
-        .with_hint(format!(
-            "convert the return value with 'as {expected_str}' or change the function's return type"
-        )),
+        } => {
+            let diag = Diagnostic::error(
+                DiagCode::T004IncompatibleReturnType,
+                format!(
+                    "incompatible return type: expected '{expected_str}', found '{found_str}'"
+                ),
+                *return_span,
+            )
+            .with_label(
+                *declared_span,
+                format!("return type '{expected_str}' declared here"),
+            )
+            .with_label(*return_span, format!("returns '{found_str}'"));
+            if str_to_string {
+                attach_to_string_fix(diag, *return_span)
+            } else {
+                diag.with_hint(format!(
+                    "convert the return value with 'as {expected_str}' or change the function's return type"
+                ))
+            }
+        }
 
         ConstraintOrigin::IfBranches {
             then_span,
@@ -342,7 +363,7 @@ pub fn constraint_to_diagnostic(
             fn get_struct_id(ty: &ArType, interner: &super::types::TypeInterner) -> Option<SymbolId> {
                 match ty {
                     ArType::Named(id, _) => Some(*id),
-                    ArType::Ptr(inner) | ArType::Nullable(inner) => {
+                    ArType::Ptr(inner) => {
                         let inner_ty = interner.resolve(*inner);
                         get_struct_id(&inner_ty, interner)
                     }
@@ -481,6 +502,61 @@ pub fn constraint_to_diagnostic(
 // ── Active hints ────────────────────────────────────────────────────
 
 /// Add operator-specific hints (e.g., suggest interpolation for str+int).
+/// A borrowed callback parameter reaching a function-typed sink would outlive
+/// the call that lent it (RFC 0032, L1).
+fn escaping_callback(
+    constraint: &Constraint,
+    symbols: &SymbolTable,
+    type_info: &TypeInfo,
+) -> Option<Diagnostic> {
+    let found = match &constraint.found {
+        ArType::Ref(inner) | ArType::RefMut(inner) => type_info.type_interner.resolve(*inner),
+        other => other.clone(),
+    };
+    let ArType::Named(implicit, _) = found else {
+        return None;
+    };
+    let bound = *type_info.callback_bounds.get(&implicit)?;
+    let (value_span, sink_span) = match &constraint.origin {
+        ConstraintOrigin::Assignment { lhs_span, rhs_span } => (*rhs_span, *lhs_span),
+        ConstraintOrigin::CallArg {
+            param_span,
+            arg_span,
+            ..
+        } => (*arg_span, *param_span),
+        ConstraintOrigin::ReturnType {
+            return_span,
+            declared_span,
+        } => (*return_span, *declared_span),
+        ConstraintOrigin::FieldInit {
+            field_span,
+            value_span,
+            ..
+        } => (*value_span, *field_span),
+        ConstraintOrigin::SetTarget {
+            place_span,
+            value_span,
+        } => (*value_span, *place_span),
+        _ => return None,
+    };
+    let bound = type_info
+        .type_interner
+        .resolve(bound)
+        .display(symbols, &type_info.type_interner);
+    Some(
+        Diagnostic::error(
+            DiagCode::T100BorrowedCallbackEscapes,
+            format!("borrowed callback of type '{bound}' cannot escape the call that received it"),
+            value_span,
+        )
+        .with_label(value_span, "this callback is only borrowed for the duration of the call")
+        .with_label(sink_span, "it would outlive the call here")
+        .with_hint(
+            "call it here or pass it on to another callback parameter; a closure that must outlive the call needs the owning type `own (A) -> R`",
+        ),
+    )
+}
+
 fn add_operator_hint(
     diag: Diagnostic,
     left: &ArType,
@@ -507,9 +583,7 @@ fn add_operator_hint(
 
     if super::types::unify(left, right, interner) {
         if is_string_type(left) {
-            return diag.with_hint(
-                "relational comparisons on strings are not supported directly; use `std.core.cmp` or `.compare()`",
-            );
+            return diag.with_hint("this operator is not defined on strings");
         }
         if matches!(left, ArType::Primitive(super::types::Primitive::Bool)) {
             return diag.with_hint("type `bool` is not orderable");
@@ -533,7 +607,7 @@ fn suggest_bool_conversion(ty: &ArType) -> String {
         ArType::Primitive(p) if p.is_numeric() => {
             "use explicit comparison: 'value != 0'".to_string()
         }
-        ArType::Nullable(_) => "use explicit comparison: 'value != nil'".to_string(),
+        ArType::Ptr(_) | ArType::Option(_) => "use explicit comparison: 'value != nil'".to_string(),
         ArType::Primitive(super::types::Primitive::Str) => {
             "strings are not automatically bool — use explicit comparison".to_string()
         }
@@ -543,4 +617,28 @@ fn suggest_bool_conversion(ty: &ArType) -> String {
 
 fn is_string_type(ty: &ArType) -> bool {
     matches!(ty, ArType::Primitive(super::types::Primitive::Str))
+}
+
+fn is_str_to_string(constraint: &Constraint, symbols: &SymbolTable) -> bool {
+    matches!(
+        constraint.found,
+        ArType::Primitive(super::types::Primitive::Str)
+    ) && matches!(
+        constraint.expected,
+        ArType::Named(sym, args)
+            if args.len == 0
+                && symbols
+                    .try_get(sym)
+                    .is_some_and(|s| s.lang_item == Some(arandu_middle::symbol_table::LangItem::String))
+    )
+}
+
+fn attach_to_string_fix(diag: Diagnostic, expr_span: arandu_lexer::Span) -> Diagnostic {
+    diag.with_hint_replacement(crate::Hint {
+        message: "convert `str` to owned `String` with `.toString()`".to_string(),
+        replacement: Some(crate::CodeReplacement {
+            span: arandu_lexer::Span::new(expr_span.file_id, expr_span.end, expr_span.end),
+            new_text: ".toString()".to_string(),
+        }),
+    })
 }

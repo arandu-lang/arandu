@@ -33,6 +33,47 @@ impl<'a> ModuleEmitter<'a> {
             ));
             string_globals.insert(index as u32, (name, length));
         }
+        // `static mut` storage: its initial image as bytes. Code reaches it
+        // through an opaque pointer, so the global's own type is a byte array.
+        let little = info.target_identity().is_little_endian();
+        for item in &program.statics {
+            let Some(image) = arandu_middle::ctfe::const_value_bytes(
+                &item.init,
+                item.ty,
+                info.type_interner(),
+                info,
+                info.target_layout(),
+                little,
+            ) else {
+                continue;
+            };
+            let pointer = info.target_layout().pointer.size;
+            let object_names: Vec<String> = (0..image.objects.len())
+                .map(|index| quote_name(&format!("{}__{index}", item.name)))
+                .collect();
+            // The objects its pointers reach (string bytes, slice elements)
+            // are read-only globals of their own.
+            for (object, name) in image.objects.iter().zip(&object_names) {
+                globals.push(static_global(
+                    name,
+                    "internal constant",
+                    &object.bytes,
+                    object.alignment,
+                    &object.relocations,
+                    &object_names,
+                    pointer,
+                ));
+            }
+            globals.push(static_global(
+                &quote_name(&item.name),
+                "internal global",
+                &image.bytes,
+                image.alignment,
+                &image.relocations,
+                &object_names,
+                pointer,
+            ));
+        }
 
         Self {
             program,
@@ -44,6 +85,7 @@ impl<'a> ModuleEmitter<'a> {
             globals,
             declarations: RefCell::new(BTreeMap::new()),
             host_runtime_refs: RefCell::new(BTreeMap::new()),
+            branch_weights: RefCell::new(Vec::new()),
         }
     }
 
@@ -60,8 +102,52 @@ impl<'a> ModuleEmitter<'a> {
             .or_insert_with(|| text.into());
     }
 
+    pub(super) fn require_branch_weights(&self, w_true: u32, w_false: u32) -> String {
+        let mut weights = self.branch_weights.borrow_mut();
+        if let Some(index) = weights
+            .iter()
+            .position(|&(t, f)| t == w_true && f == w_false)
+        {
+            format!("!{index}")
+        } else {
+            let index = weights.len();
+            weights.push((w_true, w_false));
+            format!("!{index}")
+        }
+    }
+
+    pub(super) fn require_cold_trap_weights(&self) -> String {
+        self.require_branch_weights(1, 1048576)
+    }
+
     pub(super) fn require_llvm_trap(&self) {
         self.require_declaration("llvm.trap", "declare void @llvm.trap()");
+    }
+
+    /// The constant holding `panic: <message>\n` for `kind`, its length, and
+    /// the POSIX `write` that prints it on the standard error stream.
+    pub(super) fn require_trap_message(
+        &self,
+        kind: arandu_middle::amir::TrapKind,
+    ) -> (String, usize, &'static str) {
+        let report = kind.report();
+        let name = format!("@ar.trap.{kind:?}");
+        self.require_declaration(
+            &name,
+            format!(
+                "{name} = private unnamed_addr constant [{} x i8] c\"{}\", align 1",
+                report.len(),
+                super::escape_c_string(report.as_bytes())
+            ),
+        );
+        let len = self.require_posix_write();
+        (name, report.len(), len)
+    }
+
+    pub(super) fn require_posix_write(&self) -> &'static str {
+        let len = ptr_int(self.layout.pointer_width());
+        self.require_declaration("write", format!("declare {len} @write(i32, ptr, {len})"));
+        len
     }
 
     pub(super) fn require_raw_malloc(&self) {
@@ -74,6 +160,35 @@ impl<'a> ModuleEmitter<'a> {
 
     pub(super) fn require_raw_free(&self) {
         self.require_declaration("ar_rt_raw_free", "declare void @ar_rt_raw_free(ptr)");
+    }
+
+    pub(super) fn require_task_arena_alloc(&self) {
+        let len = ptr_int(self.layout.pointer_width());
+        self.require_declaration(
+            "ar_task_arena_alloc",
+            format!("declare ptr @ar_task_arena_alloc({len}, {len})"),
+        );
+    }
+
+    pub(super) fn require_task_arena_fast_state(&self) {
+        self.require_declaration(
+            "ar_task_arena_fast_state",
+            "declare ptr @ar_task_arena_fast_state() nounwind willreturn memory(none)",
+        );
+    }
+
+    pub(super) fn require_task_arena_checkpoint(&self) {
+        self.require_declaration(
+            "ar_task_arena_checkpoint",
+            "declare i64 @ar_task_arena_checkpoint()",
+        );
+    }
+
+    pub(super) fn require_task_arena_rewind(&self) {
+        self.require_declaration(
+            "ar_task_arena_rewind",
+            "declare void @ar_task_arena_rewind(i64)",
+        );
     }
 
     pub(super) fn require_memcmp(&self) {
@@ -127,7 +242,10 @@ impl<'a> ModuleEmitter<'a> {
             .parse()
             .map_err(|_| ice(format!("bit intrinsic {name} has an invalid width")))?;
         let text = match intrinsic {
-            "llvm.ctpop" | "llvm.bitreverse" => {
+            "llvm.fshl" | "llvm.fshr" => {
+                format!("declare i{width} @{name}(i{width}, i{width}, i{width})")
+            }
+            "llvm.ctpop" | "llvm.bitreverse" | "llvm.bswap" => {
                 format!("declare i{width} @{name}(i{width})")
             }
             "llvm.ctlz" | "llvm.cttz" => format!("declare i{width} @{name}(i{width}, i1)"),
@@ -146,10 +264,14 @@ impl<'a> ModuleEmitter<'a> {
         name: &str,
         args: &[ArType],
         ret: &ArType,
+        is_variadic: bool,
     ) -> Result<(), Diagnostic> {
         let mut flattened = Vec::new();
         for arg in args {
             flattened.extend(self.host_abi_param_llvm_tys(arg)?);
+        }
+        if is_variadic {
+            flattened.push("...".to_owned());
         }
         let ret = self.llvm_ty(ret)?;
         let params = flattened.join(", ");
@@ -213,6 +335,16 @@ impl<'a> ModuleEmitter<'a> {
         }
         output.push('\n');
         output.push_str(&body);
+        let weights = self.branch_weights.borrow();
+        if !weights.is_empty() {
+            output.push('\n');
+            for (index, (w_true, w_false)) in weights.iter().enumerate() {
+                let _ = writeln!(
+                    output,
+                    "!{index} = !{{!\"branch_weights\", i32 {w_true}, i32 {w_false}}}"
+                );
+            }
+        }
         Ok(output)
     }
 
@@ -539,6 +671,7 @@ impl<'a> ModuleEmitter<'a> {
 
     pub(super) fn is_signed(&self, ty: &ArType) -> bool {
         match ty {
+            ArType::IntLiteral => true,
             ArType::Primitive(primitive) => primitive.is_signed(),
             ArType::Vector(vector) => vector.lane().is_signed(),
             _ => false,
@@ -571,7 +704,6 @@ impl<'a> ModuleEmitter<'a> {
             ArType::Ptr(_)
                 | ArType::Ref(_)
                 | ArType::RefMut(_)
-                | ArType::Nullable(_)
                 | ArType::GenRef
                 | ArType::Coroutine(_)
                 | ArType::Err
@@ -592,7 +724,7 @@ impl<'a> ModuleEmitter<'a> {
     /// matching Cranelift and runtime helpers such as `ar_fs_read_all`.
     /// Void parameters contribute no slots. Internal Arandu→Arandu calls keep
     /// the first-class fat value ABI from [`Self::fat_ptr_llvm_ty`].
-    fn host_abi_param_llvm_tys(&self, ty: &ArType) -> Result<Vec<String>, Diagnostic> {
+    pub(super) fn host_abi_param_llvm_tys(&self, ty: &ArType) -> Result<Vec<String>, Diagnostic> {
         if self.is_void(ty) {
             return Ok(Vec::new());
         }
@@ -603,11 +735,11 @@ impl<'a> ModuleEmitter<'a> {
     }
 
     pub(super) fn is_float(&self, ty: &ArType) -> bool {
-        matches!(ty, ArType::Primitive(p) if p.is_float())
+        matches!(ty, ArType::FloatLiteral) || matches!(ty, ArType::Primitive(p) if p.is_float())
     }
 
     pub(super) fn is_void(&self, ty: &ArType) -> bool {
-        matches!(ty, ArType::Void)
+        matches!(ty, ArType::Void | ArType::Never)
     }
 
     pub(super) fn vector_info(&self, ty: &ArType) -> Option<(VectorType, u64, Primitive)> {
@@ -633,6 +765,7 @@ fn is_host_runtime_symbol(name: &str) -> bool {
         || name.starts_with("ar_jit_")
         || name.starts_with("ar_gen_")
         || name.starts_with("ar_co_")
+        || name.starts_with("ar_task_arena_")
         || name == "ar_str_concat"
         || name == "memcmp"
 }
@@ -650,6 +783,67 @@ fn entry_string_bytes(entry: &arandu_middle::literal_pool::AmirLiteralEntry) -> 
     }
 }
 
+/// A global holding `bytes`. With relocations it is a packed struct whose
+/// pointer-sized words at those offsets hold the addresses of `objects`;
+/// code reaches it through an opaque pointer, so its own type is free.
+fn static_global(
+    name: &str,
+    kind: &str,
+    bytes: &[u8],
+    alignment: u64,
+    relocations: &[arandu_middle::ctfe::StaticRelocation],
+    objects: &[String],
+    pointer: u64,
+) -> String {
+    let align = alignment.max(1);
+    if relocations.is_empty() {
+        let mut bytes = bytes.to_vec();
+        if bytes.is_empty() {
+            bytes.push(0);
+        }
+        return format!(
+            "@{name} = {kind} [{} x i8] c\"{}\", align {align}",
+            bytes.len(),
+            escape_c_string(&bytes)
+        );
+    }
+    let mut sorted = relocations.to_vec();
+    sorted.sort_by_key(|relocation| relocation.offset);
+    let mut types = Vec::new();
+    let mut values = Vec::new();
+    let mut cursor = 0usize;
+    let pointer = usize::try_from(pointer).unwrap_or(8);
+    let push_bytes = |types: &mut Vec<String>, values: &mut Vec<String>, chunk: &[u8]| {
+        if !chunk.is_empty() {
+            types.push(format!("[{} x i8]", chunk.len()));
+            values.push(format!(
+                "[{} x i8] c\"{}\"",
+                chunk.len(),
+                escape_c_string(chunk)
+            ));
+        }
+    };
+    for relocation in &sorted {
+        let offset = usize::try_from(relocation.offset).unwrap_or(usize::MAX);
+        let Some(target) = objects.get(relocation.target) else {
+            continue;
+        };
+        if offset < cursor || offset.saturating_add(pointer) > bytes.len() {
+            continue;
+        }
+        push_bytes(&mut types, &mut values, &bytes[cursor..offset]);
+        types.push("ptr".to_owned());
+        values.push(format!("ptr @{target}"));
+        cursor = offset + pointer;
+    }
+    push_bytes(&mut types, &mut values, &bytes[cursor..]);
+    format!(
+        "@{name} = {kind} <{{ {} }}> <{{ {} }}>, align {align}",
+        types.join(", "),
+        values.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::ModuleEmitter;
@@ -663,6 +857,7 @@ mod tests {
             extern_funcs: Default::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let symbols = arandu_middle::SymbolTable::default();
         let mut info = arandu_semantics::TypeInfo::new();
@@ -685,6 +880,7 @@ mod tests {
                     arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str),
                 ],
                 &arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str),
+                false,
             )
             .expect("ar_str_concat declaration");
         let ir = module.emit().expect("empty Windows module");

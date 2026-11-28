@@ -50,8 +50,8 @@ fn stmt_span(pool: &AstPool, stmt: StmtId) -> Span {
         Stmt::VarDecl { span, .. }
         | Stmt::Set { span, .. }
         | Stmt::Return { span, .. }
-        | Stmt::Break { span }
-        | Stmt::Continue { span }
+        | Stmt::Break { span, .. }
+        | Stmt::Continue { span, .. }
         | Stmt::Free { span, .. }
         | Stmt::Expr { span, .. }
         | Stmt::If { span, .. }
@@ -119,11 +119,79 @@ fn lower_stmt_raw(
                 .iter()
                 .map(|p| super::place::lower_place(type_check, pool, hir_pool, p))
                 .collect();
-            let value_vid = super::expr::lower_expr(type_check, pool, hir_pool, *value)?;
-            let places_range = hir_pool.alloc_place_list(&hir_places?);
+            let mut hir_places = hir_places?;
+            let mut value_vid = super::expr::lower_expr(type_check, pool, hir_pool, *value)?;
+            let mut set_op = super::ops::lower_set_op(op.clone());
+            // `s += t` on a `String` appends in place: `s.pushStr(t)`.
+            if set_op == arandu_middle::ops::SetOp::AddAssign
+                && let [place] = hir_places.as_slice()
+                && super::expr::text::is_string(type_check, place.ty)
+                && let Some(target) = super::expr::text::place_expr(type_check, hir_pool, place)
+            {
+                let span = place.span;
+                let call =
+                    super::expr::text::push_str(type_check, hir_pool, target, value_vid, span)
+                        .ok_or_else(|| {
+                            Diagnostic::ice(
+                                crate::DiagCode::ICEL001,
+                                "`String.pushStr` is missing",
+                                span,
+                            )
+                        })?;
+                return Ok(HirStmt {
+                    kind: HirStmtKind::Expr(call),
+                    span: stmt_span(pool, stmt),
+                });
+            }
+            // `s += t` on a `str` binding is `s = "${s}${t}"`, as `s = s + t`.
+            if set_op == arandu_middle::ops::SetOp::AddAssign
+                && let [place] = hir_places.as_slice()
+                && place.suffixes.is_empty()
+                && matches!(
+                    type_check.type_info.type_interner.resolve(place.ty),
+                    crate::types::ArType::Primitive(crate::types::Primitive::Str)
+                )
+            {
+                let current = hir_pool.alloc_expr(crate::hir::HirExpr {
+                    kind: crate::hir::HirExprKind::Path {
+                        symbol: place.root_symbol,
+                    },
+                    ty: place.ty,
+                    span: place.span,
+                });
+                let added = match &hir_pool.expr(value_vid).kind {
+                    crate::hir::HirExprKind::Str(text) => {
+                        crate::hir::HirStringPart::Text(text.clone())
+                    }
+                    _ => crate::hir::HirStringPart::Expr(value_vid),
+                };
+                value_vid = hir_pool.alloc_expr(crate::hir::HirExpr {
+                    kind: crate::hir::HirExprKind::StringInterp {
+                        parts: vec![crate::hir::HirStringPart::Expr(current), added],
+                    },
+                    ty: place.ty,
+                    span: place.span,
+                });
+                set_op = arandu_middle::ops::SetOp::Assign;
+            }
+            if hir_places.len() == 1 && has_trait_index_suffix(type_check, &hir_places[0]) {
+                let place = hir_places.swap_remove(0);
+                return Ok(HirStmt {
+                    kind: desugar_trait_index_set(
+                        type_check,
+                        hir_pool,
+                        place,
+                        set_op,
+                        value_vid,
+                        stmt_span(pool, stmt),
+                    )?,
+                    span: stmt_span(pool, stmt),
+                });
+            }
+            let places_range = hir_pool.alloc_place_list(&hir_places);
             HirStmtKind::Set {
                 places: places_range,
-                op: super::ops::lower_set_op(op.clone()),
+                op: set_op,
                 value: value_vid,
             }
         }
@@ -137,8 +205,12 @@ fn lower_stmt_raw(
                 values: values_range,
             }
         }
-        Stmt::Break { .. } => HirStmtKind::Break,
-        Stmt::Continue { .. } => HirStmtKind::Continue,
+        Stmt::Break { label, .. } => HirStmtKind::Break {
+            label: label.clone(),
+        },
+        Stmt::Continue { label, .. } => HirStmtKind::Continue {
+            label: label.clone(),
+        },
         Stmt::Free { expr, .. } => {
             let eid = super::expr::lower_expr(type_check, pool, hir_pool, *expr)?;
             HirStmtKind::Free(eid)
@@ -209,10 +281,12 @@ fn lower_stmt_raw(
         },
         Stmt::For {
             span,
+            label,
             is_comptime,
             clause,
             body,
         } => HirStmtKind::For {
+            label: label.clone(),
             comptime_bodies: None,
             comptime_bounds: if *is_comptime {
                 Some(
@@ -246,8 +320,12 @@ fn lower_stmt_raw(
             },
         },
         Stmt::While {
-            condition, body, ..
+            label,
+            condition,
+            body,
+            ..
         } => HirStmtKind::While {
+            label: label.clone(),
             condition: lower_condition(type_check, pool, hir_pool, condition)?,
             body: super::stmt::lower_block(type_check, pool, hir_pool, body)?,
         },
@@ -327,6 +405,40 @@ pub(crate) fn lower_stmt(
     hir_pool: &mut crate::hir::HirPool,
     stmt: StmtId,
 ) -> Result<HirStmtId, Diagnostic> {
+    // A loop over a range value that is not a plain name reads it twice, so
+    // it is bound to a local in a scope around the loop.
+    if let Stmt::For {
+        span,
+        clause: ForClause::In { iterable, .. },
+        ..
+    } = pool.stmt(stmt)
+        && super::expr::range::needs_local(type_check, pool, *iterable)
+    {
+        let (span, iterable) = (*span, *iterable);
+        let value_span = pool.expr_span(iterable);
+        let value = super::expr::lower_expr(type_check, pool, hir_pool, iterable)?;
+        let ty = hir_pool.expr(value).ty;
+        let local = super::expr::temporary::synthetic_local(type_check, value_span, "range");
+        let bindings = hir_pool.alloc_binding_list(&[HirBindingItem {
+            symbol: local,
+            ty,
+            span: value_span,
+        }]);
+        let bind = hir_pool.alloc_stmt(HirStmt {
+            kind: HirStmtKind::VarDecl { bindings, value },
+            span: value_span,
+        });
+        hir_pool.hoisted_values.insert(value_span, (local, ty));
+        let looped = lower_stmt_raw(type_check, pool, hir_pool, stmt);
+        hir_pool.hoisted_values.remove(&value_span);
+        let looped = hir_pool.alloc_stmt(looped?);
+        let statements = hir_pool.alloc_stmt_list(&[bind, looped]);
+        let block = hir_pool.alloc_block(HirBlock { statements, span });
+        return Ok(hir_pool.alloc_stmt(HirStmt {
+            kind: HirStmtKind::Scope(block),
+            span,
+        }));
+    }
     let hir = lower_stmt_raw(type_check, pool, hir_pool, stmt)?;
     Ok(hir_pool.alloc_stmt(hir))
 }
@@ -387,7 +499,10 @@ pub(crate) fn lower_for_clause(
                 });
             }
             let bindings_range = hir_pool.alloc_for_binding_list(&hir_bindings);
-            let eid = super::expr::lower_expr(type_check, pool, hir_pool, *iterable)?;
+            let eid = match super::expr::range::bounds(type_check, pool, hir_pool, *iterable)? {
+                Some(bounds) => bounds,
+                None => super::expr::lower_expr(type_check, pool, hir_pool, *iterable)?,
+            };
             Ok(HirForClause::In {
                 span: *span,
                 bindings: bindings_range,
@@ -473,4 +588,200 @@ pub(crate) fn lower_simple_stmt(
             Ok(HirSimpleStmt::Expr(eid))
         }
     }
+}
+
+fn find_first_trait_index_suffix(
+    type_check: &mut TypeCheckResult,
+    place: &crate::hir::HirPlace,
+) -> Option<(usize, arandu_middle::types::TypeId)> {
+    use crate::hir::HirPlaceSuffix;
+    let error_id = arandu_middle::types::TypeInterner::preinterned_error_id();
+    let mut cur_ty = type_check
+        .type_info
+        .decl_type_id(place.root_symbol)
+        .unwrap_or(error_id);
+    for (idx, suffix) in place.suffixes.iter().enumerate() {
+        if matches!(suffix, HirPlaceSuffix::Index { .. })
+            && super::expr::access::resolve_trait_index_sig(type_check, cur_ty, true).is_some()
+        {
+            return Some((idx, cur_ty));
+        }
+        cur_ty = match suffix {
+            HirPlaceSuffix::Field { ty, .. }
+            | HirPlaceSuffix::Index { ty, .. }
+            | HirPlaceSuffix::Deref { ty, .. } => *ty,
+        };
+    }
+    None
+}
+
+fn has_trait_index_suffix(type_check: &mut TypeCheckResult, place: &crate::hir::HirPlace) -> bool {
+    find_first_trait_index_suffix(type_check, place).is_some()
+}
+
+fn build_place_prefix_expr(
+    hir_pool: &mut crate::hir::HirPool,
+    root_symbol: crate::SymbolId,
+    root_ty: arandu_middle::types::TypeId,
+    suffixes: &[crate::hir::HirPlaceSuffix],
+    root_span: Span,
+) -> crate::hir::HirExprId {
+    use crate::hir::{HirExpr, HirExprKind, HirPlaceSuffix};
+    let mut expr = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path {
+            symbol: root_symbol,
+        },
+        ty: root_ty,
+        span: root_span,
+    });
+    for suffix in suffixes {
+        expr = match suffix {
+            HirPlaceSuffix::Field { span, name, ty, .. } => hir_pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Field {
+                    base: expr,
+                    field: name.clone(),
+                },
+                ty: *ty,
+                span: *span,
+            }),
+            HirPlaceSuffix::Deref { span, ty } => hir_pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Unary {
+                    op: arandu_middle::ops::UnaryOp::Deref,
+                    expr,
+                },
+                ty: *ty,
+                span: *span,
+            }),
+            HirPlaceSuffix::Index {
+                span,
+                expr: idx_expr,
+                ty,
+            } => hir_pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Index {
+                    base: expr,
+                    index: *idx_expr,
+                },
+                ty: *ty,
+                span: *span,
+            }),
+        };
+    }
+    expr
+}
+
+fn desugar_trait_index_set(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    place: crate::hir::HirPlace,
+    set_op: arandu_middle::ops::SetOp,
+    value: crate::hir::HirExprId,
+    stmt_span: Span,
+) -> Result<HirStmtKind, Diagnostic> {
+    use crate::hir::{HirPlace, HirPlaceSuffix};
+    let Some((k, base_ty)) = find_first_trait_index_suffix(type_check, &place) else {
+        let places_range = hir_pool.alloc_place_list(&[place]);
+        return Ok(HirStmtKind::Set {
+            places: places_range,
+            op: set_op,
+            value,
+        });
+    };
+    let HirPlaceSuffix::Index {
+        span: idx_span,
+        expr: idx_eid,
+        ..
+    } = place.suffixes[k]
+    else {
+        unreachable!();
+    };
+    let (fn_ty, ret_ref_ty, out_ty) = super::expr::access::resolve_trait_index_sig(
+        type_check, base_ty, true,
+    )
+    .ok_or_else(|| {
+        Diagnostic::ice(
+            crate::DiagCode::ICEL001,
+            "missing trait indexMut signature during assignment lowering",
+            idx_span,
+        )
+    })?;
+    let error_id = arandu_middle::types::TypeInterner::preinterned_error_id();
+    let root_ty = type_check
+        .type_info
+        .decl_type_id(place.root_symbol)
+        .unwrap_or(error_id);
+    let prefix_suffixes = &place.suffixes[..k];
+    let base_callee = build_place_prefix_expr(
+        hir_pool,
+        place.root_symbol,
+        root_ty,
+        prefix_suffixes,
+        place.span,
+    );
+    let base_arg = build_place_prefix_expr(
+        hir_pool,
+        place.root_symbol,
+        root_ty,
+        prefix_suffixes,
+        place.span,
+    );
+    let call_expr = super::expr::access::make_trait_index_call_from_hir(
+        hir_pool,
+        super::expr::access::TraitIndexCallArgs {
+            base_for_callee: base_callee,
+            base_for_arg: base_arg,
+            index_hir: idx_eid,
+            fn_ty,
+            ret_ref_ty,
+            mutable: true,
+            span: idx_span,
+        },
+    );
+    let call_id = hir_pool.alloc_expr(call_expr);
+    let temp_sym = super::expr::temporary::synthetic_local(type_check, idx_span, "idx_mut");
+    type_check
+        .type_info_mut()
+        .decl_types
+        .insert(temp_sym, ret_ref_ty);
+    let bindings = hir_pool.alloc_binding_list(&[HirBindingItem {
+        symbol: temp_sym,
+        ty: ret_ref_ty,
+        span: idx_span,
+    }]);
+    let var_decl_stmt = hir_pool.alloc_stmt(HirStmt {
+        kind: HirStmtKind::VarDecl {
+            bindings,
+            value: call_id,
+        },
+        span: idx_span,
+    });
+    let mut new_suffixes = Vec::with_capacity(place.suffixes.len() - k);
+    new_suffixes.push(HirPlaceSuffix::Deref {
+        span: idx_span,
+        ty: out_ty,
+    });
+    new_suffixes.extend(place.suffixes[k + 1..].iter().cloned());
+    let remaining_place = HirPlace {
+        root_symbol: temp_sym,
+        suffixes: new_suffixes.into(),
+        ty: place.ty,
+        span: place.span,
+    };
+    let tail_kind = desugar_trait_index_set(
+        type_check,
+        hir_pool,
+        remaining_place,
+        set_op,
+        value,
+        stmt_span,
+    )?;
+    let tail_stmt = hir_pool.alloc_stmt(HirStmt {
+        kind: tail_kind,
+        span: stmt_span,
+    });
+    let stmts = hir_pool.alloc_stmt_list(&[var_decl_stmt, tail_stmt]);
+    let block = hir_pool.alloc_block(HirBlock {
+        statements: stmts,
+        span: stmt_span,
+    });
+    Ok(HirStmtKind::Scope(block))
 }

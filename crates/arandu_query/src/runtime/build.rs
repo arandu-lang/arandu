@@ -19,14 +19,11 @@ pub(super) fn build_instance_hir<'db>(
         *item_staging(db, *instance.file(db), key.definition);
     let dependent_header = !for_ctfe
         && !key.arguments.is_empty()
-        && crate::passes::declaration_signatures(db, *instance.file(db))
-            .type_info
-            .deferred_headers
-            .contains(&key.definition);
+        && *super::deferred_header(db, *instance.file(db), key.definition);
     let staged =
         dependent_header || (may_have_comptime && (!key.arguments.is_empty() || has_static_loop));
     let local =
-        !for_ctfe && !staged && super::lowers_locally(db, *instance.file(db), key.definition);
+        !for_ctfe && !staged && *super::lowers_locally(db, *instance.file(db), key.definition);
     let template = if for_ctfe {
         FingerprintEq::from_content(&crate::ctfe::instances::instance_ctfe_hir(
             db, instance, context,
@@ -105,17 +102,55 @@ pub(super) fn build_instance_hir<'db>(
                 ),
             }
         } else {
-            let headers = if local {
-                local_declaration_context(db, *instance.file(db))
+            // A local unit links the headers of what it reaches (INC.3b);
+            // otherwise the file context.
+            let reduced = if local {
+                super::slice::unit_headers(db, *instance.file(db), key.definition)
+                    .as_ref()
+                    .map(crate::db::HashEq::share)
             } else {
-                declaration_context(db, *instance.file(db))
+                None
             };
+            let shared = reduced.is_none();
+            let headers = match reduced {
+                Some(headers) => headers,
+                None if local => {
+                    crate::db::HashEq::share(local_declaration_context(db, *instance.file(db)))
+                }
+                None => crate::db::HashEq::share(declaration_context(db, *instance.file(db))),
+            };
+            let headers = &headers;
             fingerprint.update(headers.stable_hash().as_bytes());
-            if local && headers.hir.is_some() {
+            if local && shared && headers.hir.is_some() {
                 share_linked_imports(db, *instance.file(db), &mut checked, headers);
             }
             if let Some(context) = &headers.hir {
                 arandu_semantics::link_hir_module(&mut checked, hir, &headers.type_check, context);
+                if !shared {
+                    // The template's table has the signature-level host names
+                    // of its whole file; the reduced headers carry the lowered
+                    // ones (`@Export`) of what the unit reaches.
+                    let marks = &headers.type_check.symbols;
+                    let functions = super::slice::function_symbols(&checked.symbols);
+                    let symbols = checked.symbols_mut();
+                    symbols.host_function_names.retain(|symbol, _| {
+                        !functions.contains(symbol)
+                            || marks.host_function_names.contains_key(symbol)
+                    });
+                    symbols.host_function_names.extend(
+                        marks
+                            .host_function_names
+                            .iter()
+                            .map(|(symbol, name)| (*symbol, name.clone())),
+                    );
+                    symbols
+                        .exported_functions
+                        .clone_from(&marks.exported_functions);
+                    symbols.cold_functions.clone_from(&marks.cold_functions);
+                    symbols
+                        .tooling_entrypoints
+                        .clone_from(&marks.tooling_entrypoints);
+                }
             } else {
                 diagnostics.extend(headers.diagnostics.iter().cloned());
             }
@@ -418,6 +453,9 @@ fn file_staging(
     file: crate::SourceFile,
     symbol: arandu_middle::SymbolId,
 ) -> (bool, bool) {
+    if symbol.export_thunk_target().is_some() || *super::is_derived_method(db, file, symbol) {
+        return (false, false);
+    }
     let source = item_source_input(db, file, symbol);
     if !source.may_have_comptime {
         return (false, false);

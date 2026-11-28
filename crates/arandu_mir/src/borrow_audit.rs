@@ -386,7 +386,7 @@ fn observe_terminator(
             }
             observe_args(&otherwise.1);
         }
-        AmirTerminator::Unreachable | AmirTerminator::Return => {}
+        AmirTerminator::Unreachable | AmirTerminator::Return | AmirTerminator::Trap(_) => {}
     }
 }
 

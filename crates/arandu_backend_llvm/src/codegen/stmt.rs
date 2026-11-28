@@ -175,21 +175,19 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         .map_or_else(|| self.module.llvm_ty(&ty), Ok)?;
                     let align = self.module.align_of(&ty);
                     let value = self.slot_value.take().unwrap_or(result);
-                    self.writer.line(format!(
-                        "store {ty_text} {value}, ptr {slot}, align {align}"
-                    ));
+                    // A `void` value has no bytes; LLVM rejects storing it.
+                    if ty_text != "void" {
+                        self.writer.line(format!(
+                            "store {ty_text} {value}, ptr {slot}, align {align}"
+                        ));
+                    }
                 }
                 Ok(())
             }
             AmirStmt::Store { lhs, rhs } => {
                 let (address, ty) = self.place(lhs)?;
                 let value = self.operand(rhs, &ty)?;
-                let align = self.module.align_of(&ty);
-                self.writer.line(format!(
-                    "store {}, ptr {address}, align {align}",
-                    value.render()
-                ));
-                Ok(())
+                self.store_value(&address, &value, &ty)
             }
             AmirStmt::Call {
                 lhs, callee, args, ..
@@ -203,9 +201,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     let ty_text = self.module.llvm_ty(&ty)?;
                     let align = self.module.align_of(&ty);
                     let value = self.slot_value.take().unwrap_or(value);
-                    self.writer.line(format!(
-                        "store {ty_text} {value}, ptr {slot}, align {align}"
-                    ));
+                    if ty_text != "void" {
+                        self.writer.line(format!(
+                            "store {ty_text} {value}, ptr {slot}, align {align}"
+                        ));
+                    }
                 }
                 Ok(())
             }
@@ -231,6 +231,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 Ok(())
             }
             AmirStmt::Destroy(place) => self.emit_destroy(place),
+            AmirStmt::ArenaRewind(operand) => {
+                let checkpoint = self.operand(operand, &self.module.i64_ty())?;
+                self.module.require_task_arena_rewind();
+                self.writer.line(format!(
+                    "call void @ar_task_arena_rewind({})",
+                    checkpoint.render()
+                ));
+                Ok(())
+            }
             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => Ok(()),
         }
     }

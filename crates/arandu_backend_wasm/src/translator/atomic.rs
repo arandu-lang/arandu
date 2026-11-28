@@ -13,9 +13,10 @@ impl FuncTranslator<'_> {
         args: &[AmirOperand],
     ) -> bool {
         let (op, width) = match kind {
-            IntrinsicKind::Atomic(op, width) => (op, width),
-            IntrinsicKind::AtomicFence | IntrinsicKind::AtomicCompilerFence => {
-                self.code.push(Instruction::AtomicFence);
+            IntrinsicKind::Atomic(op, width, _) => (op, width),
+            IntrinsicKind::AtomicFence(..) | IntrinsicKind::AtomicCompilerFence(..) => {
+                self.code
+                    .push(Instruction::AtomicFence(wasm_encoder::Ordering::SeqCst));
                 return true;
             }
             _ => return false,
@@ -37,7 +38,8 @@ impl FuncTranslator<'_> {
                 AtomicWidth::U64 => 3,
                 AtomicWidth::U32 | AtomicWidth::Usize | AtomicWidth::Pointer => 2,
             },
-            memory_index: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
         };
         let instruction = match (op, width) {
             (AtomicOp::Load, AtomicWidth::U8) => Instruction::I32AtomicLoad8U(memory),

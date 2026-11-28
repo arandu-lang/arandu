@@ -486,7 +486,7 @@ fn discarded_branches_have_no_argument_obligations() {
 #[test]
 fn computed_arguments_in_match_arms_keep_their_lexical_scope() {
     {
-        let body = "func main(): uint { let value = Option.Some(0 as uint)\nreturn match value { Option.Some(x) => count<comptime (20 + 22)>() + x Option.None => 0 } }";
+        let body = "func main(): uint { let value = Option.Some(0 as uint)\nreturn match value { Option.Some(x) => count<comptime (20 + 22)>() + x, Option.None => 0 } }";
         let mut db = DatabaseImpl::new();
         let file = db.new_file("arguments.aru".into(), format!("{COUNT}{body}"));
         assert_eq!(values(&db, file), [Some(42)]);
@@ -498,7 +498,7 @@ fn computed_arguments_in_match_arms_keep_their_lexical_scope() {
     }
     for body in [
         "func main(): uint { let f = |value uint| { return count<comptime (value + 1)>() }\nreturn f(0) }",
-        "func main(): uint { let value = Option.Some(0 as uint)\nreturn match value { Option.Some(value) => count<comptime (value + 1)>() Option.None => 0 } }",
+        "func main(): uint { let value = Option.Some(0 as uint)\nreturn match value { Option.Some(value) => count<comptime (value + 1)>(), Option.None => 0 } }",
     ] {
         let mut db = DatabaseImpl::new();
         let file = db.new_file(
@@ -516,18 +516,17 @@ fn computed_arguments_in_match_arms_keep_their_lexical_scope() {
 }
 
 #[test]
-fn lambda_arguments_are_frozen_without_claiming_closure_execution_support() {
+fn lambda_arguments_are_frozen_and_the_closure_runs() {
     let body = "func main(): uint { let f = |x uint| { return count<comptime (20 + 22)>() + x }\nreturn f(0) }";
     let mut db = DatabaseImpl::new();
     let file = db.new_file("lambda-arguments.aru".into(), format!("{COUNT}{body}"));
     assert_eq!(values(&db, file), [Some(42)]);
     let staged = item_const_arguments(&db, file, symbol(&db, file, "main"));
     assert!(staged.diagnostics.is_empty(), "{:?}", staged.diagnostics);
+    // Annotated parameters type the closure without an expected type.
     let diagnostics = errors(&db, file);
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0].code, DiagCode::U001FeatureNotSupported);
-    assert!(diagnostics[0].message.contains("lambda/closure"));
-    assert!(!runtime::runtime_program(&db, file).diagnostics.is_empty());
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(runtime::runtime_program(&db, file).diagnostics.is_empty());
 }
 
 #[test]

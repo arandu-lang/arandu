@@ -1,0 +1,50 @@
+module derefAssign
+
+// Writing through a reference: `*place = value`, as in Rust and C. A
+// `mut ref` grants the write; the binding holding it need not be `mut`.
+
+struct Point {
+    x: int,
+    y: int,
+}
+
+static mut TOTAL: int = 40
+
+func addTo(target: mut ref int, value: int): void {
+    *target = *target + value
+    *target += 1
+}
+
+func moveRight(p: mut ref Point, by: int): void {
+    p.x = p.x + by
+}
+
+func setThroughTwo(r: mut ref mut ref int): void {
+    **r = 100
+}
+
+func readThroughTwo(r: ref mut ref int): int {
+    return **r
+}
+
+func main(): int {
+    let mut n = 40
+    addTo(mut ref n, 1)
+    if n != 42 { return 1 }
+    let mut p = Point { x: 1, y: 2 }
+    moveRight(mut ref p, 4)
+    if p.x != 5 || p.y != 2 { return 2 }
+    let mut m = 1
+    let mut r = mut ref m
+    setThroughTwo(mut ref r)
+    if m != 100 { return 3 }
+    let k = 7
+    let mut view = mut ref m
+    *view = k
+    if readThroughTwo(ref view) != 7 { return 4 }
+    unsafe {
+        addTo(mut ref TOTAL, 1)
+        if TOTAL != 42 { return 5 }
+    }
+    return 0
+}

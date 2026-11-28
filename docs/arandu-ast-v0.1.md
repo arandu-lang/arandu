@@ -436,6 +436,41 @@ Fields:
 - `params`: list of `TypeExpr`
 - `result`: optional `ResultType`
 
+### TupleType and TupleExpr
+
+`(A, B)`, two or more types without `->`, is a `TupleType` with `items`;
+`(A)` stays a `GroupType` and `(A, B) -> R` a `FuncType`. `(a, b)`, two or
+more values, is a `TupleExpr` with `items`; `(a)` stays a group. A trailing
+comma is allowed in both.
+
+An element is read and assigned by position with the field syntax, `t.0`,
+which is a `FieldExpr` (or a `PlaceExpr` field suffix) whose name is the
+decimal index. `t.0.1` reaches the lexer as `t`, `.`, the float `0.1`; the
+parser splits it into two accesses. A decimal point followed by a name is a
+member access on the integer (`t.1.len()`), never the start of a fraction.
+
+Tuples are the type a function with several results already returned:
+`return a, b` and `return (a, b)` build the same value, and
+`let a, b = f()`, `let (a, b) = f()` and a `match` tuple pattern destructure
+it. An element of a literal that no context types takes its default at once
+(`int`, `float`): the tuple's type is fixed where it is written.
+
+### Range values
+
+`a..b` and `a..=b` are binary expressions. Used directly as the domain of a
+`for` loop or as a slice index they are consumed without being materialized.
+Anywhere else they are values of `std.core.range.Range<T>` and
+`RangeInclusive<T>`: plain structs with `start` and `end`, as Rust's
+`core::ops` ranges, found by lang item (the module is linked into every
+other module; naming the types takes an import). HIR lowering turns the
+literal into a struct literal, and a loop or an index over a range value
+reads its two fields; a value that is not a plain name is bound to a local
+first, so it is evaluated once. No backend has a range representation of its
+own on this path.
+
+A unit compiled without `std.core.range` keeps the built-in
+`ArType::Range`, which only the literal forms can consume.
+
 ### NullableType
 
 Fields:
@@ -598,6 +633,11 @@ Variants:
 - `ForIn(bindings, iterable, body)`
 - `ForCStyle(init, condition, step, body)`
 
+`ForIn` takes one or two bindings: `for x in xs` binds each element, and
+`for i, x in xs` (or `for (i, x) in xs`) also binds its position, a `usize`
+counted from zero, as Go's `range` does. Over a range the position is still
+zero-based while the element is the value. Three or more names are T012.
+
 ### MatchStmt
 
 Fields:
@@ -672,6 +712,14 @@ Example:
 ```arandu
 Token.Number(value) if value > 0 => "positive number"
 ```
+
+An or-pattern `p1 | p2` binds the same names in every alternative (N022
+otherwise), each with one type (T002), and a name is one variable whichever
+alternative matched. Alternatives that bind are tried in order and only the
+one that matched reads the scrutinee; a guard runs once per alternative, and
+a failed guard moves on to the next. Nested alternatives that bind are
+distributed to the top of the arm's pattern during HIR lowering
+(`Some(A(x) | B(x))` is `Some(A(x)) | Some(B(x))`).
 
 ### Expressions
 
@@ -793,8 +841,12 @@ AST sketch:
 
 - `callee`: `Expr`
 - `args`: list of `Argument`
-- `trailing_block`: optional `Block`
 - `span`
+
+A trailing block is not a field: `f(a) { body }` lowers to the call
+`f(a, () => { body })` and `f { body }` to `f(() => { body })`, a lambda
+without parameters whose span is the block's (Kotlin and Swift trailing
+closures). Later phases see an ordinary argument.
 
 `GenericCallExpr` adds:
 

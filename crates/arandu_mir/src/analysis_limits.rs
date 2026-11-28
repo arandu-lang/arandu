@@ -9,7 +9,7 @@
 
 /// Headroom added to theoretical fixed-point iteration bounds (`O(num_blocks * num_vars)`)
 /// to account for CFG join passes, SSA phi reconciliations, and initial sweeps.
-pub const DATAFLOW_FIXPOINT_HEADROOM: usize = 1_000;
+pub const DATAFLOW_FIXPOINT_HEADROOM: usize = 1_000_000;
 
 /// Defensive iteration bound for inter-block dataflow fact solvers (e.g. borrow facts).
 /// Monotone domains on finite graphs converge in far fewer steps; reaching this limit

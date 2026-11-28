@@ -31,6 +31,7 @@ impl<'a> CEmitter<'a> {
     fn emit_runtime_prelude(&mut self, needs_str: bool) {
         let features = self.runtime_features();
         self.arena_runtime = features.arena;
+        self.task_arena_runtime = features.task_arena;
         let mut rotate_widths = [false; 2];
         for function in &self.program.funcs {
             if !self.live_functions.contains(&function.symbol) {
@@ -143,7 +144,12 @@ impl<'a> CEmitter<'a> {
         );
         let _ = writeln!(
             &mut self.output,
-            "static inline uint64_t ar_index_check(uint64_t index, uint64_t len) {{ if (index >= len) AR_ABORT(); return index; }}"
+            "#if defined(__GNUC__) || defined(__clang__)\n__attribute__((cold, noinline, noreturn))\n#endif\nstatic void ar_trap(const char *report) {{ fputs(report, stderr); fflush(stderr); AR_ABORT(); }}"
+        );
+        let _ = writeln!(
+            &mut self.output,
+            "static inline uint64_t ar_index_check(uint64_t index, uint64_t len) {{ if (index >= len) {}; return index; }}",
+            super::trap_call(arandu_middle::amir::TrapKind::IndexOutOfBounds)
         );
         let _ = writeln!(
             &mut self.output,
@@ -151,7 +157,7 @@ impl<'a> CEmitter<'a> {
         );
         let _ = writeln!(
             &mut self.output,
-            "#if defined(__GNUC__) || defined(__clang__)\n#define AR_BENCH_NOINLINE __attribute__((noinline))\n#elif defined(_MSC_VER)\n#define AR_BENCH_NOINLINE __declspec(noinline)\n#else\n#define AR_BENCH_NOINLINE\n#endif"
+            "#if defined(__GNUC__) || defined(__clang__)\n#define AR_BENCH_NOINLINE __attribute__((noinline))\n#define AR_COLD __attribute__((cold, noinline))\n#define AR_LIKELY(x) (__builtin_expect(!!(x), 1) != 0)\n#define AR_UNLIKELY(x) (__builtin_expect(!!(x), 0) != 0)\n#elif defined(_MSC_VER)\n#define AR_BENCH_NOINLINE __declspec(noinline)\n#define AR_COLD __declspec(noinline)\n#define AR_LIKELY(x) (!!(x))\n#define AR_UNLIKELY(x) (!!(x))\n#else\n#define AR_BENCH_NOINLINE\n#define AR_COLD\n#define AR_LIKELY(x) (!!(x))\n#define AR_UNLIKELY(x) (!!(x))\n#endif"
         );
         if features.black_box[0] {
             let _ = writeln!(
@@ -209,6 +215,9 @@ impl<'a> CEmitter<'a> {
         // F2.3.runtime: process-lifetime gen arena (i64 payload MVP; mirrors JIT host).
         if features.arena {
             self.emit_gen_arena_runtime();
+        }
+        if features.task_arena {
+            self.emit_task_arena_runtime();
         }
         // Pure-buffer host used by std.alloc.vec / gen_arena product surface.
         let uint_c_ty = if self.layout.pointer_width() == 4 {

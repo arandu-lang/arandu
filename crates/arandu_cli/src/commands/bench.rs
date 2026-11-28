@@ -140,7 +140,8 @@ pub fn cmd_project_bench(
                 .unwrap_or(runner.config.samples),
         };
         arandu_runtime::testing_runtime::init_benchmark_context(exact, sequence, config.clone());
-        let execution = run_exact_benchmark(&db, &ctx, exact, data_layout);
+        let execution =
+            run_exact_benchmark(&db, &ctx, exact, data_layout, flags.warnings_as_errors);
         let mut event =
             arandu_runtime::testing_runtime::finish_benchmark_context().unwrap_or_else(|| {
                 arandu_codegen::testing::BenchmarkEventV1 {
@@ -186,6 +187,7 @@ pub fn run_exact_benchmark(
     ctx: &project::ProjectContext,
     exact: &str,
     data_layout: arandu_middle::layout::DataLayout,
+    warnings_as_errors: bool,
 ) -> CliResult {
     let function = exact.rsplit("::").next().unwrap_or_default();
     let sources = project_test_sources(ctx).map_err(|error| {
@@ -204,7 +206,7 @@ pub fn run_exact_benchmark(
                 "benchmark source was not registered in the project database",
             )
         })?;
-        let artifacts = pipeline_lower(db, file, &filepath);
+        let artifacts = pipeline_lower(db, file, &filepath, warnings_as_errors);
         ensure_host_jit_layout(data_layout)?;
         let backend = arandu_backend_cranelift::CraneliftBackend::try_new()
             .map_err(|diagnostic| CliFailure::diagnostics([diagnostic], Some(path.clone())))?;

@@ -74,7 +74,7 @@ public struct ChunkContext<T, J> {
     /// Job that processes this chunk.
     public job: J
     /// Shared cancellation flag observed by the worker.
-    public stop_flag: ptr[int]
+    public stop_flag: ptr[i64]
 }
 
 /// Compiler-shaped WorkThunk for folding one chunk into a result buffer.
@@ -91,10 +91,10 @@ public func dispatchChunk<T: marker.Sync, R: marker.Copy + marker.Send, J: marke
     let count = slice.len<T>(ctx.subslice)
     let mut i: usize = 0 as usize
     while i < count {
-        let nullp: ptr[int] = nil
+        let nullp: ptr[i64] = nil
         if ctx.stop_flag != nullp {
-            let flag_val: int = unsafe { mem.ptrRead<int>(ctx.stop_flag) }
-            if flag_val != 0 {
+            let flag_val: i64 = unsafe { mem.ptrRead<i64>(ctx.stop_flag) }
+            if flag_val != (0 as i64) {
                 return 2
             }
         }
@@ -113,7 +113,7 @@ public struct ChunkContextWithInit<T, J, I> {
     /// Factory for the chunk's initial accumulator.
     public init: I
     /// Shared cancellation flag observed by the worker.
-    public stop_flag: ptr[int]
+    public stop_flag: ptr[i64]
 }
 
 /// Folds one chunk into an accumulator created by `init`.
@@ -129,10 +129,10 @@ public func dispatchChunkWithInit<T: marker.Sync, R: marker.Send, J: marker.Copy
     let mut state: R = ctx.init.init()
     let mut i: usize = 0 as usize
     while i < count {
-        let nullp: ptr[int] = nil
+        let nullp: ptr[i64] = nil
         if ctx.stop_flag != nullp {
-            let flag_val: int = unsafe { mem.ptrRead<int>(ctx.stop_flag) }
-            if flag_val != 0 {
+            let flag_val: i64 = unsafe { mem.ptrRead<i64>(ctx.stop_flag) }
+            if flag_val != (0 as i64) {
                 return 2
             }
         }
@@ -176,7 +176,7 @@ extern "C" {
         thunk: ptr[u8],
         results: ptr[ptr[u8]],
         workers: u64,
-        stop_flag: ptr[int]
+        stop_flag: ptr[i64]
     ): i32
 }
 
@@ -318,7 +318,7 @@ public func parallelFoldWithGrain<T: marker.Sync, R: marker.Copy + marker.Send, 
         let ctx_raw = mem.ptrOffset<u8>(ctx_buf, ctx_byte_offset as isize)
         let res_raw = mem.ptrOffset<u8>(res_buf, res_byte_offset as isize)
         let chunk_slice = unsafe { intrinsics.sliceSubslice<T>(data, chunk_offset, base_chunk_size) }
-        let null_flag: ptr[int] = nil
+        let null_flag: ptr[i64] = nil
         let chunk_ctx = ChunkContext<T, J> {
             subslice: chunk_slice,
             job: job,
@@ -340,7 +340,7 @@ public func parallelFoldWithGrain<T: marker.Sync, R: marker.Copy + marker.Send, 
     let final_ctx_raw = mem.ptrOffset<u8>(ctx_buf, final_ctx_offset as isize)
     let final_res_raw = mem.ptrOffset<u8>(res_buf, final_res_offset as isize)
     let final_slice = unsafe { intrinsics.sliceSubslice<T>(data, final_offset, final_count) }
-    let null_flag: ptr[int] = nil
+    let null_flag: ptr[i64] = nil
     let final_ctx = ChunkContext<T, J> {
         subslice: final_slice,
         job: job,
@@ -503,7 +503,7 @@ public func parallelFoldWithInit<
         let ctx_raw = mem.ptrOffset<u8>(ctx_buf, ctx_byte_offset as isize)
         let res_raw = mem.ptrOffset<u8>(res_buf, res_byte_offset as isize)
         let chunk_slice = unsafe { intrinsics.sliceSubslice<T>(data, chunk_offset, base_chunk_size) }
-        let null_flag: ptr[int] = nil
+        let null_flag: ptr[i64] = nil
         let chunk_ctx = ChunkContextWithInit<T, J, I> {
             subslice: chunk_slice,
             job: job,
@@ -525,7 +525,7 @@ public func parallelFoldWithInit<
     let final_ctx_raw = mem.ptrOffset<u8>(ctx_buf, final_ctx_offset as isize)
     let final_res_raw = mem.ptrOffset<u8>(res_buf, final_res_offset as isize)
     let final_slice = unsafe { intrinsics.sliceSubslice<T>(data, final_offset, final_count) }
-    let null_flag: ptr[int] = nil
+    let null_flag: ptr[i64] = nil
     let final_ctx = ChunkContextWithInit<T, J, I> {
         subslice: final_slice,
         job: job,

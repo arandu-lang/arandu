@@ -27,7 +27,8 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                         offset: niche_offset,
                         align: 2,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                     self.code.push(Instruction::I32Const(niche_value as i32));
                     self.code.push(Instruction::I32Eq);
@@ -42,7 +43,8 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                         offset: pointer_offset,
                         align: 2,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                     self.code.push(Instruction::I32Const(tag_mask as i32));
                     self.code.push(Instruction::I32And);
@@ -51,7 +53,8 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
                         offset: 0,
                         align: 2,
-                        memory_index: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
                     }));
                 }
             }
@@ -106,6 +109,19 @@ impl<'a> FuncTranslator<'a> {
             }
             AmirRvalue::Alloc(size_op) => {
                 self.emit_bump_alloc(size_op);
+            }
+            AmirRvalue::ArenaAlloc { size, .. } => {
+                self.code.push(Instruction::I32Const((*size).max(1) as i32));
+                self.code.push(Instruction::Call(self.alloc_func_idx));
+            }
+            AmirRvalue::ArenaCheckpoint => {
+                self.code
+                    .push(Instruction::GlobalGet(crate::memory::GLOBAL_HEAP_PTR));
+                self.code.push(Instruction::I64ExtendI32U);
+            }
+            AmirRvalue::StaticAddr(symbol) => {
+                let address = self.static_addresses.get(symbol).copied().unwrap_or(0);
+                self.code.push(Instruction::I32Const(address as i32));
             }
             AmirRvalue::StrView { owner } => {
                 // Pass through the owner fat pointer (data, len).

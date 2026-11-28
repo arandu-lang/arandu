@@ -101,11 +101,21 @@ pub fn lower_to_amir_with_layout(
 ) -> Result<(AmirProgram, Vec<Diagnostic>), Vec<Diagnostic>> {
     let (mut program, mut diagnostics, no_fallback) =
         lower_program(tc, hir, layout, LoweringPurpose::Runtime)?;
-    let solution =
-        arandu_mir::borrow_interface::solve_borrow_interfaces(&mut program, &*tc.type_info);
+    let solution = arandu_mir::borrow_interface::solve_borrow_interfaces_with_layout(
+        &mut program,
+        &*tc.type_info,
+        layout,
+    );
     tc.type_info_mut().return_borrow_summaries = solution.summaries.clone();
 
-    validate_borrowed_program(tc, &mut program, &solution, &no_fallback, &mut diagnostics);
+    validate_borrowed_program(
+        tc,
+        &mut program,
+        layout,
+        &solution,
+        &no_fallback,
+        &mut diagnostics,
+    );
     // Export-only ABI adaptation runs after semantic validation: the Arandu
     // program is checked in its source shape, then the C boundary signature is
     // derived from it.
@@ -130,10 +140,13 @@ pub fn lower_borrow_interfaces(
 ) -> Result<arandu_mir::borrow_interface::BorrowInterfaceSolution, Vec<Diagnostic>> {
     let layout = natural_layout(pointer_width, hir)?;
     let (mut program, _, _) = lower_program(tc, hir, layout, LoweringPurpose::ReturnInterfaces)?;
-    Ok(arandu_mir::borrow_interface::solve_borrow_interfaces(
-        &mut program,
-        &*tc.type_info,
-    ))
+    Ok(
+        arandu_mir::borrow_interface::solve_borrow_interfaces_with_layout(
+            &mut program,
+            &*tc.type_info,
+            layout,
+        ),
+    )
 }
 
 fn natural_layout(pointer_width: u64, hir: &HirProgram) -> Result<DataLayout, Vec<Diagnostic>> {
@@ -172,6 +185,7 @@ fn lower_program(
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let mut no_fallback = FxHashMap::default();
     let const_values: FxHashMap<SymbolId, crate::hir::HirExprId> = hir
@@ -196,7 +210,7 @@ fn lower_program(
             if purpose == LoweringPurpose::ReturnInterfaces
                 && tc
                     .type_info
-                    .borrow_paths(f.return_type)
+                    .may_borrow_paths(f.return_type)
                     .is_ok_and(|paths| paths.is_empty())
             {
                 continue;
@@ -250,6 +264,7 @@ fn lower_program(
 fn validate_borrowed_program(
     tc: &TypeCheckResult,
     program: &mut AmirProgram,
+    layout: DataLayout,
     solution: &arandu_mir::borrow_interface::BorrowInterfaceSolution,
     no_fallback: &FxHashMap<SymbolId, bool>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -258,6 +273,7 @@ fn validate_borrowed_program(
         validate_borrowed_function(
             tc,
             function,
+            layout,
             solution.summaries.get(&function.symbol).cloned(),
             solution
                 .unproven
@@ -272,6 +288,7 @@ fn validate_borrowed_program(
 fn validate_borrowed_function(
     tc: &TypeCheckResult,
     function: &mut AmirFunc,
+    layout: DataLayout,
     return_borrow: Option<arandu_middle::types::ReturnBorrowSummary>,
     unproven: bool,
     no_fallback: bool,
@@ -279,6 +296,14 @@ fn validate_borrowed_function(
 ) {
     // M2 and escape validation intentionally run only after calls carry
     // the converged interprocedural interface.
+    diagnostics.extend(arandu_mir::copy_elision::check_large_implicit_copies(
+        function,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        &*tc.type_info,
+        layout,
+        arandu_mir::copy_elision::DEFAULT_LARGE_COPY_THRESHOLD_BYTES,
+    ));
     diagnostics.extend(arandu_mir::borrow_check::check_borrows_with_types(
         function,
         &tc.symbols,
@@ -287,6 +312,7 @@ fn validate_borrowed_function(
     let options = arandu_mir::escape_analysis::EscapeCheckOptions {
         no_fallback,
         return_borrow,
+        data_layout: layout,
     };
     let escape_diagnostics = arandu_mir::escape_analysis::check_escapes_with_type_info(
         function,
@@ -316,11 +342,17 @@ fn validate_borrowed_function(
                     .with_hint("return owned data or forward a borrow derived from a formal `ref` input"),
                 );
     }
-    // No escape is promoted to a GenRef. Every promotable escape stores the
-    // borrow into memory typed as a reference, and runtime references are raw
-    // pointers: a handle written there would be read back as a pointer. Escape
-    // analysis rejects those escapes (O004 error) until references gain a
-    // first-class handle representation (R1, RFC 0001).
+    if !diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        arandu_mir::dual_locus::apply_dual_locus_promotion(
+            function,
+            &*tc.type_info,
+            layout,
+            &options,
+        );
+    }
 }
 
 pub(crate) fn is_memory_type(ty: &ArType) -> bool {
@@ -333,14 +365,15 @@ pub(crate) fn is_memory_type(ty: &ArType) -> bool {
         | ArType::Const(_)
         | ArType::ConstParam(_)
         | ArType::Void
+        | ArType::Never
         | ArType::Err
-        | ArType::Error => false,
+        | ArType::Error
+        | ArType::Infer(_) => false,
         // Pointers and safe refs are scalar values (fat/thin pointers), not memory objects.
         ArType::Ptr(_)
         | ArType::Ref(_)
         | ArType::RefMut(_)
         | ArType::GenRef
-        | ArType::Nullable(_)
         | ArType::Func(_, _)
         | ArType::Slice(_)
         | ArType::MutSlice(_) => false,
@@ -399,13 +432,13 @@ pub fn prune_dummy_loads_stores(func: &mut AmirFunc) {
     func.cfg = crate::cfg::compute_cfg_edges(&func.blocks);
 }
 
-pub(crate) fn amir_unsupported(span: Span, feature: &str, roadmap: &str) -> Diagnostic {
+pub(crate) fn amir_unsupported(span: Span, feature: &str, hint: &str) -> Diagnostic {
     Diagnostic::error(
         DiagCode::U001FeatureNotSupported,
-        format!("AMIR v0.1: {feature} is not supported yet ({roadmap})"),
+        format!("{feature} is not supported yet"),
         span,
     )
-    .with_hint("see docs/arandu-compiler-roadmap-v0.1.md for the planned milestone")
+    .with_hint(hint)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -417,6 +450,15 @@ pub(crate) enum DeferKind {
 #[derive(Clone)]
 pub(crate) struct DeferFrame {
     entries: Vec<(HirBlock, DeferKind)>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct LoopFrame {
+    pub label: Option<smol_str::SmolStr>,
+    pub cont_block: BlockId,
+    pub exit_block: BlockId,
+    pub defer_depth: usize,
+    pub scope_depth: usize,
 }
 
 pub(crate) struct LowerCtx<'a> {
@@ -439,8 +481,8 @@ pub(crate) struct LowerCtx<'a> {
     /// Pattern bindings exposed as shared references only while evaluating a
     /// match guard. Owned bindings are committed after the guard succeeds.
     guard_borrows: FxHashMap<SymbolId, (LocalId, crate::types::TypeId)>,
-    /// (`continue_block`, `exit_block`, `defer_frame_depth`, `local_scope_depth`)
-    loop_stack: Vec<(BlockId, BlockId, usize, usize)>,
+    /// Loop stack tracking label, continue, exit, defer depth, and local scope depth.
+    loop_stack: Vec<LoopFrame>,
     /// Destination/exit and cleanup boundaries of isolated value blocks.
     value_returns: Vec<(TempId, BlockId, usize, usize)>,
     /// Shared ceilings for residual generation; nested loops cannot reset them.

@@ -336,7 +336,7 @@ func main(): int {
     assert_deterministic(
         "same field after partial branch move",
         same_field_after_partial_branch,
-        &[DiagCode::O007InconsistentMoveBetweenBranches],
+        &[DiagCode::O001UseAfterMove],
     );
 
     let reinitialized_field = r#"
@@ -638,6 +638,6 @@ func main(): int {
         "partial move join",
         partial_move_diamond,
         partial_move_match,
-        &[DiagCode::O007InconsistentMoveBetweenBranches],
+        &[DiagCode::O001UseAfterMove],
     );
 }

@@ -244,7 +244,7 @@ func main(): int {
     let i: Inner? = mk()
     let o = Outer { inner: i }
     let j: Inner? = o.inner
-    if i == j { return 77 }
+    if i != nil && j != nil && (i?.v ?? 0) == (j?.v ?? 1) { return 77 }
     return 78
 }
 "#,
@@ -323,6 +323,26 @@ fn programs_run_to_their_result_at_every_level() {
 /// `Vec` indices are checked like array and slice indices: reads, writes,
 /// negative signed indices, indices through `mut ref` and on call results.
 const TRAPS: &[(&str, &str)] = &[
+    (
+        "array_len_one_write_oob",
+        r#"struct Pair { data: [1]int, guard: int }
+func main(): int {
+    let mut p = Pair { data: [0], guard: 7 }
+    let i = 1
+    p.data[i] = 99
+    return p.guard
+}
+"#,
+    ),
+    (
+        "array_len_zero_read_oob",
+        r#"func main(): int {
+    let data: [0]int = []
+    let i = 0
+    return data[i]
+}
+"#,
+    ),
     (
         "v_readoob",
         r#"import std.alloc.vec as vec
@@ -444,11 +464,6 @@ const REJECTS: &[(&str, &str, &str)] = &[
         "field_of_immutable",
         "struct P { x: int }\nfunc bump(p: ref P): void { p.x = 5 }\nfunc P.sneak(shared self): void { self.x = 1 }\nfunc main(): int {\n    let p = P { x: 1 }\n    p.x = 4\n    return p.x\n}\n",
         "T026",
-    ),
-    (
-        "owned_nullable",
-        "import std.alloc.string as strings\nfunc eat(s: strings.String?): int { return 0 }\nfunc main(): int { return 0 }\n",
-        "T006",
     ),
     (
         "move_out_of_index",

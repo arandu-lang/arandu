@@ -19,11 +19,11 @@ pub(super) fn reintern_type(dest: &mut TypeInfo, source: &TypeInfo, id: TypeId) 
 /// Generic instances such as `std.thread.spawn` live in another file. Their
 /// monomorphization needs the capture struct, `run`, and the field types, and
 /// must not merge the caller's expression-type vector.
-pub fn import_thread_captures(
+pub fn import_closures(
     dest: &mut super::super::TypeCheckResult,
     src: &super::super::TypeCheckResult,
 ) {
-    if src.type_info.thread_captures.is_empty() {
+    if src.type_info.closures.is_empty() && src.type_info.closure_temporaries.is_empty() {
         return;
     }
     for symbol in src.symbols.iter() {
@@ -55,6 +55,34 @@ pub fn import_thread_captures(
     for (symbol, ty) in declarations {
         let translated = reintern_type(dest.type_info_mut(), &src.type_info, ty);
         dest.type_info_mut().record_decl_type(symbol, translated);
+    }
+    // The recipes let a unit declare the synthesized functions it calls.
+    dest.type_info_mut()
+        .merge_closures(&src.type_info, &|symbol| symbol);
+    for (span, temporary) in &src.type_info.closure_temporaries {
+        let ty = reintern_type(dest.type_info_mut(), &src.type_info, temporary.ty);
+        dest.type_info_mut().closure_temporaries.insert(
+            *span,
+            super::ClosureTemporary {
+                local: temporary.local,
+                ty,
+            },
+        );
+    }
+    // A closure over a value of generic type is generic over its item's
+    // parameters; instances built elsewhere substitute them by these lists.
+    let generics = src
+        .type_info
+        .generic_params
+        .iter()
+        .filter(|(symbol, _)| symbol.is_synthetic())
+        .map(|(symbol, params)| (*symbol, params.clone()))
+        .collect::<Vec<_>>();
+    for (symbol, params) in generics {
+        dest.type_info_mut()
+            .generic_params
+            .entry(symbol)
+            .or_insert(params);
     }
     let owners = src
         .type_info
@@ -111,12 +139,6 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
             let translated_ret = translate_type(&resolved_ret, from, to);
             let new_ret = to.intern(translated_ret);
             ArType::func(&new_params, new_ret, to)
-        }
-        ArType::Nullable(inner) => {
-            let resolved = from.resolve(*inner);
-            let translated = translate_type(&resolved, from, to);
-            let new_inner = to.intern(translated);
-            ArType::Nullable(new_inner)
         }
         ArType::Slice(inner) => {
             let resolved = from.resolve(*inner);
@@ -213,7 +235,10 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
         }
         ArType::Err => ArType::Err,
         ArType::Void => ArType::Void,
-        ArType::Error => ArType::Error,
+        ArType::Never => ArType::Never,
+        // A variable is local to one interner's body check; one crossing to
+        // another interner was never resolved and stays poison.
+        ArType::Error | ArType::Infer(_) => ArType::Error,
         ArType::IntLiteral => ArType::IntLiteral,
         ArType::Vector(vector) => ArType::Vector(*vector),
         ArType::FloatLiteral => ArType::FloatLiteral,

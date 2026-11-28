@@ -131,6 +131,7 @@ pub fn collect_symbols(
 ) {
     let mut resolver = Resolver {
         reusable_definitions: rustc_hash::FxHashSet::default(),
+        or_patterns: Vec::new(),
         symbols: SymbolTable::new(0),
         resolved: ResolvedNames::default(),
         docs: crate::DocCommentMap::default(),
@@ -237,6 +238,7 @@ pub fn resolve_with_symbols(
 ) -> ResolutionResult {
     let mut resolver = Resolver {
         reusable_definitions: rustc_hash::FxHashSet::default(),
+        or_patterns: Vec::new(),
         symbols: global_symbols,
         resolved,
         docs,
@@ -274,10 +276,24 @@ pub fn resolve_with_symbols(
     }
 }
 
+/// The names of one `p1 | p2 | …`: every alternative binds the same names,
+/// and a name is one variable whichever alternative matched (as in Rust).
+#[derive(Default)]
+struct OrPatternNames {
+    /// Names bound by the first alternative, in order.
+    shared: Vec<(SmolStr, crate::SymbolId)>,
+    /// Whether an alternative after the first is being resolved.
+    later: bool,
+    /// Names the current later alternative has bound so far.
+    seen: Vec<SmolStr>,
+}
+
 struct Resolver<'a> {
     /// Seed identities may be rebound once by a selected lexical continuation.
     /// Definitions created during this traversal are never eligible for reuse.
     reusable_definitions: rustc_hash::FxHashSet<crate::NodeKey>,
+    /// The or-patterns being resolved, innermost last.
+    or_patterns: Vec<OrPatternNames>,
     symbols: SymbolTable,
     resolved: ResolvedNames,
     docs: crate::DocCommentMap,

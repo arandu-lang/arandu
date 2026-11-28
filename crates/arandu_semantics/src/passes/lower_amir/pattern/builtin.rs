@@ -101,6 +101,16 @@ impl LowerCtx<'_> {
             return Ok(AmirOperand::Copy(tag_matches));
         }
 
+        let pat = self.hir.pool.pattern(payload[0]);
+        if !bind
+            && matches!(
+                pat,
+                crate::hir::HirPattern::Bind { .. } | crate::hir::HirPattern::Wildcard { .. }
+            )
+        {
+            return Ok(AmirOperand::Copy(tag_matches));
+        }
+
         let payload_tmp = self.new_temp_id(inner);
         // Result/Option layout: field 0 = discriminant, field 1 = payload.
         self.emit_assign_temp(
@@ -179,6 +189,16 @@ impl LowerCtx<'_> {
             },
         );
 
+        let pat = self.hir.pool.pattern(payload[0]);
+        if !bind
+            && matches!(
+                pat,
+                crate::hir::HirPattern::Bind { .. } | crate::hir::HirPattern::Wildcard { .. }
+            )
+        {
+            return Ok(AmirOperand::Copy(tag_matches));
+        }
+
         let payload_tmp = self.new_temp_id(payload_ty);
         self.emit_assign_temp(
             payload_tmp,
@@ -191,7 +211,6 @@ impl LowerCtx<'_> {
                 tuple_ty: None,
             },
         );
-        let pat = self.hir.pool.pattern(payload[0]);
         let item_matches =
             self.lower_pattern_match_mode(AmirOperand::Copy(payload_tmp), pat, symbols, bind)?;
         let and_dest = self.new_temp(ArType::Primitive(Primitive::Bool));
@@ -259,6 +278,16 @@ impl LowerCtx<'_> {
             return Ok(AmirOperand::Copy(matches_tag));
         }
 
+        let pattern = self.hir.pool.pattern(payload[0]);
+        if !bind
+            && matches!(
+                pattern,
+                crate::hir::HirPattern::Bind { .. } | crate::hir::HirPattern::Wildcard { .. }
+            )
+        {
+            return Ok(AmirOperand::Copy(matches_tag));
+        }
+
         let payload_temp = self.new_temp_id(inner);
         self.emit_assign_temp(
             payload_temp,
@@ -267,7 +296,6 @@ impl LowerCtx<'_> {
                 field: 1,
             },
         );
-        let pattern = self.hir.pool.pattern(payload[0]);
         let matches_payload =
             self.lower_pattern_match_mode(AmirOperand::Copy(payload_temp), pattern, symbols, bind)?;
         let result = self.new_temp(ArType::Primitive(Primitive::Bool));

@@ -135,7 +135,13 @@ impl LowerCtx<'_> {
                 let defer_depth = self.defer_frames.len();
                 let scope_depth = self.local_scopes.len();
                 self.begin_local_scope();
-                self.loop_stack.push((next, exit, defer_depth, scope_depth));
+                self.loop_stack.push(crate::passes::lower_amir::LoopFrame {
+                    label: None,
+                    cont_block: next,
+                    exit_block: exit,
+                    defer_depth,
+                    scope_depth,
+                });
                 // Each occurrence gets fresh locals/temps while retaining its
                 // source symbol for diagnostics. SSA never reuses a definition.
                 let local = self.new_local_id(binding.ty, binding.symbol, binding.span);

@@ -63,6 +63,7 @@ fn inlining_respects_remaining_budget_and_structural_ceiling() {
         extern_funcs: FxHashMap::default(),
         debug_bindings: vec![],
         debug_blocks: vec![],
+        statics: Vec::new(),
     };
     assert_eq!(inline_leaf_functions(&mut program), 2);
     assert_eq!(
@@ -178,6 +179,7 @@ fn wrappers_become_inlinable_without_resetting_the_call_site_budget() {
             extern_funcs: FxHashMap::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         // The exact count depends on how deep each round splices: a wrapper is now
         // eligible as a non-leaf, so a chain may resolve in a different order
@@ -269,6 +271,7 @@ fn large_caller_inlines_more_than_the_floor_budget() {
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     let inlined = inline_leaf_functions(&mut program);
@@ -399,6 +402,7 @@ fn cheapest_callee_is_inlined_before_a_costlier_one() {
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     assert_eq!(inline_leaf_functions(&mut program), 2);
@@ -903,6 +907,7 @@ fn nonleaf_wrapper_is_inlinable_when_small() {
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     assert!(inline_leaf_functions(&mut program) > 0);
@@ -1115,6 +1120,7 @@ fn test_leaf_inlining_and_sccp_folding() {
         extern_funcs: rustc_hash::FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     // Run leaf inlining
@@ -1163,4 +1169,214 @@ fn test_leaf_inlining_and_sccp_folding() {
         found_const_15,
         "Expected caller to fold add_ten(5) directly into 15"
     );
+}
+
+#[test]
+fn cold_callee_is_not_inlined() {
+    use rustc_hash::FxHashSet;
+
+    let interner = TypeInterner::new();
+    let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+    let pool = AmirLiteralPool::default();
+
+    let callee_sym = SymbolId::new(0, 10);
+    let callee_temps = vec![
+        AmirTemp {
+            id: TempId(0),
+            ty: int_ty,
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        },
+        AmirTemp {
+            id: TempId(1),
+            ty: int_ty,
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        },
+    ];
+    let mut callee = make_func(
+        10,
+        vec![(
+            vec![AmirStmt::Assign {
+                lhs: TempId(0),
+                rhs: AmirRvalue::Use(AmirOperand::Copy(TempId(1))),
+            }],
+            AmirTerminator::Return,
+        )],
+        callee_temps,
+        vec![TempId(1)],
+    );
+    callee.symbol = callee_sym;
+
+    let caller_sym = SymbolId::new(0, 20);
+    let caller_temps = vec![
+        AmirTemp {
+            id: TempId(0),
+            ty: int_ty,
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        },
+        AmirTemp {
+            id: TempId(1),
+            ty: int_ty,
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        },
+    ];
+    let mut caller = make_func(
+        20,
+        vec![(
+            vec![AmirStmt::Call {
+                lhs: Some(TempId(0)),
+                callee: AmirOperand::FunctionRef(callee_sym),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId(1))],
+                return_borrow: None,
+            }],
+            AmirTerminator::Return,
+        )],
+        caller_temps,
+        vec![TempId(1)],
+    );
+    caller.symbol = caller_sym;
+
+    let mut program = AmirProgram {
+        funcs: vec![caller, callee],
+        literal_pool: pool,
+        extern_funcs: rustc_hash::FxHashMap::default(),
+        debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
+        statics: Vec::new(),
+    };
+    let mut cold = FxHashSet::default();
+    cold.insert(callee_sym);
+    let inlined = inline_leaf_functions_with_cold(&mut program, &cold);
+    assert_eq!(inlined, 0, "@Cold callees must not be inlined");
+    assert!(
+        program.funcs[0].blocks[0]
+            .statements
+            .iter_ids::<InstrId>()
+            .any(|id| matches!(program.funcs[0].try_stmt(id), Some(AmirStmt::Call { .. }))),
+        "call to @Cold callee must remain present"
+    );
+}
+
+#[test]
+fn wrappers_around_inline_intrinsics_inline_while_opaque_extern_calls_stay_out() {
+    let int_ty = intern_int();
+    let pool = AmirLiteralPool::default();
+    let intrinsic_sym = SymbolId::new(0, 99);
+    let inner_sym = SymbolId::new(0, 10);
+    let outer_sym = SymbolId::new(0, 11);
+    let caller_sym = SymbolId::new(0, 20);
+
+    let mk_temps = || {
+        vec![
+            AmirTemp {
+                id: TempId(0),
+                ty: int_ty,
+                is_copy: true,
+                is_nullable: false,
+                span: crate::Span::new(0, 0, 0),
+            },
+            AmirTemp {
+                id: TempId(1),
+                ty: int_ty,
+                is_copy: true,
+                is_nullable: false,
+                span: crate::Span::new(0, 0, 0),
+            },
+        ]
+    };
+
+    let mut inner = make_func(
+        10,
+        vec![(
+            vec![AmirStmt::Call {
+                lhs: Some(TempId(0)),
+                callee: AmirOperand::FunctionRef(intrinsic_sym),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId(1))],
+                return_borrow: None,
+            }],
+            AmirTerminator::Return,
+        )],
+        mk_temps(),
+        vec![TempId(1)],
+    );
+    inner.symbol = inner_sym;
+
+    let mut outer = make_func(
+        11,
+        vec![(
+            vec![AmirStmt::Call {
+                lhs: Some(TempId(0)),
+                callee: AmirOperand::FunctionRef(inner_sym),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId(1))],
+                return_borrow: None,
+            }],
+            AmirTerminator::Return,
+        )],
+        mk_temps(),
+        vec![TempId(1)],
+    );
+    outer.symbol = outer_sym;
+
+    let mut caller = make_func(
+        20,
+        vec![(
+            vec![AmirStmt::Call {
+                lhs: Some(TempId(0)),
+                callee: AmirOperand::FunctionRef(outer_sym),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId(1))],
+                return_borrow: None,
+            }],
+            AmirTerminator::Return,
+        )],
+        mk_temps(),
+        vec![TempId(1)],
+    );
+    caller.symbol = caller_sym;
+
+    let program_template = AmirProgram {
+        funcs: vec![caller, outer, inner],
+        literal_pool: pool,
+        extern_funcs: FxHashMap::default(),
+        debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
+        statics: Vec::new(),
+    };
+
+    let mut without_intrinsics = program_template.clone();
+    assert_eq!(
+        inline_leaf_functions(&mut without_intrinsics),
+        0,
+        "opaque extern calls must still block inlining when not marked inline"
+    );
+
+    let mut with_intrinsics = program_template;
+    let empty_cold = FxHashSet::default();
+    let mut inline_intrinsics = FxHashSet::default();
+    inline_intrinsics.insert(intrinsic_sym);
+    let inlined =
+        inline_leaf_functions_with_options(&mut with_intrinsics, &empty_cold, &inline_intrinsics);
+    assert!(
+        inlined >= 2,
+        "expected outer and inner intrinsic wrappers to inline: {inlined}"
+    );
+    let remaining_callees: Vec<SymbolId> = with_intrinsics.funcs[0]
+        .stmts
+        .payloads
+        .iter()
+        .filter_map(|stmt| match stmt {
+            AmirStmt::Call {
+                callee: AmirOperand::FunctionRef(sym),
+                ..
+            } => Some(*sym),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(remaining_callees, vec![intrinsic_sym]);
 }

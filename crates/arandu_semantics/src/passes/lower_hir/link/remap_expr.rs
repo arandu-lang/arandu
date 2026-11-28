@@ -77,14 +77,9 @@ pub(super) fn remap_expr(
         HirExprKind::Try { expr: inner } => HirExprKind::Try {
             expr: offs.expr_id(*inner),
         },
-        HirExprKind::Call {
-            callee,
-            args,
-            trailing_block,
-        } => HirExprKind::Call {
+        HirExprKind::Call { callee, args } => HirExprKind::Call {
             callee: offs.expr_id(*callee),
             args: offs.range(*args, offs.expr_ids),
-            trailing_block: trailing_block.map(|b| offs.block_id(b)),
         },
         HirExprKind::ResultCtor { variant, value } => HirExprKind::ResultCtor {
             variant: *variant,
@@ -123,6 +118,9 @@ pub(super) fn remap_expr(
             block: offs.block_id(*block),
         },
         HirExprKind::UnsafeBlock { block } => HirExprKind::UnsafeBlock {
+            block: offs.block_id(*block),
+        },
+        HirExprKind::Scope { block } => HirExprKind::Scope {
             block: offs.block_id(*block),
         },
         HirExprKind::If {

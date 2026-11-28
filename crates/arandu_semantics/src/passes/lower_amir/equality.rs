@@ -106,7 +106,7 @@ impl LowerCtx<'_> {
                 }
                 Ok(result)
             }
-            ArType::Void => Ok(AmirOperand::Constant(AmirConstant::Bool(true))),
+            ArType::Void | ArType::Never => Ok(AmirOperand::Constant(AmirConstant::Bool(true))),
             _ => Ok(self.equality_binary(BinaryOp::Equal, left, right)),
         }
     }
@@ -209,6 +209,9 @@ impl LowerCtx<'_> {
         let ltag = self.equality_tag(left);
         let rtag = self.equality_tag(right);
         let same = self.equality_binary(BinaryOp::Equal, ltag, rtag);
+        if variants.iter().all(|(_, _, fields)| fields.is_empty()) {
+            return Ok(same);
+        }
         let different = self.new_block();
         let select = self.new_block();
         let join = self.new_block();

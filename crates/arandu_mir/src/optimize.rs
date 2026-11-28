@@ -32,8 +32,22 @@ pub fn optimize_amir_checked_with_level(
     {
         return Err(issue);
     }
+    if crate::dual_locus::apply_interprocedural_loop_rewinds(program, interner) > 0
+        && let Some(issue) = crate::amir_validate::validate_amir_program(program, symbols, interner)
+            .into_iter()
+            .next()
+    {
+        return Err(
+            issue.with_note("AMIR invariant failed after interprocedural Dual-Locus rewind")
+        );
+    }
     if matches!(level, OptLevel::O1 | OptLevel::O2) {
-        crate::inlining::inline_leaf_functions(program);
+        let inline_intrinsics = inline_intrinsic_callees(program, symbols);
+        crate::inlining::inline_leaf_functions_with_options(
+            program,
+            &symbols.cold_functions,
+            &inline_intrinsics,
+        );
         if let Some(issue) = crate::amir_validate::validate_amir_program(program, symbols, interner)
             .into_iter()
             .next()
@@ -104,6 +118,39 @@ pub fn optimize_amir_func(
 ) -> Result<(), Diagnostic> {
     PassManager::for_level(OptLevel::O1).run_function(func, literal_pool)?;
     Ok(())
+}
+
+/// Extern intrinsic callees across `program` that codegen lowers inline.
+fn inline_intrinsic_callees(
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+) -> rustc_hash::FxHashSet<crate::SymbolId> {
+    let mut intrinsics = rustc_hash::FxHashSet::default();
+    for func in &program.funcs {
+        for stmt in func.stmts.payloads.iter() {
+            let crate::amir::AmirStmt::Call {
+                callee: crate::amir::AmirOperand::FunctionRef(symbol),
+                ..
+            } = stmt
+            else {
+                continue;
+            };
+            let is_inline = symbols.try_get(*symbol).is_some_and(|definition| {
+                definition.kind == crate::SymbolKind::ExternFunc
+                    && arandu_middle::intrinsics::IntrinsicKind::from_declared_name(
+                        &definition.name,
+                        definition.lang_item,
+                    )
+                    .is_some_and(
+                        arandu_middle::intrinsics::IntrinsicKind::is_inline_codegen_intrinsic,
+                    )
+            });
+            if is_inline {
+                intrinsics.insert(*symbol);
+            }
+        }
+    }
+    intrinsics
 }
 
 #[cfg(test)]

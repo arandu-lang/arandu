@@ -31,6 +31,44 @@ pub(super) fn declare_memory_imports(
         .map_err(|err| codegen_ice(format!("failed to declare free: {err:?}")))?;
     insert_sym(func_ids, "free", free_id);
 
+    // RFC 0043: Dual-Locus linear TaskArena runtime imports
+    let mut arena_alloc_sig = Signature::new(default_call_conv);
+    arena_alloc_sig.params.push(AbiParam::new(ptr_type));
+    arena_alloc_sig.params.push(AbiParam::new(ptr_type));
+    arena_alloc_sig.returns.push(AbiParam::new(ptr_type));
+    let arena_alloc_id = module
+        .declare_function("ar_task_arena_alloc", Linkage::Import, &arena_alloc_sig)
+        .map_err(|err| codegen_ice(format!("failed to declare ar_task_arena_alloc: {err:?}")))?;
+    insert_sym(func_ids, "ar_task_arena_alloc", arena_alloc_id);
+
+    let mut arena_checkpoint_sig = Signature::new(default_call_conv);
+    arena_checkpoint_sig.returns.push(AbiParam::new(I64));
+    let arena_checkpoint_id = module
+        .declare_function(
+            "ar_task_arena_checkpoint",
+            Linkage::Import,
+            &arena_checkpoint_sig,
+        )
+        .map_err(|err| {
+            codegen_ice(format!(
+                "failed to declare ar_task_arena_checkpoint: {err:?}"
+            ))
+        })?;
+    insert_sym(func_ids, "ar_task_arena_checkpoint", arena_checkpoint_id);
+
+    let mut arena_rewind_sig = Signature::new(default_call_conv);
+    arena_rewind_sig.params.push(AbiParam::new(I64));
+    let arena_rewind_id = module
+        .declare_function("ar_task_arena_rewind", Linkage::Import, &arena_rewind_sig)
+        .map_err(|err| codegen_ice(format!("failed to declare ar_task_arena_rewind: {err:?}")))?;
+    insert_sym(func_ids, "ar_task_arena_rewind", arena_rewind_id);
+
+    let arena_reset_sig = Signature::new(default_call_conv);
+    let arena_reset_id = module
+        .declare_function("ar_task_arena_reset", Linkage::Import, &arena_reset_sig)
+        .map_err(|err| codegen_ice(format!("failed to declare ar_task_arena_reset: {err:?}")))?;
+    insert_sym(func_ids, "ar_task_arena_reset", arena_reset_id);
+
     // PAN / Invariant 5: `abort` and `abortGenerationalMismatch` are compiler intrinsics.
     // Unix lowers them to a hardware trap (UD2 / BRK) with no libc `abort` import.
     // Windows JIT frames have no unwind info for that trap and report a stack
@@ -92,6 +130,67 @@ pub(super) fn declare_libc_imports(
         sig.params.push(AbiParam::new(I64));
         sig.params.push(AbiParam::new(ptr_type));
         sig.returns.push(AbiParam::new(I64));
+        let id = module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|err| codegen_ice(format!("failed to declare {name}: {err:?}")))?;
+        insert_sym(func_ids, name, id);
+    }
+
+    declare_c_compat_imports(module, func_ids, default_call_conv, ptr_type)?;
+    Ok(())
+}
+
+fn declare_c_compat_imports(
+    module: &mut super::RuntimeImports,
+    func_ids: &mut FxHashMap<String, usize>,
+    default_call_conv: CallConv,
+    ptr_type: Type,
+) -> Result<(), Diagnostic> {
+    let mut std_stream_sig = Signature::new(default_call_conv);
+    std_stream_sig.returns.push(AbiParam::new(ptr_type));
+    for name in ["ar_rt_c_stdin", "ar_rt_c_stdout", "ar_rt_c_stderr"] {
+        let id = module
+            .declare_function(name, Linkage::Import, &std_stream_sig)
+            .map_err(|err| codegen_ice(format!("failed to declare {name}: {err:?}")))?;
+        insert_sym(func_ids, name, id);
+    }
+
+    let snprintf_specs: &[(&str, Option<Type>)] = &[
+        ("ar_rt_snprintf_0", None),
+        ("ar_rt_snprintf_i32", Some(I32)),
+        ("ar_rt_snprintf_i64", Some(I64)),
+        ("ar_rt_snprintf_f64", Some(F64)),
+        ("ar_rt_snprintf_ptr", Some(ptr_type)),
+    ];
+    for &(name, extra) in snprintf_specs {
+        let mut sig = Signature::new(default_call_conv);
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        if let Some(ty) = extra {
+            sig.params.push(AbiParam::new(ty));
+        }
+        sig.returns.push(AbiParam::new(I32));
+        let id = module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|err| codegen_ice(format!("failed to declare {name}: {err:?}")))?;
+        insert_sym(func_ids, name, id);
+    }
+
+    let fprintf_specs: &[(&str, Option<Type>)] = &[
+        ("ar_rt_fprintf_0", None),
+        ("ar_rt_fprintf_i64", Some(I64)),
+        ("ar_rt_fprintf_f64", Some(F64)),
+        ("ar_rt_fprintf_ptr", Some(ptr_type)),
+    ];
+    for &(name, extra) in fprintf_specs {
+        let mut sig = Signature::new(default_call_conv);
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        if let Some(ty) = extra {
+            sig.params.push(AbiParam::new(ty));
+        }
+        sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|err| codegen_ice(format!("failed to declare {name}: {err:?}")))?;

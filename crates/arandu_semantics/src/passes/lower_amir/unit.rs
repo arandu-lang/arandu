@@ -14,6 +14,7 @@ pub struct FunctionUnit {
     pub debug_blocks: Vec<AmirDebugBlock>,
     pub diagnostics: Vec<Diagnostic>,
     pub no_fallback: bool,
+    pub layout: DataLayout,
 }
 
 /// Finalize one body against converged contracts in its own symbol/type
@@ -32,6 +33,7 @@ pub fn finalize_function_unit(
     super::validate_borrowed_function(
         tc,
         function,
+        unit.layout,
         (!summary.dependencies.is_empty()).then(|| summary.clone()),
         !missing.is_empty(),
         unit.no_fallback,
@@ -280,6 +282,7 @@ fn lower_root_unit(
             .collect(),
         diagnostics,
         no_fallback: function.no_fallback,
+        layout,
     })
 }
 
@@ -374,6 +377,7 @@ mod tests {
             debug_blocks: Vec::new(),
             diagnostics: Vec::new(),
             no_fallback: false,
+            layout: DataLayout::ptr_width(8),
         }
     }
 
@@ -384,6 +388,7 @@ mod tests {
             extern_funcs: FxHashMap::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         }
     }
 

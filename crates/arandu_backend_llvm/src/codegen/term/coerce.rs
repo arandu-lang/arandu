@@ -43,8 +43,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 // Named struct): materialize by copying `bytes` from the
                 // pointee into a first-class opaque value.
                 let slot = self.new_value();
-                self.writer
-                    .line(format!("{slot} = alloca {expected_text}, align 1"));
+                self.emit_entry_alloca(&slot, &expected_text, 1);
                 self.module.require_memcpy();
                 let memcpy = self.module.memcpy_intrinsic();
                 let n = self.module.ptr_int_ty();
@@ -65,8 +64,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 Some(format!("inttoptr {} {} to ptr", value.ty, value.value))
             } else if let Some(bytes) = parse_byte_aggregate_size(&value.ty) {
                 let slot = self.new_value();
-                self.writer
-                    .line(format!("{slot} = alloca {}, align 1", value.ty));
+                self.emit_entry_alloca(&slot, &value.ty, 1);
                 self.writer.line(format!(
                     "store {} {}, ptr {slot}, align 1",
                     value.ty, value.value
@@ -86,8 +84,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             } else if value.ty.starts_with('[') {
                 // Non-byte array → pointer: spill and decay to the alloca.
                 let slot = self.new_value();
-                self.writer
-                    .line(format!("{slot} = alloca {}, align 1", value.ty));
+                self.emit_entry_alloca(&slot, &value.ty, 1);
                 self.writer.line(format!(
                     "store {} {}, ptr {slot}, align 1",
                     value.ty, value.value
@@ -103,15 +100,13 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             // Opaque layout aggregates (`[N x i8]`) of different sizes are
             // rewritten through memory: zero the destination, copy the overlap.
             let src = self.new_value();
-            self.writer
-                .line(format!("{src} = alloca {}, align 1", value.ty));
+            self.emit_entry_alloca(&src, &value.ty, 1);
             self.writer.line(format!(
                 "store {} {}, ptr {src}, align 1",
                 value.ty, value.value
             ));
             let dst = self.new_value();
-            self.writer
-                .line(format!("{dst} = alloca {expected_text}, align 1"));
+            self.emit_entry_alloca(&dst, &expected_text, 1);
             self.writer.line(format!(
                 "store {expected_text} zeroinitializer, ptr {dst}, align 1"
             ));
@@ -171,7 +166,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             let out_of_range = self.new_value();
             self.writer
                 .line(format!("{out_of_range} = xor i1 {in_range}, true"));
-            self.trap_if(&out_of_range);
+            self.trap_if(&out_of_range, arandu_middle::amir::TrapKind::InvalidCast);
             let op = if signed { "fptosi" } else { "fptoui" };
             if bits == width {
                 Some(format!("{op} double {wide} to {expected_text}"))
@@ -253,76 +248,8 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         value: TypedValue,
         lhs_ty: &ArType,
     ) -> Result<(), Diagnostic> {
-        // A `T` assigned to a `T?` is boxed, as in Cranelift and C.
-        if let ArType::Nullable(inner) = lhs_ty
-            && value.ty != "ptr"
-        {
-            let inner = self.module.interner.resolve(*inner);
-            if self.is_boxed_nullable(&inner) {
-                let boxed = self.box_nullable(value, &inner)?;
-                return self.assign_value(result, boxed);
-            }
-        }
         let value = self.coerce(value, lhs_ty)?;
         self.assign_value(result, value)
-    }
-
-    /// Whether `T?` with this `T` is a handle to a boxed `T` (null for nil):
-    /// value types are boxed, references and pointers keep their own null.
-    pub(in crate::codegen) fn is_boxed_nullable(&self, inner: &ArType) -> bool {
-        !self.module.is_pointer(inner)
-            && !self.module.is_fat_pointer(inner)
-            && !matches!(inner, ArType::Void | ArType::Error)
-    }
-
-    fn box_nullable(
-        &mut self,
-        value: TypedValue,
-        inner: &ArType,
-    ) -> Result<TypedValue, Diagnostic> {
-        let value = self.coerce(value, inner)?;
-        let size = self
-            .module
-            .layout
-            .layout_of_type(inner, self.module.interner, self.module.info)
-            .map_err(|error| ice(format!("LLVM layout failed for {inner:?}: {error}")))?
-            .size
-            .max(1);
-        self.module.require_raw_malloc();
-        let handle = self.new_value();
-        self.writer.line(format!(
-            "{handle} = call ptr @ar_rt_raw_malloc({} {size})",
-            self.module.ptr_int_ty()
-        ));
-        let failed = self.new_value();
-        self.writer
-            .line(format!("{failed} = icmp eq ptr {handle}, null"));
-        self.trap_if(&failed);
-        let align = self.module.align_of(inner);
-        self.writer.line(format!(
-            "store {} {}, ptr {handle}, align {align}",
-            value.ty, value.value
-        ));
-        Ok(TypedValue::new("ptr".to_owned(), handle))
-    }
-
-    pub(in crate::codegen) fn unbox_nullable(
-        &mut self,
-        handle: TypedValue,
-        inner: &ArType,
-    ) -> Result<TypedValue, Diagnostic> {
-        let inner_text = self.module.llvm_ty(inner)?;
-        let align = self.module.align_of(inner);
-        let loaded = self.new_value();
-        self.writer.line(format!(
-            "{loaded} = load {inner_text}, ptr {}, align {align}",
-            handle.value
-        ));
-        let mut value = TypedValue::new(inner_text, loaded);
-        if self.module.integer_width(inner).is_some() {
-            value = value.with_source_signed(self.module.is_signed(inner));
-        }
-        Ok(value)
     }
 
     /// Gives an already computed value to the pending destination without an
@@ -364,8 +291,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     pub(in crate::codegen) fn scratch_alloca(&mut self, ty: &ArType) -> Result<String, Diagnostic> {
         let (text, align) = self.module.alloca_type(ty)?;
         let slot = self.new_value();
-        self.writer
-            .line(format!("{slot} = alloca {text}, align {align}"));
+        self.emit_entry_alloca(&slot, &text, align);
         Ok(slot)
     }
 
@@ -386,6 +312,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         value: &TypedValue,
         ty: &ArType,
     ) -> Result<(), Diagnostic> {
+        // A `void` value has no bytes; LLVM rejects storing it.
+        if value.ty == "void" {
+            return Ok(());
+        }
         let align = self.module.align_of(ty);
         self.writer.line(format!(
             "store {}, ptr {address}, align {align}",

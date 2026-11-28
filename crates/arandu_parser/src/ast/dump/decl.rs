@@ -43,8 +43,13 @@ fn dump_const(pool: &AstPool, decl: &ConstDecl, out: &mut Vec<String>) {
         .ty
         .map(|ty| format!(" {}", dump_type(pool.type_expr(ty), pool)))
         .unwrap_or_default();
+    let kind = if decl.is_static_mut {
+        "StaticMut"
+    } else {
+        "Const"
+    };
     out.push(format!(
-        "  Const {} {}{}{ty} = {}",
+        "  {kind} {} {}{}{ty} = {}",
         dump_span(decl.span),
         dump_visibility(decl.visibility),
         decl.name,
@@ -228,6 +233,25 @@ pub(super) fn dump_import(_pool: &AstPool, import: &ImportDecl) -> String {
         ImportDecl::ModuleAlias { span, path, alias } => {
             format!("Import {} {} as {alias}", dump_span(*span), path.join("."))
         }
+        ImportDecl::ModuleGroup {
+            span,
+            prefix,
+            items,
+        } => {
+            let items = items
+                .iter()
+                .map(|item| match &item.alias {
+                    Some(alias) => format!("{} {} as {alias}", dump_span(item.span), item.name),
+                    None => format!("{} {}", dump_span(item.span), item.name),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "ImportGroup {} {}.{{ {items} }}",
+                dump_span(*span),
+                prefix.join(".")
+            )
+        }
         ImportDecl::Named { span, items, path } => {
             let items = items
                 .iter()
@@ -307,6 +331,9 @@ pub(super) fn dump_param(pool: &AstPool, param: &Param) -> String {
     out.push_str(&dump_type(pool.type_expr(param.ty), pool));
     if param.is_variadic {
         out.push_str("...");
+    }
+    if let Some(default) = param.default {
+        out.push_str(&format!(" = {}", super::expr::dump_expr(pool, default)));
     }
     out
 }
@@ -403,6 +430,7 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
                 dump_type(pool.type_expr(*inner), pool)
             )
         }
+        TypeExpr::Never { span } => format!("Never {}", dump_span(*span)),
         TypeExpr::Array {
             span,
             size,
@@ -423,6 +451,7 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
             span,
             params,
             result,
+            is_bare_func,
         } => {
             let param_list = pool.type_expr_list(*params);
             let params_str = param_list
@@ -430,16 +459,30 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
                 .map(|&p| dump_type(pool.type_expr(p), pool))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let tag = if *is_bare_func {
+                "BareFuncType"
+            } else {
+                "FuncType"
+            };
             match result {
                 Some(result) => {
                     format!(
-                        "FuncType {} ({params_str}) {}",
+                        "{tag} {} ({params_str}) {}",
                         dump_span(*span),
                         dump_result_type(result, pool)
                     )
                 }
-                None => format!("FuncType {} ({params_str})", dump_span(*span)),
+                None => format!("{tag} {} ({params_str})", dump_span(*span)),
             }
+        }
+        TypeExpr::Tuple { span, items } => {
+            let items = pool
+                .type_expr_list(*items)
+                .iter()
+                .map(|item| dump_type(pool.type_expr(*item), pool))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("TupleType {} ({items})", dump_span(*span))
         }
         TypeExpr::Group { span, inner } => {
             format!(
@@ -447,6 +490,30 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
                 dump_span(*span),
                 dump_type(pool.type_expr(*inner), pool)
             )
+        }
+        TypeExpr::OwnFunc {
+            span,
+            func,
+            bounds,
+            once,
+        } => {
+            let func = dump_type(pool.type_expr(*func), pool);
+            let kind = if *once {
+                "OwnOnceFuncType"
+            } else {
+                "OwnFuncType"
+            };
+            let bound_list = pool.type_expr_list(*bounds);
+            if bound_list.is_empty() {
+                format!("{kind} {} ({func})", dump_span(*span))
+            } else {
+                let bounds_str = bound_list
+                    .iter()
+                    .map(|b| format!("+ ({})", dump_type(pool.type_expr(*b), pool)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{kind} {} ({func}) {bounds_str}", dump_span(*span))
+            }
         }
     }
 }

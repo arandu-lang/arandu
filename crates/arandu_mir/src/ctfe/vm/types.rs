@@ -13,8 +13,13 @@ pub(super) enum ValueType {
     Float(FloatType),
     String,
     Bytes(Primitive),
+    /// A view of elements other than bytes: a frozen aggregate whose shape
+    /// is the slice, with any number of elements of this type.
+    Slice(Box<ValueType>),
     Aggregate(Arc<AggregateType>),
     Enum(Arc<EnumType>),
+    Pointer(Box<ValueType>),
+    NullPointer(TypeShape),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -27,6 +32,7 @@ pub(super) struct EnumType {
 pub(super) struct AggregateType {
     pub shape: TypeShape,
     pub kind: AggregateKind,
+    pub is_union: bool,
     pub fields: Vec<ValueType>,
     pub names: Vec<smol_str::SmolStr>,
     pub symbols: Vec<Option<SymbolId>>,
@@ -49,8 +55,11 @@ impl ValueType {
             Self::Float(ty) => TypeShape::Primitive(ty.primitive()),
             Self::String => TypeShape::Primitive(Primitive::Str),
             Self::Bytes(ty) => TypeShape::Slice(Box::new(TypeShape::Primitive(*ty))),
+            Self::Slice(element) => TypeShape::Slice(Box::new(element.shape())),
             Self::Aggregate(ty) => ty.shape.clone(),
             Self::Enum(ty) => ty.shape.clone(),
+            Self::Pointer(inner) => TypeShape::Ptr(Box::new(inner.shape())),
+            Self::NullPointer(shape) => shape.clone(),
         }
     }
 
@@ -59,6 +68,7 @@ impl ValueType {
         types: &TypeInterner,
         layout: DataLayout,
         provider: Option<&dyn StructLayoutProvider>,
+        allow_null_pointers: bool,
         depth: usize,
         remaining: &mut usize,
     ) -> Result<Self, EvalErrorKind> {
@@ -75,7 +85,15 @@ impl ValueType {
             .map_err(|_| EvalErrorKind::ValueLimit)?;
         let id = shape.intern(types).map_err(|_| EvalErrorKind::ValueLimit)?;
         let recurse = |id, remaining: &mut usize| {
-            Self::resolve(id, types, layout, provider, depth + 1, remaining)
+            Self::resolve(
+                id,
+                types,
+                layout,
+                provider,
+                allow_null_pointers,
+                depth + 1,
+                remaining,
+            )
         };
         let ty = types.try_resolve(id).ok_or(EvalErrorKind::InvalidIr)?;
         if matches!(
@@ -91,14 +109,14 @@ impl ValueType {
             arandu_middle::ctfe::validate_ctfe_type_shape(&shape)
                 .map_err(|_| EvalErrorKind::UnsupportedType(id))?;
             if provider.is_some_and(|provider| {
-                provider.is_copy_type(id) != Some(true)
+                (!allow_null_pointers && provider.is_copy_type(id) != Some(true))
                     || provider.destructor_for_type(id).is_some()
             }) {
                 return Err(EvalErrorKind::UnsupportedType(id));
             }
         }
         match ty {
-            ArType::Void => Ok(Self::Void),
+            ArType::Void | ArType::Never => Ok(Self::Void),
             ArType::Primitive(Primitive::Bool) => Ok(Self::Bool),
             ArType::Primitive(Primitive::Str) => Ok(Self::String),
             ArType::Primitive(primitive) if primitive.is_float() => {
@@ -118,8 +136,25 @@ impl ValueType {
                 Some(ArType::Primitive(primitive @ (Primitive::Byte | Primitive::U8))) => {
                     Ok(Self::Bytes(primitive))
                 }
-                _ => Err(EvalErrorKind::UnsupportedType(id)),
+                Some(_) => Ok(Self::Slice(Box::new(recurse(element, remaining)?))),
+                None => Err(EvalErrorKind::InvalidIr),
             },
+            // A shared reference is a handle to a frozen copy: the owner
+            // cannot change while it is borrowed. Only a local holds one.
+            ArType::Ref(inner) if depth == 0 => {
+                Ok(Self::Pointer(Box::new(recurse(inner, remaining)?)))
+            }
+            ArType::Ptr(inner) => {
+                if allow_null_pointers {
+                    return Ok(Self::NullPointer(shape));
+                }
+                if depth > 0 {
+                    return Err(EvalErrorKind::UnsupportedType(id));
+                }
+                let target = recurse(inner, remaining)?;
+                Ok(Self::Pointer(Box::new(target)))
+            }
+            ArType::Func(_, _) if allow_null_pointers => Ok(Self::NullPointer(shape)),
             ArType::Option(inner) => Ok(Self::Enum(Arc::new(EnumType {
                 shape,
                 variants: vec![(None, None), (None, Some(recurse(inner, remaining)?))],
@@ -149,6 +184,7 @@ impl ValueType {
                 Ok(Self::Aggregate(Arc::new(AggregateType {
                     shape: TypeShape::from_id(id, types).map_err(|_| EvalErrorKind::ValueLimit)?,
                     kind: AggregateKind::Array,
+                    is_union: false,
                     fields,
                     names: Vec::new(),
                     symbols: Vec::new(),
@@ -162,6 +198,7 @@ impl ValueType {
                 Ok(Self::Aggregate(Arc::new(AggregateType {
                     shape: TypeShape::from_id(id, types).map_err(|_| EvalErrorKind::ValueLimit)?,
                     kind: AggregateKind::Tuple,
+                    is_union: false,
                     fields,
                     names: Vec::new(),
                     symbols: Vec::new(),
@@ -183,6 +220,7 @@ impl ValueType {
                 Ok(Self::Aggregate(Arc::new(AggregateType {
                     shape: TypeShape::from_id(id, types).map_err(|_| EvalErrorKind::ValueLimit)?,
                     kind: AggregateKind::Vector(vector),
+                    is_union: false,
                     fields,
                     names: Vec::new(),
                     symbols: Vec::new(),
@@ -194,7 +232,7 @@ impl ValueType {
                 };
                 // Immutable Arc sharing is not a substitute for ownership. Only
                 // canonical POD Copy structs without observable cleanup enter.
-                if provider.is_copy_type(id) != Some(true)
+                if (!allow_null_pointers && provider.is_copy_type(id) != Some(true))
                     || provider.destructor_for_type(id).is_some()
                 {
                     return Err(EvalErrorKind::UnsupportedType(id));
@@ -259,6 +297,7 @@ impl ValueType {
                 Ok(Self::Aggregate(Arc::new(AggregateType {
                     shape: TypeShape::from_id(id, types).map_err(|_| EvalErrorKind::ValueLimit)?,
                     kind: AggregateKind::Struct(symbol),
+                    is_union: provider.is_union(symbol),
                     fields,
                     names,
                     symbols,
@@ -270,19 +309,41 @@ impl ValueType {
 
     pub fn accepts(&self, value: &ConstValue) -> bool {
         match (self, value) {
-            (Self::Void, ConstValue::Void) | (Self::Bool, ConstValue::Bool(_)) => true,
+            (Self::Void, ConstValue::Void)
+            | (Self::Bool, ConstValue::Bool(_))
+            | (Self::NullPointer(_), ConstValue::Void) => true,
             (Self::Integer(ty), ConstValue::Integer(value)) => *ty == value.ty(),
             (Self::Float(ty), ConstValue::Float(value)) => *ty == value.ty(),
             (Self::String, ConstValue::String(_)) | (Self::Bytes(_), ConstValue::Bytes(_)) => true,
+            (Self::Slice(element), ConstValue::Aggregate(value)) => {
+                value.variant().is_none()
+                    && *value.shape() == TypeShape::Slice(Box::new(element.shape()))
+                    && value.values().iter().all(|item| element.accepts(item))
+            }
             (Self::Aggregate(ty), ConstValue::Aggregate(value)) => {
                 value.variant().is_none()
                     && ty.shape == *value.shape()
                     && ty.fields.len() == value.values().len()
-                    && ty
-                        .fields
-                        .iter()
-                        .zip(value.values())
-                        .all(|(ty, value)| ty.accepts(value))
+                    && if ty.is_union {
+                        value
+                            .values()
+                            .iter()
+                            .filter(|item| !matches!(item, ConstValue::Void))
+                            .count()
+                            <= 1
+                            && ty
+                                .fields
+                                .iter()
+                                .zip(value.values())
+                                .all(|(field_ty, item)| {
+                                    matches!(item, ConstValue::Void) || field_ty.accepts(item)
+                                })
+                    } else {
+                        ty.fields
+                            .iter()
+                            .zip(value.values())
+                            .all(|(ty, value)| ty.accepts(value))
+                    }
             }
             (Self::Enum(ty), ConstValue::Aggregate(value)) => {
                 let Some(variant) = value.variant() else {
@@ -301,6 +362,15 @@ impl ValueType {
                                 }
                         })
             }
+            (Self::Pointer(_), ConstValue::Integer(_)) => true,
+            // The address of frozen bytes (`c"..."`): a pointer to bytes.
+            (Self::Pointer(target), ConstValue::Bytes(_)) => {
+                matches!(**target, Self::Integer(ty) if matches!(ty.primitive(), Primitive::U8 | Primitive::I8 | Primitive::Byte))
+            }
+            (Self::NullPointer(TypeShape::Ptr(target)), ConstValue::Bytes(_)) => matches!(
+                **target,
+                TypeShape::Primitive(Primitive::U8 | Primitive::I8 | Primitive::Byte)
+            ),
             _ => false,
         }
     }
@@ -313,6 +383,28 @@ impl ValueType {
             Self::Float(float) => float.canonical_bytes().to_vec(),
             Self::String => vec![2, 4],
             Self::Bytes(primitive) => vec![2, 5, u8::from(*primitive == Primitive::U8)],
+            Self::Slice(element) => {
+                let mut bytes = vec![2, 9];
+                let child = element.canonical_bytes();
+                bytes.extend_from_slice(&(child.len() as u64).to_le_bytes());
+                bytes.extend(child);
+                bytes
+            }
+            Self::Pointer(target) => {
+                let mut bytes = vec![2, 7];
+                let child = target.canonical_bytes();
+                bytes.extend_from_slice(&(child.len() as u64).to_le_bytes());
+                bytes.extend(child);
+                bytes
+            }
+            Self::NullPointer(shape) => {
+                let mut bytes = vec![2, 8];
+                if let Ok(encoded) = arandu_middle::ctfe::canonical_type_bytes(shape) {
+                    bytes.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+                    bytes.extend(encoded);
+                }
+                bytes
+            }
             Self::Enum(ty) => {
                 let mut bytes = vec![2, 6];
                 if let Ok(shape) = arandu_middle::ctfe::canonical_type_bytes(&ty.shape) {
@@ -335,7 +427,7 @@ impl ValueType {
                 bytes
             }
             Self::Aggregate(ty) => {
-                let mut bytes = vec![2, 3];
+                let mut bytes = vec![2, 3, u8::from(ty.is_union)];
                 if let Ok(shape) = arandu_middle::ctfe::canonical_type_bytes(&ty.shape) {
                     bytes.extend(shape);
                 }

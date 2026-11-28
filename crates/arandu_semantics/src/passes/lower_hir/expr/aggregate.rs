@@ -138,6 +138,24 @@ pub(super) fn lower_array(
     })
 }
 
+pub(super) fn lower_tuple(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    expr: ExprId,
+) -> Result<HirExprKind, Diagnostic> {
+    let ExprKind::Tuple { items } = pool.expr(expr) else {
+        unreachable!();
+    };
+    let mut hir_items = Vec::new();
+    for &item in pool.expr_list(*items) {
+        hir_items.push(super::lower_expr(type_check, pool, hir_pool, item)?);
+    }
+    Ok(HirExprKind::Tuple {
+        items: hir_pool.alloc_expr_list(&hir_items),
+    })
+}
+
 pub(super) fn lower_array_repeat(
     type_check: &mut TypeCheckResult,
     pool: &AstPool,
@@ -166,8 +184,25 @@ pub(super) fn lower_lambda(
     };
     Ok({
         {
-            if let Some(recipe) = type_check.type_info.thread_capture_at(span).cloned() {
-                super::super::thread_capture::capture_struct_literal(hir_pool, &recipe)
+            if let Some(recipe) = type_check.type_info.closure_at(span).cloned() {
+                if recipe.owning.is_some() {
+                    owning_closure(type_check, hir_pool, &recipe, span)?
+                } else if recipe.is_function() {
+                    // The value is a pointer to the lambda's own function.
+                    let ty = type_check
+                        .type_info
+                        .decl_type_id(recipe.method_symbol)
+                        .unwrap_or_else(super::error_ty);
+                    super::super::closure::synthetic_function(
+                        type_check,
+                        hir_pool,
+                        recipe.method_symbol,
+                        ty,
+                        span,
+                    )
+                } else {
+                    super::super::closure::capture_struct_literal(hir_pool, &recipe)
+                }
             } else {
                 let mut hir_params = Vec::new();
                 let param_ids = pool.lambda_param_list(*params);
@@ -254,5 +289,79 @@ pub(super) fn lower_unsafe_block(
         HirExprKind::UnsafeBlock {
             block: super::super::stmt::lower_block(type_check, pool, hir_pool, pool.block(*block))?,
         }
+    })
+}
+
+/// The value of an owning closure (RFC 0032, L3): `Closure.make<Env, F>(env,
+/// code)` moves the captures into the heap; without captures,
+/// `Closure.fromFunction<F>(code)` allocates nothing.
+pub(super) fn owning_closure(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    recipe: &arandu_typeck::type_checker::info::ClosureRecipe,
+    span: arandu_middle::Span,
+) -> Result<HirExprKind, Diagnostic> {
+    let ice = |message: &str| Diagnostic::ice(crate::DiagCode::ICEL001, message.to_string(), span);
+    let code = recipe
+        .owning
+        .as_ref()
+        .ok_or_else(|| ice("owning closure recipe has no code"))?;
+    let info = &type_check.type_info;
+    let ArType::Named(closure_symbol, _) = info.type_interner.resolve(code.closure_ty) else {
+        return Err(ice("owning closure type is not a closure"));
+    };
+    let code_ty = info
+        .decl_type_id(code.symbol)
+        .ok_or_else(|| ice("owning closure code has no type"))?;
+    let captures = recipe.is_callback();
+    let constructor = if captures { "make" } else { "fromFunction" };
+    let constructor = type_check
+        .symbols
+        .associated_members
+        .get(&(closure_symbol, constructor.into()))
+        .copied()
+        .ok_or_else(|| ice("owning closure constructor is missing"))?;
+    let mut type_args = Vec::with_capacity(2);
+    let mut args = Vec::with_capacity(2);
+    if captures {
+        let env_ty = info
+            .decl_type_id(recipe.struct_symbol)
+            .ok_or_else(|| ice("owning closure environment has no type"))?;
+        type_args.push(env_ty);
+        let env = super::super::closure::capture_struct_literal(hir_pool, recipe);
+        args.push(hir_pool.alloc_expr(HirExpr {
+            kind: env,
+            ty: env_ty,
+            span,
+        }));
+    }
+    type_args.push(code_ty);
+    let code_kind =
+        super::super::closure::synthetic_function(type_check, hir_pool, code.symbol, code_ty, span);
+    args.push(hir_pool.alloc_expr(HirExpr {
+        kind: code_kind,
+        ty: code_ty,
+        span,
+    }));
+    let instance = ArType::func(&type_args, code.closure_ty, &info.type_interner);
+    let instance = type_check.type_info_mut().type_interner.intern(instance);
+    let path = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path {
+            symbol: constructor,
+        },
+        ty: instance,
+        span,
+    });
+    let callee = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Generic {
+            callee: path,
+            args: type_args,
+        },
+        ty: instance,
+        span,
+    });
+    Ok(HirExprKind::Call {
+        callee,
+        args: hir_pool.alloc_expr_list(&args),
     })
 }

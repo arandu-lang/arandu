@@ -71,7 +71,10 @@ func main(): int { return middle() }
 fn library_without_main_preserves_private_host_lookup() {
     let bytes = common::compile_source(
         r#"
-extern "C" { func required_host(): int func unused_host(): int }
+extern "C" {
+    func required_host(): int
+    func unused_host(): int
+}
 func private_api(): int { unsafe { return required_host() } }
 "#,
     );

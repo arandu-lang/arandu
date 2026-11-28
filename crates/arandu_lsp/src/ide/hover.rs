@@ -38,6 +38,11 @@ pub fn hover(
     let symbol = tc.symbols.try_get(sym)?;
     let presentation = symbol_presentation(snap, source, &tc, symbol);
     let mut md = format!("```arandu\n{}\n```", presentation.signature);
+    if !presentation.capabilities.is_empty() {
+        md.push_str("\n\n*");
+        md.push_str(&presentation.capabilities.join(" · "));
+        md.push('*');
+    }
     if let Some(documentation) = presentation.documentation {
         md.push_str("\n\n");
         md.push_str(&documentation);

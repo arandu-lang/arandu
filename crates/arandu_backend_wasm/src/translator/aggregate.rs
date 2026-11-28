@@ -337,7 +337,10 @@ impl<'a> FuncTranslator<'a> {
         result_ty: TypeId,
     ) {
         let base_ty = self.operand_arity_ty(base);
-        let owner_ty = self.strip_ref(base_ty).unwrap_or(base_ty);
+        let owner_ty = match self.interner.resolve(base_ty) {
+            ArType::Ref(inner) | ArType::RefMut(inner) => inner,
+            _ => base_ty,
+        };
         let owner = self.interner.resolve(owner_ty);
         let base_local = match base {
             AmirOperand::Copy(t) | AmirOperand::Move(t) => self.temp_local.get(t).copied(),
@@ -357,6 +360,10 @@ impl<'a> FuncTranslator<'a> {
             _ => self.emit_operand(base, base_ty),
         }
         let (_elem_ty, elem_size) = match &owner {
+            ArType::Ptr(inner) => {
+                let size = self.layout_of(&self.interner.resolve(*inner)).size;
+                (*inner, size)
+            }
             ArType::Array(_, inner) => {
                 let size = self.layout_of(&self.interner.resolve(*inner)).size;
                 (*inner, size)
@@ -372,7 +379,7 @@ impl<'a> FuncTranslator<'a> {
         };
         let int_ty = self.interner.intern(ArType::Primitive(Primitive::Int));
         // Bounds check: index < len, unless AMIR proved it.
-        if !in_bounds {
+        if !in_bounds && !matches!(owner, ArType::Ptr(_)) {
             self.emit_index_bounds_check(&owner, base_local, index, int_ty);
         }
         // address = base + index * elem_size

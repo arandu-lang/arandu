@@ -73,7 +73,6 @@ fn reject_unaddressable_place(
         arandu_middle::types::ArType::Ptr(_)
             | arandu_middle::types::ArType::Ref(_)
             | arandu_middle::types::ArType::RefMut(_)
-            | arandu_middle::types::ArType::Nullable(_)
             | arandu_middle::types::ArType::Slice(_)
             | arandu_middle::types::ArType::MutSlice(_)
             | arandu_middle::types::ArType::Named(..)

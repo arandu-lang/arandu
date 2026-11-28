@@ -256,8 +256,8 @@ impl TargetSpec {
     /// System libraries for generated C / LLVM IR linked with `clang`/`gcc`.
     #[must_use]
     pub const fn runtime_system_libs(self) -> &'static [&'static str] {
-        match self.os {
-            TargetOs::Windows => &[
+        match (self.os, self.env) {
+            (TargetOs::Windows, _) => &[
                 "-lkernel32",
                 "-lntdll",
                 "-luserenv",
@@ -265,9 +265,9 @@ impl TargetSpec {
                 "-lbcrypt",
                 "-ldbghelp",
             ],
-            TargetOs::Macos => &["-lpthread"],
-            TargetOs::Linux => &["-lpthread", "-ldl"],
-            TargetOs::Unknown => &["-lpthread"],
+            (TargetOs::Macos, _) => &["-lpthread"],
+            (TargetOs::Linux, _) => &["-lpthread", "-ldl"],
+            (TargetOs::Unknown, _) => &["-lpthread"],
         }
     }
 
@@ -296,6 +296,9 @@ impl TargetSpec {
             "bcrypt.lib",
             "dbghelp.lib",
             "msvcrt.lib",
+            // The UCRT inlines `printf`-family functions; the runtime's C
+            // compatibility shims call `snprintf`/`fprintf` as imports.
+            "legacy_stdio_definitions.lib",
         ]
     }
 
@@ -383,6 +386,25 @@ impl LinkerPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_stdio_definitions_is_named_only_for_link_exe() {
+        let msvc = TargetSpec {
+            os: TargetOs::Windows,
+            env: TargetEnv::Msvc,
+        };
+        // `link.exe` links the MSVC-built runtime, whose C shims import
+        // `snprintf`; a GNU-style driver links C alone and MinGW lacks it.
+        assert!(
+            msvc.msvc_runtime_libs()
+                .contains(&"legacy_stdio_definitions.lib")
+        );
+        assert!(
+            !msvc
+                .runtime_system_libs()
+                .contains(&"-llegacy_stdio_definitions")
+        );
+    }
 
     #[test]
     fn host_spec_omits_libm_on_windows_and_libdl_on_macos() {

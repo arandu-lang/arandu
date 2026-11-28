@@ -199,6 +199,6 @@ fn remap_entry(terminator: &mut AmirTerminator, header: BlockId) {
             replace(&mut otherwise.0);
         }
         AmirTerminator::Suspend { resume, .. } => replace(resume),
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }
 }

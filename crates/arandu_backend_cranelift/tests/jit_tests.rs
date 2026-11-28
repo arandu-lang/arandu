@@ -16,7 +16,8 @@ fn compile_src(
     arandu_semantics::TypeInfo,
 ) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -39,7 +40,8 @@ fn compile_src_mono(
     arandu_semantics::TypeInfo,
 ) {
     let program = arandu_parser::parse(src).expect("parse failed");
-    let resolution = resolve_for_test(0, &program);
+    let mut resolution = resolve_for_test(0, &program);
+    Arc::make_mut(&mut resolution.symbols).trusted_stdlib = true;
     let mut tc = type_check(
         resolution,
         &program,
@@ -1458,12 +1460,12 @@ fn jit_enum_cross_variant_name_no_collision() {
 }
 
 #[test]
-fn jit_ice_indirect_call() {
+fn jit_ice_call_through_a_value_that_is_not_a_function() {
     use arandu_semantics::amir::{AmirConstant, AmirOperand, AmirStmt, InstrId};
     let src = "func main(): int { return 0; }";
     let (mut amir, symbols, type_info) = compile_src(src);
 
-    // Convert the first statement to an indirect call.
+    // Convert the first statement to a call through a non-function value.
     let id = amir.funcs[0].blocks[0]
         .statements
         .iter_ids::<InstrId>()
@@ -1485,7 +1487,7 @@ fn jit_ice_indirect_call() {
 
     assert!(
         err.message
-            .contains("indirect function calls are not implemented"),
+            .contains("call through a value that is not a function"),
         "msg: {}",
         err.message
     );
@@ -1783,6 +1785,7 @@ fn jit_gen_insert_get_copy_tuple() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let type_info = arandu_semantics::TypeInfo {
         type_interner: interner,
@@ -1924,6 +1927,7 @@ fn jit_vec_legacy_handle_len_abi() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let type_info = arandu_semantics::TypeInfo {
         type_interner: interner,
@@ -2611,4 +2615,267 @@ fn jit_non_utf8_byte_string_blob_keeps_raw_bytes() {
         f()
     };
     assert_eq!(result, 42);
+}
+
+#[test]
+fn jit_optional_destructor_invokes_only_for_some_not_nil() {
+    let src = r#"
+struct Handle {
+    token: int,
+    counter: ptr[int]
+}
+
+@Destructor
+func Handle.destroy(own self): void {
+    let c = self.counter
+    unsafe {
+        *c = *c + self.token
+    }
+}
+
+func make_opt(some: bool, tok: int, counter: ptr[int]): Handle? {
+    if some {
+        return Handle { token: tok, counter: counter }
+    }
+    return nil
+}
+
+public func test_drop(counter: ptr[int]): int {
+    if true {
+        let a: Handle? = make_opt(some: true, tok: 10, counter: counter)
+        let b: Handle? = make_opt(some: false, tok: 99, counter: counter)
+        let _ = b
+        let extracted = if a is h { h.token } else { 0 }
+        if extracted != 10 { return -1 }
+    }
+    unsafe {
+        return *counter
+    }
+}
+"#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let mut counter: i64 = 0;
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn(*mut i64) -> i64 = module.get_fn("test_drop").unwrap();
+        f(&mut counter)
+    };
+    assert_eq!(result, 10);
+}
+
+#[test]
+fn jit_drop_flags_exact_once_across_conditional_move_and_overwrite() {
+    let src = r#"
+struct Handle {
+    token: int,
+    counter: ptr[int]
+}
+
+@Destructor
+func Handle.destroy(own self): void {
+    let c = self.counter
+    unsafe {
+        *c = *c + self.token
+    }
+}
+
+func consume(own h: Handle): void {
+    let _ = h
+}
+
+func opt_handle(some: bool, tok: int, counter: ptr[int]): Handle? {
+    if some {
+        return Handle { token: tok, counter: counter }
+    }
+    return nil
+}
+
+public func run_case(take_a: bool, init_b: bool, take_c: bool, counter: ptr[int]): int {
+    if true {
+        let a = Handle { token: 10, counter: counter }
+        if take_a {
+            consume(h: a)
+        }
+
+        let b: Handle? = opt_handle(some: init_b, tok: 20, counter: counter)
+        if b is hb {
+            consume(h: hb)
+        }
+
+        let mut c = Handle { token: 30, counter: counter }
+        if take_c {
+            consume(h: c)
+        }
+        c = Handle { token: 40, counter: counter }
+        let _ = c
+    }
+    unsafe {
+        return *counter
+    }
+}
+"#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let f: unsafe extern "C" fn(bool, bool, bool, *mut i64) -> i64 =
+        unsafe { module.get_fn("run_case").unwrap() };
+
+    for &take_a in &[false, true] {
+        for &init_b in &[false, true] {
+            for &take_c in &[false, true] {
+                let mut counter: i64 = 0;
+                let observed = unsafe { f(take_a, init_b, take_c, &mut counter) };
+                // consume() also drops `h` on return, so consumed Handles STILL increment once;
+                // the critical property is EXACT-ONCE (neither leaked nor double-freed).
+                let expected = 10 + if init_b { 20 } else { 0 } + 30 + 40;
+                assert_eq!(
+                    observed, expected,
+                    "mismatch for take_a={take_a}, init_b={init_b}, take_c={take_c}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn jit_large_array_drop_loop_invokes_destructor_on_all_elements() {
+    let src = r#"
+struct Elem {
+    weight: int,
+    sum: ptr[int]
+}
+
+@Destructor
+func Elem.destroy(own self): void {
+    let s = self.sum
+    unsafe {
+        *s = *s + self.weight
+    }
+}
+
+public func test_arr(sum: ptr[int]): int {
+    if true {
+        let arr: [10]Elem = [
+            Elem { weight: 1, sum: sum },
+            Elem { weight: 2, sum: sum },
+            Elem { weight: 3, sum: sum },
+            Elem { weight: 4, sum: sum },
+            Elem { weight: 5, sum: sum },
+            Elem { weight: 6, sum: sum },
+            Elem { weight: 7, sum: sum },
+            Elem { weight: 8, sum: sum },
+            Elem { weight: 9, sum: sum },
+            Elem { weight: 10, sum: sum }
+        ]
+        let _ = arr
+    }
+    unsafe {
+        return *sum
+    }
+}
+"#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let mut sum: i64 = 0;
+    let observed = unsafe {
+        let f: unsafe extern "C" fn(*mut i64) -> i64 = module.get_fn("test_arr").unwrap();
+        f(&mut sum)
+    };
+    assert_eq!(observed, 55);
+}
+
+#[test]
+fn jit_export_aggregate_function_value_uses_internal_thunk() {
+    let src = r#"
+@Repr("C")
+struct Pair {
+    a: int,
+    b: int
+}
+
+@Export("api_pair")
+public func api(p: Pair): Pair {
+    return Pair { a: p.a + 10, b: p.b + 20 }
+}
+
+func apply(f: (Pair) -> Pair, p: Pair): int {
+    let out = f(p)
+    return out.a + out.b
+}
+
+public func main_test(): int {
+    let f = api
+    return apply(f, Pair { a: 3, b: 4 })
+}
+"#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let observed = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main_test").unwrap();
+        f()
+    };
+    assert_eq!(observed, 37);
+}
+
+#[test]
+fn jit_range_variable_index_and_iteration() {
+    let src = r#"
+func sum_slice(s: []int): int {
+    let sub = s[1..4]
+    let mut acc = 0
+    for i in 0..sub.len {
+        acc += sub[i]
+    }
+    for j in 0..=2 {
+        acc += s[j]
+    }
+    return acc
+}
+
+public func main_range(): int {
+    let arr: [5]int = [10, 20, 30, 40, 50]
+    let sub = arr[1..4]
+    return sum_slice(arr[0..5]) + sub[1]
+}
+"#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let observed = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main_range").unwrap();
+        f()
+    };
+    // sub = [20, 30, 40] -> sum 90; s[0..=2] = 10+20+30 = 60; + arr[1..4][1] (30) = 180
+    assert_eq!(observed, 180);
+}
+
+#[test]
+fn jit_never_diverging_if_branch() {
+    let src = r#"
+func unreachable_branch(): ! {
+    return unreachable_branch()
+}
+
+public func pick_never(cond: bool): int {
+    let v = if cond { unreachable_branch() } else { 77 }
+    return v
+}
+"#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let observed = unsafe {
+        let f: unsafe extern "C" fn(u8) -> i64 = module.get_fn("pick_never").unwrap();
+        f(0)
+    };
+    assert_eq!(observed, 77);
 }

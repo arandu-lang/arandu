@@ -336,27 +336,6 @@ fn apply_gen_promotion_impl(
     }
 }
 
-/// Whether promotion can represent borrows of `local`: a supported payload,
-/// and no projected borrow. A projected escaping reference needs a
-/// first-class (owner, path) representation; promoting a copied field would
-/// be a stale snapshot. Shared with escape analysis so both agree on which
-/// escapes become handles.
-pub(crate) fn would_promote(
-    func: &AmirFunc,
-    interner: &crate::types::TypeInterner,
-    type_info: Option<&dyn AmirTypeContext>,
-    local: crate::amir::LocalId,
-) -> bool {
-    match type_info {
-        Some(type_info) => is_promotable(func, interner, local, &|ty| {
-            type_info.is_copy_type(ty) == Some(true)
-        }),
-        None => is_promotable(func, interner, local, &|ty| {
-            is_supported_scalar_payload(interner, ty)
-        }),
-    }
-}
-
 fn is_promotable(
     func: &AmirFunc,
     interner: &crate::types::TypeInterner,

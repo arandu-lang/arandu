@@ -44,12 +44,24 @@ func allocationFailure(): void {
 }
 
 extern "C" {
+    /// Allocator for typed buffers using target-provided alignment.
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    /// Matching deallocator for `ar_rt_alloc_aligned`.
+    func ar_rt_free_aligned(p: ptr[u8], size: usize, align: usize): void
     /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: usize): ptr[u8]
     /// Host deallocator for a raw byte buffer.
     func ar_vec_buf_free(p: ptr[u8], size: usize): void
     /// Host allocator that resizes a raw byte buffer.
     func ar_vec_realloc(p: ptr[u8], oldSize: usize, newSize: usize): ptr[u8]
+}
+
+func genArenaDataAlign<T>(): usize {
+    let a = mem.alignOf<T>()
+    if a < (16 as usize) {
+        return 16 as usize
+    }
+    return a
 }
 
 /// Handle identifying a slot and the generation when it was inserted.
@@ -103,11 +115,21 @@ public func GenArena.new<T>(): GenArena<T> {
     return new<T>()
 }
 
+/// Creates an empty arena pre-sized to hold at least `cap` slots without
+/// reallocating its slot tables during initial insertions.
+public func GenArena.withCapacity<T>(cap: usize): GenArena<T> {
+    let mut a = new<T>()
+    if cap > (0 as usize) {
+        growSlots<T>(mut ref a, cap)
+    }
+    return a
+}
+
 func growSlots<T>(a: mut ref GenArena<T>, minCap: usize): void {
     if a.slots_cap >= minCap {
         return
     }
-    let maxBytes: usize = 2147483647 as usize
+    let maxBytes: usize = mem.maxAllocBytes()
     let elem = mem.sizeOf<T>()
     let genElem = mem.sizeOf<u32>()
     let usedElem = mem.sizeOf<u8>()
@@ -133,21 +155,38 @@ func growSlots<T>(a: mut ref GenArena<T>, minCap: usize): void {
         }
     }
     let oldSlots = a.slots_cap
+    let dataAlign = genArenaDataAlign<T>()
     unsafe {
         let nullp: ptr[u8] = nil
-        let pData = ar_vec_realloc(a.data as ptr[u8], oldSlots * elem, newCap * elem)
+        let pData = ar_rt_alloc_aligned(newCap * elem, dataAlign)
         if pData == nullp {
             intrinsics.abort()
         }
         let pGen = ar_vec_realloc(a.gen as ptr[u8], oldSlots * genElem, newCap * genElem)
         if pGen == nullp {
+            ar_rt_free_aligned(pData, newCap * elem, dataAlign)
             intrinsics.abort()
         }
         let pUsed = ar_vec_realloc(a.used as ptr[u8], oldSlots * usedElem, newCap * usedElem)
         if pUsed == nullp {
+            ar_rt_free_aligned(pData, newCap * elem, dataAlign)
             intrinsics.abort()
         }
-        a.data = pData as ptr[T]
+        let newData = pData as ptr[T]
+        if oldSlots > (0 as usize) {
+            let mut idx: usize = 0 as usize
+            while idx < a.slots {
+                let u = mem.ptrRead<u8>(mem.ptrOffset<u8>(pUsed, idx as isize))
+                if u != (0 as u8) {
+                    let src = mem.ptrOffset<T>(a.data, idx as isize)
+                    let dst = mem.ptrOffset<T>(newData, idx as isize)
+                    mem.ptrWrite<T>(dst, mem.ptrRead<T>(src))
+                }
+                idx = idx + (1 as usize)
+            }
+            ar_rt_free_aligned(a.data as ptr[u8], oldSlots * elem, dataAlign)
+        }
+        a.data = newData
         a.gen = pGen as ptr[u32]
         a.used = pUsed as ptr[u8]
         a.slots_cap = newCap
@@ -158,7 +197,7 @@ func growFree<T>(a: mut ref GenArena<T>, minCap: usize): void {
     if a.free_cap >= minCap {
         return
     }
-    let maxBytes: usize = 2147483647 as usize
+    let maxBytes: usize = mem.maxAllocBytes()
     let genElem = mem.sizeOf<u32>()
     let maxCap = maxBytes / genElem
     if minCap > maxCap {
@@ -213,7 +252,7 @@ func insert<T>(a: mut ref GenArena<T>, value: T): GenRef {
             }
         }
     }
-    let maxBytes: usize = 2147483647 as usize
+    let maxBytes: usize = mem.maxAllocBytes()
     let elem = mem.sizeOf<T>()
     if elem == (0 as usize) {
         allocationFailure()
@@ -284,6 +323,61 @@ public func GenArena.getRef<T>(self: ref GenArena<T>, r: GenRef): ref T {
         let data = checkedPointer<T>(self, r)
         let view = intrinsics.sliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
         return ref view[0 as usize]
+    }
+}
+
+/// Mutably borrows the value at a live handle, retaining the arena as its owner.
+/// Out-of-range, removed and stale handles trap. Use `tryGetMut` for non-trapping lookup.
+public func GenArena.getMut<T>(self: mut ref GenArena<T>, r: GenRef): mut ref T {
+    unsafe {
+        let data = checkedPointer<T>(self, r)
+        let view = intrinsics.mutSliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
+        return mut ref view[0 as usize]
+    }
+}
+
+/// Returns `Option.Some(T)` copying the live value when `r` is valid, or
+/// `Option.None` if stale or out of range, without building an intermediate slice view.
+public func GenArena.tryGetCopy<T: marker.Copy>(self: ref GenArena<T>, r: GenRef): Option<T> {
+    let idx = r.index as usize
+    if idx >= self.slots { return Option.None }
+    unsafe {
+        let usedPtr = mem.ptrOffset<u8>(self.used, r.index as isize)
+        if mem.ptrRead<u8>(usedPtr) == (0 as u8) { return Option.None }
+        let genPtr = mem.ptrOffset<u32>(self.gen, r.index as isize)
+        if mem.ptrRead<u32>(genPtr) != r.generation { return Option.None }
+        let data = mem.ptrOffset<T>(self.data, r.index as isize)
+        return Option.Some(mem.ptrRead<T>(data))
+    }
+}
+
+/// Returns `Option.Some(ref T)` when `r` refers to a live slot, or `Option.None` if stale or out of range.
+public func GenArena.tryGet<T>(self: ref GenArena<T>, r: GenRef): Option<ref T> {
+    let idx = r.index as usize
+    if idx >= self.slots { return Option.None }
+    unsafe {
+        let usedPtr = mem.ptrOffset<u8>(self.used, r.index as isize)
+        if mem.ptrRead<u8>(usedPtr) == (0 as u8) { return Option.None }
+        let genPtr = mem.ptrOffset<u32>(self.gen, r.index as isize)
+        if mem.ptrRead<u32>(genPtr) != r.generation { return Option.None }
+        let data = mem.ptrOffset<T>(self.data, r.index as isize)
+        let view = intrinsics.sliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
+        return Option.Some(ref view[0 as usize])
+    }
+}
+
+/// Returns `Option.Some(mut ref T)` when `r` refers to a live slot, or `Option.None` if stale or out of range.
+public func GenArena.tryGetMut<T>(self: mut ref GenArena<T>, r: GenRef): Option<mut ref T> {
+    let idx = r.index as usize
+    if idx >= self.slots { return Option.None }
+    unsafe {
+        let usedPtr = mem.ptrOffset<u8>(self.used, r.index as isize)
+        if mem.ptrRead<u8>(usedPtr) == (0 as u8) { return Option.None }
+        let genPtr = mem.ptrOffset<u32>(self.gen, r.index as isize)
+        if mem.ptrRead<u32>(genPtr) != r.generation { return Option.None }
+        let data = mem.ptrOffset<T>(self.data, r.index as isize)
+        let view = intrinsics.mutSliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
+        return Option.Some(mut ref view[0 as usize])
     }
 }
 
@@ -364,7 +458,7 @@ func destroyGenArena<T>(a: mut ref GenArena<T>): void {
                 }
                 i = i + (1 as usize)
             }
-            ar_vec_buf_free(a.data as ptr[u8], a.slots_cap * elem)
+            ar_rt_free_aligned(a.data as ptr[u8], a.slots_cap * elem, genArenaDataAlign<T>())
             ar_vec_buf_free(a.gen as ptr[u8], a.slots_cap * genElem)
             ar_vec_buf_free(a.used as ptr[u8], a.slots_cap * usedElem)
         }

@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::performance::{cpu_name, percentile_index, toolchain_name};
 
-const USAGE: &str = "usage: bench-incremental [--corpus small|medium|large|all] [--samples N] [--warmup N] [--release] [--daemon] [--verify-determinism]";
+const USAGE: &str = "usage: bench-incremental [--corpus small|medium|large|representative|all] [--samples N] [--warmup N] [--release] [--daemon] [--count-work] [--verify-determinism]";
 
 /// Base of the constants that mutations edit; see [`Workload`].
 const SALT: usize = 1_000_000;
@@ -27,23 +27,35 @@ struct Corpus {
     name: &'static str,
     modules: usize,
     functions: usize,
+    /// Nominal types, generics, collections, destructors and a fan-out/diamond
+    /// import graph instead of a chain of integer helpers (BENCH.2).
+    representative: bool,
 }
 
-const CORPORA: [Corpus; 3] = [
+const CORPORA: [Corpus; 4] = [
     Corpus {
         name: "small",
         modules: 4,
         functions: 8,
+        representative: false,
     },
     Corpus {
         name: "medium",
         modules: 16,
         functions: 32,
+        representative: false,
     },
     Corpus {
         name: "large",
         modules: 64,
         functions: 64,
+        representative: false,
+    },
+    Corpus {
+        name: "representative",
+        modules: 8,
+        functions: 8,
+        representative: true,
     },
 ];
 
@@ -55,6 +67,9 @@ struct Options {
     /// Measure builds through the project daemon, end to end from the client
     /// (the HOT.6 gate), instead of a new compiler process per build.
     daemon: bool,
+    /// With `--daemon`, build with `-v` so samples carry the work counters;
+    /// the query event log then adds to the timed build.
+    count_work: bool,
 }
 
 impl Options {
@@ -65,6 +80,7 @@ impl Options {
             warmup: 1,
             release: false,
             daemon: false,
+            count_work: false,
         };
         while let Some(argument) = args.next() {
             match argument.as_str() {
@@ -72,6 +88,7 @@ impl Options {
                 "--verify-determinism" => {}
                 "--release" => options.release = true,
                 "--daemon" => options.daemon = true,
+                "--count-work" => options.count_work = true,
                 "--corpus" => {
                     let value = args.next().ok_or("--corpus requires a value")?;
                     options.corpora = if value == "all" {
@@ -119,11 +136,14 @@ enum Mutation {
     PrivateBodyLocals,
     PublicSignature,
     NewItem,
+    GenericBody,
+    NewInstance,
+    DirectCallSignature,
     Clean,
 }
 
 impl Mutation {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 11] = [
         Self::NoopTouch,
         Self::Documentation,
         Self::PrivateBody,
@@ -131,6 +151,9 @@ impl Mutation {
         Self::PrivateBodyLocals,
         Self::PublicSignature,
         Self::NewItem,
+        Self::GenericBody,
+        Self::NewInstance,
+        Self::DirectCallSignature,
         Self::Clean,
     ];
 
@@ -143,14 +166,35 @@ impl Mutation {
             Self::PrivateBodyLocals => "private-body-locals",
             Self::PublicSignature => "public-signature",
             Self::NewItem => "new-item",
+            Self::GenericBody => "generic-body",
+            Self::NewInstance => "new-instance",
+            Self::DirectCallSignature => "direct-call-signature",
             Self::Clean => "clean",
         }
+    }
+
+    /// Generics and the direct-call surface exist only in the representative
+    /// corpus; the chain corpora keep the workload their published results
+    /// measured.
+    const fn applies_to(self, corpus: Corpus) -> bool {
+        corpus.representative
+            || !matches!(
+                self,
+                Self::GenericBody | Self::NewInstance | Self::DirectCallSignature
+            )
     }
 }
 
 /// Generated multi-module program. Module `k` imports module `k - 1` and the
 /// entry calls the last module, so every module is linked. Mutations edit the
 /// first helper of `target`, in the middle of the import chain.
+///
+/// The representative corpus replaces the bottom of the chain with a diamond:
+/// `m1` and `m2` import `m0` (fan-out) and `m3` imports both. Each module
+/// declares a struct with a destructor that a helper stores in a `Vec`; `m0`
+/// declares a generic `weigh<T>` that `m1` instantiates at `Pair<int>` and,
+/// for `new-instance`, at a new struct per sample; `target` exports a
+/// `direct` function that only one function of `target + 1` calls.
 ///
 /// Every sample yields source never compiled before, so content-addressed
 /// object reuse cannot hide codegen. Edited constants start at `SALT` and stay
@@ -166,6 +210,10 @@ struct Workload {
     locals: usize,
     wide_signature: bool,
     added: usize,
+    generic_salt: usize,
+    instances: usize,
+    direct_wide: bool,
+    direct_salt: usize,
 }
 
 impl Workload {
@@ -180,6 +228,10 @@ impl Workload {
             locals: 0,
             wide_signature: false,
             added: 0,
+            generic_salt: 0,
+            instances: 0,
+            direct_wide: false,
+            direct_salt: 0,
         }
     }
 
@@ -199,6 +251,19 @@ impl Workload {
                 return vec![self.target, self.target + 1];
             }
             Mutation::NewItem => self.added = index + 1,
+            Mutation::GenericBody => {
+                self.generic_salt = index + 1;
+                return vec![0];
+            }
+            Mutation::NewInstance => {
+                self.instances = index + 1;
+                return vec![1];
+            }
+            Mutation::DirectCallSignature => {
+                self.direct_wide = !self.direct_wide;
+                self.direct_salt = index + 1;
+                return vec![self.target, self.target + 1];
+            }
             Mutation::Clean => return Vec::new(),
         }
         vec![self.target]
@@ -213,9 +278,20 @@ impl Workload {
 
     fn module_source(&self, module: usize) -> String {
         let edited = module == self.target;
+        let representative = self.corpus.representative;
         let mut source = String::new();
-        if module > 0 {
-            source.push_str(&format!("import workload.m{} as prev\n\n", module - 1));
+        if let Some(previous) = self.parent(module) {
+            source.push_str(&format!("import workload.m{previous} as prev\n"));
+        }
+        if representative {
+            if module == 3 {
+                source.push_str("import workload.m2 as left\n");
+            }
+            source.push_str("import std.alloc.vec as vec\n");
+        }
+        source.push('\n');
+        if representative {
+            source.push_str(&self.representative_items(module));
         }
         for function in 0..self.corpus.functions {
             let hot = edited && function == 0;
@@ -257,14 +333,25 @@ impl Workload {
         let mut terms = (0..self.corpus.functions)
             .map(|function| format!("helper_{function}(value)"))
             .collect::<Vec<_>>();
-        if module > 0 {
-            let previous = module - 1;
+        if let Some(previous) = self.parent(module) {
             let arguments = if previous == self.target && self.wide_signature {
                 "value, 0"
             } else {
                 "value"
             };
             terms.push(format!("prev.api({arguments})"));
+        }
+        if representative {
+            terms.push("collect(value)".to_owned());
+            if module == 3 {
+                terms.push("left.api(value)".to_owned());
+            }
+            if module == 1 {
+                terms.push("instantiate(value)".to_owned());
+            }
+            if module == self.target + 1 {
+                terms.push("call_direct(value)".to_owned());
+            }
         }
         if edited {
             terms.extend((1..=self.added).map(|item| format!("added_{item}()")));
@@ -277,6 +364,75 @@ impl Workload {
             "public func api({parameters}): int {{\n    return {}\n}}\n",
             terms.join(" + ")
         ));
+        source
+    }
+
+    /// The module whose `api` this module imports as `prev`.
+    const fn parent(&self, module: usize) -> Option<usize> {
+        match module {
+            0 => None,
+            1 | 2 if self.corpus.representative => Some(0),
+            3 if self.corpus.representative => Some(1),
+            _ => Some(module - 1),
+        }
+    }
+
+    /// Declarations only the representative corpus has; see [`Workload`].
+    fn representative_items(&self, module: usize) -> String {
+        let mut source = format!(
+            "public struct Item{module} {{ id: int, weight: int }}\n\n\
+             @Destructor\nfunc Item{module}.release(self: own Item{module}): void {{}}\n\n\
+             func collect(value: int): int {{\n    let mut items = vec.Vec<Item{module}>.new()\n    \
+             items.push(Item{module} {{ id: value, weight: 2 }})\n    \
+             items.push(Item{module} {{ id: value + 1, weight: 3 }})\n    \
+             match items.get(1 as usize) {{\n        \
+             Option.Some(item) => {{ return item.id + item.weight }}\n        \
+             Option.None => {{ return 0 }}\n    }}\n}}\n\n"
+        );
+        if module == 0 {
+            source.push_str(&format!(
+                "public struct Pair<T> {{ first: T, second: T }}\n\n\
+                 public func weigh<T>(value: T, factor: int): int {{\n    \
+                 let mut acc = factor\n    acc = acc + {}\n    return acc\n}}\n\n",
+                SALT + self.generic_salt
+            ));
+        }
+        if module == 1 {
+            // Every sample instantiates `weigh` at a type no build has seen.
+            let mut calls =
+                vec!["prev.weigh(prev.Pair { first: value, second: 1 }, 10)".to_owned()];
+            for instance in 1..=self.instances {
+                source.push_str(&format!("struct Fresh{instance} {{ tag: int }}\n\n"));
+                calls.push(format!(
+                    "prev.weigh(Fresh{instance} {{ tag: {instance} }}, {instance})"
+                ));
+            }
+            source.push_str(&format!(
+                "func instantiate(value: int): int {{\n    return {}\n}}\n\n",
+                calls.join(" + ")
+            ));
+        }
+        if module == self.target {
+            let parameters = if self.direct_wide {
+                "value: int, extra: int"
+            } else {
+                "value: int"
+            };
+            source.push_str(&format!(
+                "public func direct({parameters}): int {{\n    return value + {}\n}}\n\n",
+                SALT + self.direct_salt
+            ));
+        }
+        if module == self.target + 1 {
+            let arguments = if self.direct_wide {
+                "value, 0"
+            } else {
+                "value"
+            };
+            source.push_str(&format!(
+                "func call_direct(value: int): int {{\n    return prev.direct({arguments})\n}}\n\n"
+            ));
+        }
         source
     }
 
@@ -373,7 +529,10 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
             None,
         )?;
         let project = parent.join("workload");
-        for mutation in Mutation::ALL {
+        for mutation in Mutation::ALL
+            .into_iter()
+            .filter(|mutation| mutation.applies_to(*corpus))
+        {
             let (warmup, wanted) = if mutation == Mutation::Clean {
                 (0, clean_samples)
             } else {
@@ -392,7 +551,14 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
                 for module in workload.mutate(mutation, index) {
                     workload.write_module(&project, module)?;
                 }
-                let sample = measure(&cli, &runtime, &project, mutation, daemon)?;
+                let sample = measure(
+                    &cli,
+                    &runtime,
+                    &project,
+                    mutation,
+                    daemon,
+                    options.count_work,
+                )?;
                 if index >= warmup {
                     samples.push(sample);
                 }
@@ -424,7 +590,7 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
     fs::create_dir_all(&report_dir)
         .map_err(|error| format!("cannot create report directory: {error}"))?;
     let report = json!({
-        "schema": 3,
+        "schema": 4,
         "workload": "rfc-0011-generated-corpus",
         "configuration": {
             "compiler_profile": profile,
@@ -433,6 +599,7 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
             "clean_samples": clean_samples,
             "time_passes": !options.daemon,
             "daemon": options.daemon,
+            "count_work": options.daemon && options.count_work,
             "edited_module": "middle of the import chain",
         },
         "host": host(root, &work),
@@ -469,6 +636,7 @@ struct Sample {
     queries: u64,
     cgu_cached: u64,
     cgu_recompiled: u64,
+    work: Work,
     artifact_bytes: u64,
     phase_ms: BTreeMap<String, f64>,
     sha256: String,
@@ -501,6 +669,9 @@ impl Sample {
             "queries_reexecuted": self.queries,
             "cgu_cached": self.cgu_cached,
             "cgu_recompiled": self.cgu_recompiled,
+            "units_reexecuted": self.work.units,
+            "memos_verified": self.work.memos_verified,
+            "files_recomposed": self.work.files_recomposed,
             "artifact_bytes": self.artifact_bytes,
             "phase_ms": self.phase_ms,
             "sha256": self.sha256,
@@ -515,12 +686,17 @@ fn measure(
     project: &Path,
     mutation: Mutation,
     daemon: Option<&Path>,
+    count_work: bool,
 ) -> Result<Sample, String> {
     // `-Z` switches are process-wide and `-v` records every query event, so
-    // a daemon build is timed as a user runs it; `require` fails rather than
-    // timing a batch build.
+    // a daemon build is timed as a user runs it unless the work counters are
+    // asked for; `require` fails rather than timing a batch build.
     let args: &[&str] = if daemon.is_some() {
-        &["build"]
+        if count_work {
+            &["build", "-v"]
+        } else {
+            &["build"]
+        }
     } else {
         &["build", "-v", "-Ztime-passes"]
     };
@@ -557,6 +733,7 @@ fn measure(
         queries: parse_queries(&stderr).unwrap_or(0),
         cgu_cached,
         cgu_recompiled,
+        work: parse_work(&stderr),
         artifact_bytes,
         phase_ms,
         sha256: sha256_file(&artifact)?,
@@ -684,6 +861,9 @@ fn summarize(samples: &[Sample]) -> Value {
         "patch_rate": patch_rate,
         "patch_fallbacks": samples.iter().filter(|sample| sample.patch_fallback).count(),
         "cgu_recompiled_max": samples.iter().map(|sample| sample.cgu_recompiled).max(),
+        "units_reexecuted_max": samples.iter().map(|sample| sample.work.units).max(),
+        "memos_verified_max": samples.iter().map(|sample| sample.work.memos_verified).max(),
+        "files_recomposed_max": samples.iter().map(|sample| sample.work.files_recomposed).max(),
         "artifact_bytes_max": samples.iter().map(|sample| sample.artifact_bytes).max(),
         "resized_functions": resized_summary(samples),
         "phase_ms_p50": phase_p50,
@@ -1079,6 +1259,41 @@ fn parse_queries(stderr: &str) -> Option<u64> {
         .ok()
 }
 
+/// Deterministic work of one build, read from `build -v`: query units
+/// (`instance_hir`) executed, memos Salsa verified without executing, and
+/// files whose functions the program composition rebuilt. Without `--daemon`
+/// every build opens a new database, so these count a cold analysis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Work {
+    units: u64,
+    memos_verified: u64,
+    files_recomposed: u64,
+}
+
+fn parse_work(stderr: &str) -> Work {
+    let mut work = Work::default();
+    for line in stderr.lines() {
+        if let Some(rest) = line.strip_prefix("[work] ") {
+            let mut numbers = rest
+                .split(|c: char| !c.is_ascii_digit())
+                .filter_map(|part| part.parse().ok());
+            work.units = numbers.next().unwrap_or_default();
+            work.files_recomposed = numbers.next().unwrap_or_default();
+        } else if let Some(rest) = line
+            .strip_prefix("[rebuilt: ")
+            .and_then(|rest| rest.split_once(", ").map(|(_, verified)| verified))
+            .or_else(|| line.strip_prefix("[cached] ("))
+        {
+            work.memos_verified = rest
+                .split_whitespace()
+                .next()
+                .and_then(|count| count.parse().ok())
+                .unwrap_or_default();
+        }
+    }
+    work
+}
+
 fn parse_cgu(stderr: &str) -> Option<(u64, u64)> {
     let line = stderr.lines().find(|line| line.starts_with("[cgu] "))?;
     let (_, stats) = line.split_once("units: ")?;
@@ -1139,7 +1354,7 @@ fn markdown_report(report: &Value) -> String {
         text(&host["rust_toolchain"]),
         text(&host["commit"]),
     );
-    output.push_str("| Corpus | Mutation | n | p50 ms | p95 ms | max ms | CPU p50 ms | RSS max MiB | CGU rebuilt max | Paths | Patch fallbacks |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |\n");
+    output.push_str("| Corpus | Mutation | n | p50 ms | p95 ms | max ms | CPU p50 ms | RSS max MiB | CGU rebuilt max | Units max | Memos verified max | Files recomposed max | Paths | Patch fallbacks |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |\n");
     let results = report["results"].as_array().map_or(&[][..], Vec::as_slice);
     for result in results {
         let summary = &result["summary"];
@@ -1160,7 +1375,7 @@ fn markdown_report(report: &Value) -> String {
             |kib| format!("{:.1}", kib as f64 / 1024.0),
         );
         output.push_str(&format!(
-            "| {} | {} | {} | {:.1} | {:.1} | {:.1} | {cpu} | {rss} | {} | {paths} | {} |\n",
+            "| {} | {} | {} | {:.1} | {:.1} | {:.1} | {cpu} | {rss} | {} | {} | {} | {} | {paths} | {} |\n",
             text(&result["corpus"]),
             text(&result["mutation"]),
             summary["samples"],
@@ -1168,6 +1383,9 @@ fn markdown_report(report: &Value) -> String {
             summary["wall_ms"]["p95"].as_f64().unwrap_or_default(),
             summary["wall_ms"]["max"].as_f64().unwrap_or_default(),
             summary["cgu_recompiled_max"],
+            summary["units_reexecuted_max"],
+            summary["memos_verified_max"],
+            summary["files_recomposed_max"],
             summary["patch_fallbacks"],
         ));
     }
@@ -1263,7 +1481,7 @@ unrelated output\n\
             "--release",
         ]))
         .unwrap();
-        assert_eq!(options.corpora.len(), 3);
+        assert_eq!(options.corpora.len(), 4);
         assert_eq!((options.samples, options.warmup), (50, 0));
         assert!(options.release);
 
@@ -1274,23 +1492,85 @@ unrelated output\n\
 
     #[test]
     fn every_mutation_sample_produces_unseen_source() {
-        for mutation in Mutation::ALL {
-            if matches!(mutation, Mutation::NoopTouch | Mutation::Clean) {
-                continue;
-            }
-            let mut workload = Workload::new(CORPORA[0]);
-            let mut seen = std::collections::BTreeSet::new();
-            seen.insert(workload.module_source(workload.target));
-            for index in 0..8 {
-                let changed = workload.mutate(mutation, index);
-                assert!(changed.contains(&workload.target));
-                assert!(
-                    seen.insert(workload.module_source(workload.target)),
-                    "{} sample {index} revisits an earlier source",
-                    mutation.name()
-                );
+        for corpus in CORPORA {
+            for mutation in Mutation::ALL {
+                if matches!(mutation, Mutation::NoopTouch | Mutation::Clean)
+                    || !mutation.applies_to(corpus)
+                {
+                    continue;
+                }
+                let mut workload = Workload::new(corpus);
+                let mut seen = std::collections::BTreeSet::new();
+                let all = |workload: &Workload| {
+                    (0..corpus.modules)
+                        .map(|module| workload.module_source(module))
+                        .collect::<Vec<_>>()
+                };
+                seen.insert(all(&workload));
+                for index in 0..8 {
+                    let before = all(&workload);
+                    let changed = workload.mutate(mutation, index);
+                    let after = all(&workload);
+                    for module in 0..corpus.modules {
+                        assert_eq!(
+                            before[module] != after[module],
+                            changed.contains(&module),
+                            "{}/{} sample {index}: module {module} rewrite set",
+                            corpus.name,
+                            mutation.name()
+                        );
+                    }
+                    assert!(
+                        seen.insert(after),
+                        "{}/{} sample {index} revisits an earlier source",
+                        corpus.name,
+                        mutation.name()
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn representative_corpus_links_every_module_through_a_diamond() {
+        let workload = Workload::new(CORPORA[3]);
+        assert_eq!(
+            (1..8)
+                .map(|module| workload.parent(module))
+                .collect::<Vec<_>>(),
+            [0, 0, 1, 3, 4, 5, 6].map(Some)
+        );
+        assert!(workload.module_source(3).contains("left.api(value)"));
+        assert!(workload.module_source(1).contains("instantiate(value)"));
+        // `direct` has one caller, in the module above `target`.
+        let callers = (0..8)
+            .filter(|&module| workload.module_source(module).contains("prev.direct("))
+            .collect::<Vec<_>>();
+        assert_eq!(callers, [workload.target + 1]);
+        let chain = Workload::new(CORPORA[1]);
+        assert!(!chain.module_source(chain.target).contains("direct"));
+    }
+
+    #[test]
+    fn parses_deterministic_work_counters() {
+        let stderr =
+            "[rebuilt: 36 queries, 325 verified]\n[work] 2 units reexecuted, 1 files recomposed\n";
+        assert_eq!(
+            parse_work(stderr),
+            Work {
+                units: 2,
+                memos_verified: 325,
+                files_recomposed: 1
+            }
+        );
+        assert_eq!(
+            parse_work("[cached] (7 verified)\n[work] 0 units reexecuted, 0 files recomposed\n"),
+            Work {
+                units: 0,
+                memos_verified: 7,
+                files_recomposed: 0
+            }
+        );
     }
 
     #[test]

@@ -390,3 +390,79 @@ fn doctests_do_not_replace_source_tests_or_collide_with_ordinary_functions() {
     );
     fs::remove_dir_all(temporary).unwrap();
 }
+
+#[test]
+fn human_reporter_streams_progress_shows_failure_output_and_prints_summary_footer() {
+    let temporary = temporary_directory();
+    let project = temporary.join("human_stream");
+    let created = common::cli_command()
+        .args(["new", "human_stream", "--vcs=none"])
+        .current_dir(&temporary)
+        .output()
+        .expect("create project");
+    assert!(created.status.success());
+    fs::write(
+        project.join("tests/smoke.aru"),
+        concat!(
+            "module human_stream_tests\n\n",
+            "import std.io as io\n",
+            "import std.testing as testing\n\n",
+            "@Test\n",
+            "func ok_case(): void {\n",
+            "    io.println(\"hidden-pass-stdout\")\n",
+            "    testing.expectEqualInt(2, 1 + 1, \"math works\")\n",
+            "}\n\n",
+            "@Test\n",
+            "func fail_case(): void {\n",
+            "    io.println(\"visible-fail-stdout\")\n",
+            "    testing.expectEqualInt(10, 99, \"wrong total\")\n",
+            "}\n\n",
+            "@Test\n",
+            "func crash_case(): void {\n",
+            "    let none: Option<int> = Option.None\n",
+            "    let _ = none.expectOrAbort(\"visible-crash-stderr\")\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+
+    let executed = common::cli_command()
+        .args(["test", project.to_str().unwrap(), "--jobs", "1"])
+        .output()
+        .expect("run human tests");
+    assert_eq!(executed.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&executed.stderr);
+    assert!(
+        stderr.contains("running 3 tests"),
+        "expected run header in stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[1/3] ") && stderr.contains("[2/3] ") && stderr.contains("[3/3] "),
+        "expected [done/total] streaming progress in stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("hidden-pass-stdout"),
+        "passing test stdout should stay hidden in human output:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--- stdout ---") && stderr.contains("visible-fail-stdout"),
+        "failing test stdout should be shown in human output:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--- stderr ---") && stderr.contains("visible-crash-stderr"),
+        "crashing test stderr should be shown in human output:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("failures:\n")
+            && stderr.contains("failed human_stream::test::smoke::fail_case")
+            && stderr.contains("crashed human_stream::test::smoke::crash_case"),
+        "expected consolidated failures footer in stderr:\n{stderr}"
+    );
+    assert!(
+        stderr
+            .contains("test result: FAILED. 1 passed; 1 failed; 0 skipped; 0 timed out; 1 crashed"),
+        "expected final test result summary in stderr:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(temporary);
+}

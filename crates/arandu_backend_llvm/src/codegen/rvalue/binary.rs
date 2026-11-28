@@ -118,7 +118,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let zero = self.new_value();
                 self.writer
                     .line(format!("{zero} = icmp eq {ty} {}, 0", right.value));
-                self.trap_if(&zero);
+                self.trap_if(&zero, arandu_middle::amir::TrapKind::DivisionByZero);
                 let mut divisor = right.value.clone();
                 if signed {
                     let Some(width) = self.module.integer_width(&operand_ty) else {
@@ -137,7 +137,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         let overflow = self.new_value();
                         self.writer
                             .line(format!("{overflow} = and i1 {is_min}, {minus_one}"));
-                        self.trap_if(&overflow);
+                        self.trap_if(&overflow, arandu_middle::amir::TrapKind::DivisionOverflow);
                     } else {
                         let safe = self.new_value();
                         self.writer.line(format!(
@@ -282,10 +282,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let operand_ty = self.module.operand_type(operand, self.func);
                 let pointer = self.operand(operand, &operand_ty)?;
                 let pointee = match &operand_ty {
-                    ArType::Ptr(inner)
-                    | ArType::Ref(inner)
-                    | ArType::RefMut(inner)
-                    | ArType::Nullable(inner) => self.module.interner.resolve(*inner),
+                    ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                        self.module.interner.resolve(*inner)
+                    }
                     other => {
                         return Err(ice(format!("LLVM deref requires a pointer, got {other:?}")));
                     }

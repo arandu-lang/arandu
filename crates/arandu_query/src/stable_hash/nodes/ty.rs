@@ -51,10 +51,6 @@ pub(in crate::stable_hash) fn hash_ar_type(hasher: &mut Hasher, ty: &arandu_midd
             hash_index_range(hasher, *params);
             hash_id(hasher, result.as_usize());
         }
-        ArType::Nullable(inner) => {
-            hasher.update(&[3]);
-            hash_id(hasher, inner.as_usize());
-        }
         ArType::Slice(inner) => {
             hasher.update(&[4]);
             hash_id(hasher, inner.as_usize());
@@ -131,13 +127,16 @@ pub(in crate::stable_hash) fn hash_ar_type(hasher: &mut Hasher, ty: &arandu_midd
         ArType::Void => {
             hasher.update(&[20]);
         }
+        ArType::Never => {
+            hasher.update(&[24]);
+        }
         ArType::IntLiteral => {
             hasher.update(&[21]);
         }
         ArType::FloatLiteral => {
             hasher.update(&[22]);
         }
-        ArType::Error => {
+        ArType::Error | ArType::Infer(_) => {
             hasher.update(&[23]);
         }
     }

@@ -60,7 +60,6 @@ impl TypeInfo {
                 | ArType::RefMut(inner)
                 | ArType::Ptr(inner)
                 | ArType::Option(inner)
-                | ArType::Nullable(inner)
                 | ArType::Poll(inner)
                 | ArType::Coroutine(inner)
                 | ArType::Range(inner) => pending.push(inner),
@@ -76,7 +75,9 @@ impl TypeInfo {
                 | ArType::GenRef
                 | ArType::Err
                 | ArType::Void
+                | ArType::Never
                 | ArType::Error
+                | ArType::Infer(_)
                 | ArType::IntLiteral
                 | ArType::FloatLiteral => {}
             }
@@ -217,9 +218,28 @@ impl TypeInfo {
     ) -> Result<Vec<(BorrowPath, BorrowKind)>, BorrowShapeError> {
         let mut output = Vec::new();
         let mut visiting = Vec::new();
-        self.collect_borrow_paths(id, &mut SmallVec::new(), &mut visiting, &mut output)?;
-        output.sort();
-        output.dedup();
+        self.collect_borrow_paths(id, &mut SmallVec::new(), &mut visiting, false, &mut output)?;
+        let mut stripped = output
+            .into_iter()
+            .map(|(path, kind, _)| (path, kind))
+            .collect::<Vec<_>>();
+        stripped.sort();
+        stripped.dedup();
+        Ok(stripped)
+    }
+
+    /// Enumerate every path in `id` that may carry a borrow along with whether
+    /// an origin proof is required (`false` for `str`, which may be static or borrowed).
+    pub fn may_borrow_paths(
+        &self,
+        id: TypeId,
+    ) -> Result<Vec<(BorrowPath, BorrowKind, bool)>, BorrowShapeError> {
+        let mut output = Vec::new();
+        let mut visiting = Vec::new();
+        self.collect_borrow_paths(id, &mut SmallVec::new(), &mut visiting, true, &mut output)?;
+        output
+            .sort_by(|left, right| (&left.0, left.1, !left.2).cmp(&(&right.0, right.1, !right.2)));
+        output.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
         Ok(output)
     }
 
@@ -228,80 +248,110 @@ impl TypeInfo {
     /// about their owner lifetime use the borrow-path contract instead.
     #[must_use]
     pub fn contains_explicit_reference(&self, id: TypeId) -> bool {
-        fn visit(info: &TypeInfo, id: TypeId, visiting: &mut Vec<TypeId>) -> bool {
+        self.contains_leaf(id, |ty| matches!(ty, ArType::Ref(_) | ArType::RefMut(_)))
+    }
+
+    /// Whether a type structurally contains anything borrowed: a reference or
+    /// a view (`[]T`, `mut []T`, `str`). Owning closures must not hold one,
+    /// since nothing ties their lifetime to the owner (RFC 0032, L3).
+    #[must_use]
+    pub fn contains_borrow(&self, id: TypeId) -> bool {
+        self.contains_leaf(id, |ty| {
+            matches!(
+                ty,
+                ArType::Ref(_)
+                    | ArType::RefMut(_)
+                    | ArType::Slice(_)
+                    | ArType::MutSlice(_)
+                    | ArType::Primitive(arandu_middle::types::Primitive::Str)
+            )
+        })
+    }
+
+    fn contains_leaf(&self, id: TypeId, leaf: impl Fn(&ArType) -> bool + Copy) -> bool {
+        fn visit(
+            info: &TypeInfo,
+            id: TypeId,
+            visiting: &mut Vec<TypeId>,
+            leaf: impl Fn(&ArType) -> bool + Copy,
+        ) -> bool {
             if visiting.contains(&id) {
                 return false;
             }
             visiting.push(id);
-            let found = match info.type_interner.resolve(id) {
-                ArType::Ref(_) | ArType::RefMut(_) => true,
-                ArType::Tuple(items) => info
-                    .type_interner
-                    .type_args(items)
-                    .into_iter()
-                    .any(|item| visit(info, item, visiting)),
-                ArType::Option(inner)
-                | ArType::Nullable(inner)
-                | ArType::Array(_, inner)
-                | ArType::ConstArray(_, inner)
-                | ArType::Poll(inner)
-                | ArType::Coroutine(inner)
-                | ArType::Range(inner) => visit(info, inner, visiting),
-                ArType::Result(ok, err) => visit(info, ok, visiting) || visit(info, err, visiting),
-                ArType::Named(symbol, arguments) => {
-                    let args = info.type_interner.type_args(arguments);
-                    let substitution = info.generic_params.get(&symbol).and_then(|parameters| {
-                        (parameters.len() == args.len() && !parameters.is_empty())
-                            .then(|| build_subst_ids(parameters, &args, &info.type_interner))
-                    });
-                    let fields_contain_ref = info.fields_for(symbol, &args).is_some_and(|fields| {
-                        fields.fields.iter().any(|field| {
-                            let field_ty = substitution.as_ref().map_or(field.ty, |substitution| {
-                                let field = info.type_interner.resolve(field.ty);
-                                info.type_interner.intern(substitute_type(
-                                    &field,
-                                    substitution,
-                                    &info.type_interner,
-                                ))
+            let ty = info.type_interner.resolve(id);
+            let found = leaf(&ty)
+                || match ty {
+                    ArType::Tuple(items) => info
+                        .type_interner
+                        .type_args(items)
+                        .into_iter()
+                        .any(|item| visit(info, item, visiting, leaf)),
+                    ArType::Option(inner)
+                    | ArType::Array(_, inner)
+                    | ArType::ConstArray(_, inner)
+                    | ArType::Poll(inner)
+                    | ArType::Coroutine(inner)
+                    | ArType::Range(inner) => visit(info, inner, visiting, leaf),
+                    ArType::Result(ok, err) => {
+                        visit(info, ok, visiting, leaf) || visit(info, err, visiting, leaf)
+                    }
+                    ArType::Named(symbol, arguments) => {
+                        let args = info.type_interner.type_args(arguments);
+                        let substitution =
+                            info.generic_params.get(&symbol).and_then(|parameters| {
+                                (parameters.len() == args.len() && !parameters.is_empty()).then(
+                                    || build_subst_ids(parameters, &args, &info.type_interner),
+                                )
                             });
-                            visit(info, field_ty, visiting)
-                        })
-                    });
-                    fields_contain_ref
-                        || info.enum_variants.iter().any(|(variant, (owner, _))| {
-                            if *owner != symbol {
-                                return false;
-                            }
-                            let Some(payload) = info.variant_payload_for(*variant, &args) else {
-                                return false;
-                            };
-                            let substitution = substitution.as_ref();
-                            match payload {
-                                EnumPayloadShape::Tuple(items) => items.iter().any(|item| {
-                                    let item_ty = substitution.map_or(*item, |substitution| {
-                                        let item = info.type_interner.resolve(*item);
-                                        info.type_interner.intern(substitute_type(
-                                            &item,
-                                            substitution,
-                                            &info.type_interner,
-                                        ))
-                                    });
-                                    visit(info, item_ty, visiting)
-                                }),
-                                EnumPayloadShape::Unit => false,
-                            }
-                        })
-                }
-                // `[]T` and `mut []T` are views with a separate owner-lifetime contract,
-                // not an embedded explicit reference for this diagnostic.
-                ArType::Slice(_) | ArType::MutSlice(_) => false,
-                _ => false,
-            };
+                        let fields_contain_ref =
+                            info.fields_for(symbol, &args).is_some_and(|fields| {
+                                fields.fields.iter().any(|field| {
+                                    let field_ty =
+                                        substitution.as_ref().map_or(field.ty, |substitution| {
+                                            let field = info.type_interner.resolve(field.ty);
+                                            info.type_interner.intern(substitute_type(
+                                                &field,
+                                                substitution,
+                                                &info.type_interner,
+                                            ))
+                                        });
+                                    visit(info, field_ty, visiting, leaf)
+                                })
+                            });
+                        fields_contain_ref
+                            || info.enum_variants.iter().any(|(variant, (owner, _))| {
+                                if *owner != symbol {
+                                    return false;
+                                }
+                                let Some(payload) = info.variant_payload_for(*variant, &args)
+                                else {
+                                    return false;
+                                };
+                                let substitution = substitution.as_ref();
+                                match payload {
+                                    EnumPayloadShape::Tuple(items) => items.iter().any(|item| {
+                                        let item_ty = substitution.map_or(*item, |substitution| {
+                                            let item = info.type_interner.resolve(*item);
+                                            info.type_interner.intern(substitute_type(
+                                                &item,
+                                                substitution,
+                                                &info.type_interner,
+                                            ))
+                                        });
+                                        visit(info, item_ty, visiting, leaf)
+                                    }),
+                                    EnumPayloadShape::Unit => false,
+                                }
+                            })
+                    }
+                    _ => false,
+                };
             visiting.pop();
             found
         }
 
-        visit(self, id, &mut Vec::new())
+        visit(self, id, &mut Vec::new(), leaf)
     }
 
     fn collect_borrow_paths(
@@ -309,7 +359,8 @@ impl TypeInfo {
         id: TypeId,
         prefix: &mut SmallVec<[BorrowPathSegment; 4]>,
         visiting: &mut Vec<TypeId>,
-        output: &mut Vec<(BorrowPath, BorrowKind)>,
+        include_optional_str: bool,
+        output: &mut Vec<(BorrowPath, BorrowKind, bool)>,
     ) -> Result<(), BorrowShapeError> {
         if prefix.len() > Self::MAX_BORROW_PATH_DEPTH {
             return Err(BorrowShapeError::DepthExceeded);
@@ -323,9 +374,9 @@ impl TypeInfo {
         visiting.push(id);
         let ty = self.type_interner.resolve(id);
         match ty {
-            ArType::Ref(_) => output.push((BorrowPath(prefix.clone()), BorrowKind::Shared)),
+            ArType::Ref(_) => output.push((BorrowPath(prefix.clone()), BorrowKind::Shared, true)),
             ArType::RefMut(_) => {
-                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive));
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive, true));
             }
             ArType::Tuple(items) => {
                 let items = self.type_interner.type_args(items);
@@ -334,21 +385,27 @@ impl TypeInfo {
                         return Err(BorrowShapeError::PathCountExceeded);
                     };
                     prefix.push(BorrowPathSegment::Tuple(index));
-                    self.collect_borrow_paths(item, prefix, visiting, output)?;
+                    self.collect_borrow_paths(
+                        item,
+                        prefix,
+                        visiting,
+                        include_optional_str,
+                        output,
+                    )?;
                     prefix.pop();
                 }
             }
             ArType::Option(inner) => {
                 prefix.push(BorrowPathSegment::OptionSome);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Result(ok, err) => {
                 prefix.push(BorrowPathSegment::ResultOk);
-                self.collect_borrow_paths(ok, prefix, visiting, output)?;
+                self.collect_borrow_paths(ok, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
                 prefix.push(BorrowPathSegment::ResultErr);
-                self.collect_borrow_paths(err, prefix, visiting, output)?;
+                self.collect_borrow_paths(err, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Named(symbol, arguments) => {
@@ -374,7 +431,13 @@ impl TypeInfo {
                             f.ty
                         };
                         prefix.push(BorrowPathSegment::Field(f.name.as_str().into()));
-                        self.collect_borrow_paths(field_id, prefix, visiting, output)?;
+                        self.collect_borrow_paths(
+                            field_id,
+                            prefix,
+                            visiting,
+                            include_optional_str,
+                            output,
+                        )?;
                         prefix.pop();
                     }
                 }
@@ -405,7 +468,13 @@ impl TypeInfo {
                             };
                             prefix.push(BorrowPathSegment::Variant(tag));
                             prefix.push(BorrowPathSegment::Payload(index));
-                            self.collect_borrow_paths(item, prefix, visiting, output)?;
+                            self.collect_borrow_paths(
+                                item,
+                                prefix,
+                                visiting,
+                                include_optional_str,
+                                output,
+                            )?;
                             prefix.pop();
                             prefix.pop();
                         }
@@ -414,27 +483,22 @@ impl TypeInfo {
             }
             ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
                 prefix.push(BorrowPathSegment::ArrayElement);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
-                prefix.pop();
-            }
-            ArType::Nullable(inner) => {
-                prefix.push(BorrowPathSegment::NullableValue);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Coroutine(inner) => {
                 prefix.push(BorrowPathSegment::CoroutinePayload);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Poll(inner) => {
                 prefix.push(BorrowPathSegment::PollReady);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Range(inner) => {
                 prefix.push(BorrowPathSegment::RangeElement);
-                self.collect_borrow_paths(inner, prefix, visiting, output)?;
+                self.collect_borrow_paths(inner, prefix, visiting, include_optional_str, output)?;
                 prefix.pop();
             }
             ArType::Slice(_) => {
@@ -442,12 +506,18 @@ impl TypeInfo {
                 // storage. Its ptr+len runtime representation carries no
                 // provenance, so the root dependency must survive in the
                 // compile-time structural contract.
-                output.push((BorrowPath(prefix.clone()), BorrowKind::Shared));
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Shared, true));
+            }
+            ArType::Primitive(Primitive::Str) if include_optional_str => {
+                // `str` may be static or borrowed from an owner (`String.asStr`),
+                // so interprocedural return contracts track its origin without
+                // requiring an unconditional borrow proof for string literals.
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Shared, false));
             }
             ArType::MutSlice(_) => {
                 // An exclusive mutable slice view of its backing storage.
                 // Carries exclusive borrow semantics across dataflow.
-                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive));
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive, true));
             }
             ArType::Primitive(_)
             | ArType::Vector(_)
@@ -459,9 +529,11 @@ impl TypeInfo {
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
+            | ArType::Never
             | ArType::IntLiteral
             | ArType::FloatLiteral
-            | ArType::Error => {}
+            | ArType::Error
+            | ArType::Infer(_) => {}
         }
         visiting.pop();
         Ok(())
@@ -538,19 +610,33 @@ impl TypeInfo {
             // exclusive borrow is move-only, and raw pointers nested in an
             // owner aggregate remain non-POD to avoid accidental double free.
             ArType::Ref(_) | ArType::Slice(_) => true,
+            // A function value is a code pointer without an environment
+            // (RFC 0032, L2): copying it duplicates nothing, as Rust's `fn`.
+            ArType::Func(_, _) => true,
             ArType::Ptr(_)
             | ArType::ConstParam(_)
             | ArType::RefMut(_)
             | ArType::MutSlice(_)
-            | ArType::Nullable(_)
-            | ArType::Func(_, _)
             | ArType::Coroutine(_)
             | ArType::Poll(_)
             | ArType::Range(_)
             | ArType::Err
             | ArType::Void
-            | ArType::Error => false,
+            | ArType::Never
+            | ArType::Error
+            | ArType::Infer(_) => false,
         }
+    }
+
+    /// Whether a nominal type is blocked from structural `Copy` by its own
+    /// declaration-level ownership obligations (destructor, interior
+    /// mutability, or explicit `@NoCopy`). Shared between local `is_copy` and
+    /// transfer `Copy` proofs so both agree on nominal eligibility.
+    #[must_use]
+    pub fn is_nominal_copy_blocked(&self, sym: SymbolId) -> bool {
+        self.destructors.contains_key(&sym)
+            || self.interior_mutable_types.contains(&sym)
+            || self.non_copy_types.contains(&sym)
     }
 
     fn is_named_struct_pod_copy(
@@ -559,9 +645,9 @@ impl TypeInfo {
         args: &[TypeId],
         visiting: &mut FxHashMap<TypeId, bool>,
     ) -> bool {
-        // A destructor is an ownership obligation even for empty/scalar storage.
-        // Copying such a value would duplicate that obligation.
-        if self.destructors.contains_key(&sym) || self.interior_mutable_types.contains(&sym) {
+        // A destructor or interior mutability is an ownership obligation even
+        // for empty/scalar storage. Copying such a value would duplicate it.
+        if self.is_nominal_copy_blocked(sym) {
             return false;
         }
         let mut variants: Vec<_> = self

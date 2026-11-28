@@ -24,6 +24,61 @@ pub fn signature_context(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<T
     ))
 }
 
+/// The symbols the typing of `item_sym` reaches in its file's signature
+/// context: what it names, closed over what their entries name, plus the
+/// lang items. `None` when a type cannot be walked or the item does not type
+/// locally; consumers then read the whole file.
+#[salsa::tracked(returns(ref))]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_reach", file = ?file.file_id(db), item = ?item_sym,
+))]
+pub fn item_reach(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+) -> Option<std::collections::BTreeSet<SymbolId>> {
+    let (local, _) = super::local_typing::item_local_typing(db, file, item_sym).as_ref()?;
+    let context = signature_context(db, file);
+    let roots = item_roots(item_sym, local)?;
+    Some(
+        context
+            .type_info
+            .reachable_from(&context.symbols, roots)?
+            .into_iter()
+            .collect(),
+    )
+}
+
+/// The symbols an item's local typing names: its definitions and references,
+/// the symbols of its expression types, and its own declaration. `None` when
+/// a type cannot be walked.
+fn item_roots(
+    item_sym: SymbolId,
+    local: &super::local_typing::LocalTyping,
+) -> Option<Vec<SymbolId>> {
+    let resolved = &local.resolved;
+    let mut roots = vec![item_sym];
+    roots.extend(resolved.definitions.values().copied());
+    roots.extend(resolved.value_refs.values().copied());
+    roots.extend(resolved.type_refs.values().copied());
+    roots.extend(resolved.expr_symbols.iter().flatten().copied());
+    let interner = &local.type_info.type_interner;
+    let types = local
+        .type_info
+        .expr_types
+        .iter()
+        .flatten()
+        .chain(local.type_info.decl_types.values());
+    for &ty in types {
+        arandu_middle::types::TypeShape::from_id(ty, interner)
+            .ok()?
+            .for_each_symbol(|symbol| roots.push(symbol))
+            .ok()?;
+    }
+    roots.extend(local.type_info.decl_types.keys().copied());
+    Some(roots)
+}
+
 /// `result` without the positions of its file: the tables keyed by source
 /// position are empty, the file's symbols carry the `Span::new(0, 0, 0)`
 /// placeholder and there are no diagnostics.
@@ -40,6 +95,7 @@ pub(crate) fn without_positions(result: &TypeCheckResult) -> TypeCheckResult {
         value_refs: _,
         type_refs: _,
         mutable_symbols,
+        hole_scopes: _,
     } = result.resolved.as_ref();
     let resolved = ResolvedNames {
         deferred_comptime_functions: deferred_comptime_functions.clone(),
@@ -52,7 +108,10 @@ pub(crate) fn without_positions(result: &TypeCheckResult) -> TypeCheckResult {
     type_info.ctfe_values = Default::default();
     type_info.header_requests = Default::default();
     type_info.struct_field_defaults = Default::default();
-    type_info.thread_captures = Default::default();
+    type_info
+        .func_param_defaults
+        .retain(|_, default| !matches!(default, arandu_typeck::ParamDefault::LocalExpr { .. }));
+    type_info.closures = Default::default();
     TypeCheckResult {
         symbols: Arc::new(result.symbols.map_spans(|_| Span::new(0, 0, 0))),
         resolved: Arc::new(resolved),
@@ -146,6 +205,10 @@ pub fn item_context(
     let context = signature_context(db, file);
     let mut checked = (**context).clone();
     let input = super::local_typing::item_typing_input(db, file, item_sym);
+    // The item reads only what its own typing names and what that reaches
+    // (INC.3a): a signature of the file or its imports that the item never
+    // reaches leaves its context equal.
+    let reached = item_reach(db, file, item_sym);
     // The typing input already holds the same symbol view.
     checked.symbols = match input {
         Some(input) => Arc::clone(&input.symbols),
@@ -155,6 +218,11 @@ pub fn item_context(
                 .map_spans(|symbol| relative(symbol.span).unwrap_or(Span::new(0, 0, 0))),
         ),
     };
+    if let Some(reached) = &reached {
+        checked.type_info = Arc::new(context.type_info.view_of(|symbol| reached.contains(symbol)));
+        let symbols = Arc::make_mut(&mut checked.symbols);
+        Arc::make_mut(&mut symbols.imported_symbols).retain(|symbol, _| reached.contains(symbol));
+    }
     // The local names are the item's whole resolution: the symbol sets plus
     // every position inside its declaration.
     Arc::make_mut(&mut checked.type_info).merge_item_from(
@@ -181,7 +249,7 @@ pub fn item_context(
     // and the local typing: their digests identify it without hashing the
     // whole result for every item a body edit moves.
     let identity = match input {
-        Some(input) if !defaults && diagnostics.is_empty() => {
+        Some(input) if reached.is_none() && !defaults && diagnostics.is_empty() => {
             let mut h = blake3::Hasher::new();
             h.update(b"ItemContext/v1");
             h.update(crate::StableHash::stable_hash(context).as_bytes());

@@ -4,13 +4,17 @@ Func testStructPattern(user: User) -> int
     _1: User
     _2: User
     _3: str
-    _4: bool
-    _5: int
+    _4: int
+    _5: bool
     _6: bool
-    _7: bool
-    _8: int
+    _7: str
+    _8: bool
     _9: int
-    _10: int
+    _10: bool
+    _11: bool
+    _12: int
+    _13: int
+    _14: int
     s0: User // user
     s1: int // val
     s2: str // name
@@ -19,17 +23,23 @@ Func testStructPattern(user: User) -> int
     s0 = _1
     _2 = s0
     _3 = _2.0
-    s2 = _3
-    _4 = and true, true
-    _5 = _2.1
-    _6 = eq _5, 25
-    _7 = and _4, _6
-    branch _7 => bb1, else bb2
+    _4 = _2.1
+    _5 = eq _4, 25
+    _6 = and true, _5
+    branch _6 => bb4, else bb2
   bb1:
     goto bb3(1)
   bb2:
-    _8 = neg 1
-    goto bb3(_8)
-  bb3(_9: int /* from: "val" */):
-    _0 = _9
+    _12 = neg 1
+    goto bb3(_12)
+  bb3(_13: int /* from: "val" */):
+    _0 = _13
     return
+  bb4:
+    _7 = _2.0
+    s2 = _7
+    _8 = and true, true
+    _9 = _2.1
+    _10 = eq _9, 25
+    _11 = and _8, _10
+    goto bb1

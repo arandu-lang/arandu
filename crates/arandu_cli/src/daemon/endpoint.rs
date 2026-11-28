@@ -1,4 +1,5 @@
-//! Where a project's daemon listens and who may talk to it (HOT.3).
+//! Where a project's daemon listens and who may talk to it (HOT.3), on Unix.
+//! `endpoint_windows.rs` gives the same interface over named pipes.
 //!
 //! The socket lives in a directory only the current user can enter:
 //! `$XDG_RUNTIME_DIR/arandu`, or `/tmp/arandu-$UID` when there is no runtime
@@ -7,10 +8,14 @@
 //! checked against the peer's credentials.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// A connection between a client and its daemon.
+pub type Connection = UnixStream;
 
 /// `sun_path` holds 108 bytes on Linux and 104 on macOS, the terminator
 /// included.
@@ -96,9 +101,88 @@ pub fn socket_path(root: &Path) -> io::Result<PathBuf> {
     ))
 }
 
-/// The lock a live daemon of `root` holds for as long as it serves.
-pub fn lock_path(root: &Path) -> PathBuf {
-    root.join(".arandu").join("daemon.lock")
+/// Whether a daemon still listens at `socket`: a stopping daemon removes it
+/// once it stops accepting.
+pub fn listening(socket: &Path) -> bool {
+    socket.exists()
+}
+
+pub fn connect(socket: &Path) -> io::Result<Connection> {
+    UnixStream::connect(socket)
+}
+
+/// The daemon's socket, bound only by the holder of the project's daemon
+/// lock. Dropping it removes the socket unless another daemon replaced it.
+pub struct Listener {
+    listener: UnixListener,
+    socket: PathBuf,
+    bound: Option<u64>,
+}
+
+impl Listener {
+    pub fn bind(socket: &Path) -> io::Result<Self> {
+        // The lock proves no daemon listens on a leftover socket.
+        let _ = fs::remove_file(socket);
+        let listener = UnixListener::bind(socket)?;
+        fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            listener,
+            socket: socket.to_path_buf(),
+            bound: socket_inode(socket),
+        })
+    }
+
+    /// A waiting client, or `WouldBlock` when none is.
+    pub fn accept(&mut self) -> io::Result<Connection> {
+        let (stream, _) = self.listener.accept()?;
+        stream.set_nonblocking(false)?;
+        Ok(stream)
+    }
+
+    /// Blocks until a client connects, `woken` is woken or `timeout` passes.
+    pub fn wait(&self, woken: &Woken, timeout: Duration) {
+        use std::os::fd::AsRawFd;
+        let mut fds = [self.listener.as_raw_fd(), woken.0.as_raw_fd()].map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        let timeout = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        // SAFETY: `fds` is a valid array of `pollfd` of the length passed.
+        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        if socket_inode(&self.socket) == self.bound {
+            let _ = fs::remove_file(&self.socket);
+        }
+    }
+}
+
+fn socket_inode(path: &Path) -> Option<u64> {
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| metadata.ino())
+}
+
+/// Wakes a [`Listener::wait`] on its [`Woken`] from another thread.
+pub struct Wake(UnixStream);
+
+pub struct Woken(UnixStream);
+
+impl Wake {
+    pub fn wake(&self) {
+        let _ = (&self.0).write(&[0]);
+    }
+}
+
+pub fn waker() -> io::Result<(Wake, Woken)> {
+    let (wake, woken) = UnixStream::pair()?;
+    wake.set_nonblocking(true)?;
+    Ok((Wake(wake), Woken(woken)))
 }
 
 /// Whether the process at the other end runs as this user.
@@ -141,6 +225,42 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
     // a live connected socket.
     let result = unsafe { libc::getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) };
     (result == 0).then_some(uid)
+}
+
+/// A spawned daemon process handle.
+pub struct SpawnedDaemon {
+    child: std::process::Child,
+}
+
+impl SpawnedDaemon {
+    pub fn has_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
+    pub fn detach(mut self) {
+        // Reap the daemon if it exits later; it is not our child to wait for
+        // in the meantime.
+        std::thread::spawn(move || self.child.wait());
+    }
+}
+
+/// Spawns `executable __daemon <root> <socket>` detached from the terminal's
+/// process group with stdio redirected to `/dev/null`.
+pub fn spawn_daemon(executable: &Path, root: &Path, socket: &Path) -> io::Result<SpawnedDaemon> {
+    let mut command = std::process::Command::new(executable);
+    command
+        .arg("__daemon")
+        .arg(root)
+        .arg(socket)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Out of the terminal's process group: Ctrl-C on a build does not end
+    // the daemon other builds share.
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    Ok(SpawnedDaemon {
+        child: command.spawn()?,
+    })
 }
 
 #[cfg(test)]

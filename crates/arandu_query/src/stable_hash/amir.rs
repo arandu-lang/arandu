@@ -15,7 +15,7 @@ use super::symbols::{
 impl StableHash for AmirProgram {
     fn stable_hash(&self) -> blake3::Hash {
         let mut h = Hasher::new();
-        h.update(b"AmirProgram/v4");
+        h.update(b"AmirProgram/v5");
         h.update(&u64_le(self.funcs.len() as u64));
         for f in &self.funcs {
             h.update(f.stable_hash().as_bytes());
@@ -49,6 +49,13 @@ impl StableHash for AmirProgram {
             h.update(&u32_le(block.span.file_id));
             h.update(&u32_le(block.span.start));
             h.update(&u32_le(block.span.end));
+        }
+        h.update(&u64_le(self.statics.len() as u64));
+        for item in &self.statics {
+            hash_symbol_id(&mut h, item.symbol);
+            hash_str(&mut h, &item.name);
+            hash_id(&mut h, item.ty.as_usize());
+            h.update(&item.init.canonical_bytes());
         }
         finish(h)
     }
@@ -130,6 +137,9 @@ impl StableHash for crate::ctfe::CtfeLowering {
             Err(BuildFailure::GenericFunction) => {
                 hash.update(&[2]);
             }
+            Err(BuildFailure::CallsGeneric) => {
+                hash.update(&[7]);
+            }
             Err(BuildFailure::Diagnostics(diagnostics)) => {
                 hash.update(&[3]);
                 hash.update(diagnostics.stable_hash().as_bytes());
@@ -177,9 +187,13 @@ fn hash_ctfe_error(hash: &mut Hasher, error: &arandu_mir::ctfe::EvalErrorKind) {
         E::Arithmetic(_) => 14,
         E::Value(_) => 15,
         E::InvalidLayout(_) => 16,
+        E::Trapped(_) => 17,
     };
     hash.update(&[tag]);
     match error {
+        E::Trapped(trap) => {
+            hash.update(trap.message().as_bytes());
+        }
         E::InvalidLayout(error) => {
             use arandu_middle::layout::DataLayoutError;
             hash.update(&[match error {
@@ -342,6 +356,7 @@ impl StableHash for arandu_middle::amir::AmirFunc {
                 arandu_middle::amir::AmirStmtKind::StorageDead => 5,
                 arandu_middle::amir::AmirStmtKind::Destroy => 6,
                 arandu_middle::amir::AmirStmtKind::Nop => 7,
+                arandu_middle::amir::AmirStmtKind::ArenaRewind => 8,
             }]);
         }
         h.update(&u64_le(self.stmts.payloads.len() as u64));

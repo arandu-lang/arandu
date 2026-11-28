@@ -2,17 +2,67 @@ use std::sync::Arc;
 
 use super::method::contains_generic_params;
 use arandu_lexer::Span;
-use arandu_parser::TypeName;
-use arandu_parser::ast_pool::{AstPool, ExprId, ExprKind, IndexRange};
+use arandu_parser::ast_pool::{ExprId, ExprKind, IndexRange};
 
 use super::super::TypeChecker;
 use super::super::constraints::ConstraintOrigin;
 use super::super::types::{ArType, TypeId};
 use super::expr::{synth_expr, synth_expr_expected};
 
-fn type_path_member(pool: &AstPool, callee: ExprId) -> Option<(&TypeName, &str)> {
-    match pool.expr(callee) {
-        ExprKind::TypePath { type_name, member } => Some((type_name, member.as_str())),
+fn result_ctor_member(checker: &TypeChecker<'_>, callee: ExprId) -> Option<&'static str> {
+    match checker.pool.expr(callee) {
+        ExprKind::TypePath { type_name, member } => {
+            let is_result = checker
+                .resolved
+                .type_refs
+                .get(&type_name.span.into())
+                .is_some_and(|symbol| checker.symbols.is_result_type(*symbol));
+            if !is_result {
+                return None;
+            }
+            match member.as_str() {
+                "Ok" => Some("Ok"),
+                "Err" => Some("Err"),
+                _ => None,
+            }
+        }
+        ExprKind::Path { .. } => {
+            let symbol = checker.resolved.expr_symbol(callee)?;
+            match checker.symbols.try_get(symbol)?.lang_item? {
+                arandu_middle::symbol_table::LangItem::ResultOk => Some("Ok"),
+                arandu_middle::symbol_table::LangItem::ResultErr => Some("Err"),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn option_ctor_member(checker: &TypeChecker<'_>, callee: ExprId) -> Option<&'static str> {
+    match checker.pool.expr(callee) {
+        ExprKind::TypePath { type_name, member } => {
+            let is_option = checker
+                .resolved
+                .type_refs
+                .get(&type_name.span.into())
+                .is_some_and(|symbol| checker.symbols.is_option_type(*symbol));
+            if !is_option {
+                return None;
+            }
+            match member.as_str() {
+                "Some" => Some("Some"),
+                "None" => Some("None"),
+                _ => None,
+            }
+        }
+        ExprKind::Path { .. } => {
+            let symbol = checker.resolved.expr_symbol(callee)?;
+            match checker.symbols.try_get(symbol)?.lang_item? {
+                arandu_middle::symbol_table::LangItem::OptionSome => Some("Some"),
+                arandu_middle::symbol_table::LangItem::OptionNone => Some("None"),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -24,15 +74,7 @@ pub(crate) fn synth_result_ctor(
     span: Span,
     expected: Option<TypeId>,
 ) -> Option<ArType> {
-    let (type_name, member) = type_path_member(checker.pool, callee)?;
-    let is_result = checker
-        .resolved
-        .type_refs
-        .get(&type_name.span.into())
-        .is_some_and(|symbol| checker.symbols.is_result_type(*symbol));
-    if !is_result {
-        return None;
-    }
+    let member = result_ctor_member(checker, callee)?;
     let arg_ids = checker.pool.expr_list(args).to_vec();
 
     // Bidirectional: when the expected type is `Result<T, E>`, pin both sides
@@ -122,15 +164,7 @@ pub(crate) fn synth_option_ctor(
     span: Span,
     expected: Option<TypeId>,
 ) -> Option<ArType> {
-    let (type_name, member) = type_path_member(checker.pool, callee)?;
-    let is_option = checker
-        .resolved
-        .type_refs
-        .get(&type_name.span.into())
-        .is_some_and(|symbol| checker.symbols.is_option_type(*symbol));
-    if !is_option {
-        return None;
-    }
+    let member = option_ctor_member(checker, callee)?;
     let arg_ids = checker.pool.expr_list(args).to_vec();
     let expected_inner = expected.and_then(|id| match checker.resolve(id) {
         ArType::Option(inner) => Some(inner),
@@ -387,67 +421,74 @@ pub(crate) fn synth_variant_sugar(
                 .demand_header(enum_id, &expected_args, span);
             // Get variant constructor signature with expected generic parameters substituted.
             let cache_key = (variant_sym, expected_args.clone());
-            let (params, ret) =
-                if let Some(cached) = checker.type_info.variant_instantiations.get(&cache_key) {
-                    cached.clone()
-                } else {
-                    let concrete = checker
-                        .type_info
-                        .variant_type_for(variant_sym, &expected_args)
-                        .map(|ty| checker.resolve(ty));
-                    let res = if let Some(ArType::Func(params, ret)) =
-                        concrete.or_else(|| checker.decl_type(variant_sym))
+            // Arguments still being inferred are never cached (S1).
+            let cacheable = !expected_args.iter().any(|&id| {
+                arandu_middle::types::infer::contains_infer(id, &checker.type_info.type_interner)
+            });
+            let (params, ret) = if cacheable
+                && let Some(cached) = checker.type_info.variant_instantiations.get(&cache_key)
+            {
+                cached.clone()
+            } else {
+                let concrete = checker
+                    .type_info
+                    .variant_type_for(variant_sym, &expected_args)
+                    .map(|ty| checker.resolve(ty));
+                let res = if let Some(ArType::Func(params, ret)) =
+                    concrete.or_else(|| checker.decl_type(variant_sym))
+                {
+                    let params = checker.type_info.type_interner.type_args(params);
+                    let mut inst_params = params.clone();
+                    let mut inst_ret = ret;
+                    if !expected_args.is_empty()
+                        && let Some(gp) = checker.type_info.generic_params.get(&enum_id)
                     {
-                        let params = checker.type_info.type_interner.type_args(params);
-                        let mut inst_params = params.clone();
-                        let mut inst_ret = ret;
-                        if !expected_args.is_empty()
-                            && let Some(gp) = checker.type_info.generic_params.get(&enum_id)
-                        {
-                            let interner = &checker.type_info.type_interner;
-                            let has_params =
-                                params.iter().any(|&p| {
-                                    contains_generic_params(&interner.resolve(p), gp, interner)
-                                }) || contains_generic_params(&interner.resolve(ret), gp, interner);
-                            if has_params {
-                                use crate::type_checker::types::{build_subst, substitute_type};
-                                let concrete_args: Vec<ArType> =
-                                    expected_args.iter().map(|&a| checker.resolve(a)).collect();
-                                let n = gp.len().min(concrete_args.len());
-                                if n > 0 {
-                                    let subst = build_subst(&gp[..n], &concrete_args[..n]);
-                                    inst_params = params
-                                        .iter()
-                                        .map(|&p| {
-                                            let ty = checker.resolve(p);
-                                            let inst = substitute_type(
-                                                &ty,
-                                                &subst,
-                                                &checker.type_info.type_interner,
-                                            );
-                                            checker.intern(inst)
-                                        })
-                                        .collect();
-                                    let ret_ty = checker.resolve(ret);
-                                    let ret_inst = substitute_type(
-                                        &ret_ty,
-                                        &subst,
-                                        &checker.type_info.type_interner,
-                                    );
-                                    inst_ret = checker.intern(ret_inst);
-                                }
+                        let interner = &checker.type_info.type_interner;
+                        let has_params = params
+                            .iter()
+                            .any(|&p| contains_generic_params(&interner.resolve(p), gp, interner))
+                            || contains_generic_params(&interner.resolve(ret), gp, interner);
+                        if has_params {
+                            use crate::type_checker::types::{build_subst, substitute_type};
+                            let concrete_args: Vec<ArType> =
+                                expected_args.iter().map(|&a| checker.resolve(a)).collect();
+                            let n = gp.len().min(concrete_args.len());
+                            if n > 0 {
+                                let subst = build_subst(&gp[..n], &concrete_args[..n]);
+                                inst_params = params
+                                    .iter()
+                                    .map(|&p| {
+                                        let ty = checker.resolve(p);
+                                        let inst = substitute_type(
+                                            &ty,
+                                            &subst,
+                                            &checker.type_info.type_interner,
+                                        );
+                                        checker.intern(inst)
+                                    })
+                                    .collect();
+                                let ret_ty = checker.resolve(ret);
+                                let ret_inst = substitute_type(
+                                    &ret_ty,
+                                    &subst,
+                                    &checker.type_info.type_interner,
+                                );
+                                inst_ret = checker.intern(ret_inst);
                             }
                         }
-                        (inst_params, inst_ret)
-                    } else {
-                        (Vec::new(), checker.intern(ArType::Error))
-                    };
+                    }
+                    (inst_params, inst_ret)
+                } else {
+                    (Vec::new(), checker.intern(ArType::Error))
+                };
+                if cacheable {
                     checker
                         .type_info
                         .variant_instantiations
                         .insert(cache_key, res.clone());
-                    res
-                };
+                }
+                res
+            };
 
             // Type args of payload: use variant decl type if Func-like, else unit.
             if let Some(ArType::Func(_, _)) = checker.decl_type(variant_sym) {
@@ -512,7 +553,10 @@ pub(crate) fn synth_poll_ctor(
     span: Span,
     expected: Option<TypeId>,
 ) -> Option<ArType> {
-    let (type_name, member) = type_path_member(checker.pool, callee)?;
+    let ExprKind::TypePath { type_name, member } = checker.pool.expr(callee) else {
+        return None;
+    };
+    let member = member.as_str();
     let resolved_sym = checker
         .resolved
         .type_refs

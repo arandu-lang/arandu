@@ -128,7 +128,7 @@ impl<'a> CEmitter<'a> {
             ArType::Primitive(Primitive::Char) => Cow::Borrowed("uint32_t"),
             ArType::Primitive(Primitive::Str) => Cow::Borrowed("ArStr"),
             ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => Cow::Borrowed("double"),
-            ArType::Void => Cow::Borrowed("void"),
+            ArType::Void | ArType::Never => Cow::Borrowed("void"),
             // Coroutine values point to runtime state, independently of their
             // result type. LayoutEngine also models them as one target pointer.
             ArType::Coroutine(_) => Cow::Borrowed("void*"),
@@ -173,25 +173,6 @@ impl<'a> CEmitter<'a> {
                     len,
                     sanitize_c_ident(&inner_name)
                 ))
-            }
-            ArType::Nullable(inner) => {
-                let inner_ty = self.interner.resolve(*inner);
-                // Nullable thin references retain their null-or-pointer ABI.
-                // Fat slice borrows need a separate descriptor representation.
-                if matches!(
-                    inner_ty,
-                    ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
-                ) && inner_ty.slice_abi_element(self.interner).is_none()
-                {
-                    return self.format_type(&inner_ty);
-                }
-                let inner_name = self.format_type(&inner_ty);
-                // A value `T?` is a handle to a boxed `T`, NULL for nil, as in
-                // Cranelift: payload `0` stays distinct from `nil`.
-                if self.is_boxed_nullable(&inner_ty) {
-                    return Cow::Owned(format!("{inner_name}*"));
-                }
-                Cow::Owned(format!("ArType_Nullable_{}", sanitize_c_ident(&inner_name)))
             }
             ArType::Option(inner) => {
                 let inner_name = self.format_type(&self.interner.resolve(*inner));
@@ -261,10 +242,9 @@ impl<'a> CEmitter<'a> {
                 AmirProjection::Deref => {
                     let borrowed_slice = current_ty.is_borrowed_slice_abi(self.interner);
                     current_ty = match &current_ty {
-                        ArType::Ptr(inner)
-                        | ArType::Ref(inner)
-                        | ArType::RefMut(inner)
-                        | ArType::Nullable(inner) => self.interner.resolve(*inner),
+                        ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                            self.interner.resolve(*inner)
+                        }
                         other => other.clone(),
                     };
                     if !borrowed_slice {
@@ -275,10 +255,9 @@ impl<'a> CEmitter<'a> {
                 AmirProjection::Field(field_symbol_id) => {
                     // After Deref, current_ty is the pointee; unwrap residual ptr-likes.
                     let struct_ty = match &current_ty {
-                        ArType::Ptr(inner)
-                        | ArType::Ref(inner)
-                        | ArType::RefMut(inner)
-                        | ArType::Nullable(inner) => self.interner.resolve(*inner),
+                        ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                            self.interner.resolve(*inner)
+                        }
                         other => other.clone(),
                     };
                     let layout = self.checked_layout(&struct_ty);
@@ -318,7 +297,7 @@ impl<'a> CEmitter<'a> {
                     // the pointer value; otherwise take address of the stack lvalue.
                     let base = if matches!(
                         current_ty,
-                        ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
+                        ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
                         path.clone()
                     } else {

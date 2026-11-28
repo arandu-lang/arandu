@@ -1,9 +1,9 @@
 use super::{CompletionItem, CompletionKind, RANK_MEMBER, accepted, finish_ranked, value_kind};
-use crate::presentation::{display_type, symbol_at, symbol_presentation};
+use crate::presentation::{display_type, signature_named, symbol_at, symbol_presentation};
 use arandu_middle::types::{ArType, Primitive};
 use arandu_middle::{SymbolId, SymbolKind};
 use arandu_query::{AnalysisSnapshot, SourceFile};
-use arandu_semantics::TypeCheckResult;
+use arandu_semantics::{EnumPayloadShape, TypeCheckResult};
 
 // ── Member completion ───────────────────────────────────────────────
 
@@ -87,13 +87,13 @@ pub(super) fn member_completions(
             }
             let ty = tc.type_info.type_interner.resolve(field.ty);
             let mut item = CompletionItem::new(field.name.to_string(), CompletionKind::Field);
-            item.detail = Some(format!("{}: {}", field.name, display_type(tc, &ty)));
+            item.detail = Some(display_type(tc, &ty));
             items.push((RANK_MEMBER, item));
         }
     }
 
     if owner_kind == Some(SymbolKind::Enum) {
-        for (variant, (owner, _shape)) in &tc.type_info.enum_variants {
+        for (variant, (owner, shape)) in &tc.type_info.enum_variants {
             if *owner != parent {
                 continue;
             }
@@ -104,7 +104,20 @@ pub(super) fn member_completions(
                 continue;
             }
             let mut item = CompletionItem::new(name, CompletionKind::EnumMember);
-            item.detail = Some("variant".to_string());
+            if let EnumPayloadShape::Tuple(types) = shape
+                && !types.is_empty()
+            {
+                item.detail = Some(
+                    types
+                        .iter()
+                        .map(|ty| {
+                            let ty = tc.type_info.type_interner.resolve(*ty);
+                            display_type(tc, &ty)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
             let tag = tc
                 .type_info
                 .enum_variant_tags
@@ -124,7 +137,9 @@ pub(super) fn member_completions(
             }
             let signature = tc.type_info.type_interner.resolve(method.sig_id);
             let mut item = CompletionItem::new(method.name.to_string(), CompletionKind::Method);
-            item.detail = Some(display_type(tc, &signature));
+            if let Some((detail, _)) = signature_named(tc, method.name.as_str(), &signature, &[]) {
+                item.detail = Some(detail);
+            }
             items.push((RANK_MEMBER, item));
         }
     }
@@ -235,19 +250,23 @@ fn named_symbol_of(tc: &TypeCheckResult, ty: &ArType) -> Option<SymbolId> {
     match ty {
         ArType::Named(symbol, _) => Some(*symbol),
         ArType::Ptr(_) => tc.symbols.builtins.ptr_type,
-        ArType::Nullable(inner) => match tc.type_info.type_interner.resolve(*inner) {
-            ArType::Ptr(_) => tc.symbols.builtins.ptr_type,
-            other => named_symbol_of(tc, &other),
-        },
         ArType::Ref(inner) | ArType::RefMut(inner) => {
             named_symbol_of(tc, &tc.type_info.type_interner.resolve(*inner))
         }
         ArType::Result(_, _) => tc.symbols.builtins.result,
-        ArType::Option(_) => tc.symbols.builtins.option,
+        ArType::Option(inner) => {
+            if matches!(tc.type_info.type_interner.resolve(*inner), ArType::Ptr(_)) {
+                tc.symbols.builtins.ptr_type
+            } else {
+                tc.symbols.builtins.option
+            }
+        }
         ArType::Primitive(Primitive::Str) => tc.symbols.builtins.str_type,
         ArType::Primitive(Primitive::Char) => tc.symbols.builtins.char_type,
         ArType::Primitive(Primitive::U32) => tc.symbols.builtins.u32_type,
         ArType::Primitive(Primitive::U64) => tc.symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::I32) => tc.symbols.builtins.i32_type,
+        ArType::Primitive(Primitive::I64) => tc.symbols.builtins.i64_type,
         ArType::Primitive(Primitive::Int) | ArType::IntLiteral => tc.symbols.builtins.int_type,
         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
             tc.symbols.builtins.float_type

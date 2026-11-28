@@ -102,6 +102,34 @@ pub(crate) fn spawn_open_diagnostics(
     }
 }
 
+/// Fills newly available background capacity without replacing jobs that were
+/// already admitted for the same documents.
+pub(crate) fn refill_missing_diagnostics(
+    state: &ServerState,
+    pool: &WorkerPool,
+    job_tx: &Sender<crate::dispatcher::JobResult>,
+) {
+    use crate::uri_util::parse_uri as parse;
+    for (uri, id) in state.open_uris.iter().filter_map(|uri| {
+        let parsed = parse(uri)?;
+        let id = state.by_uri.get(uri).copied()?;
+        Some((parsed, id))
+    }) {
+        if state
+            .last_diag_fp
+            .get(&id)
+            .is_some_and(|(_, version, revision)| {
+                *version == state.version(id) && *revision == state.revision()
+            })
+        {
+            continue;
+        }
+        if !pool.contains_key(&JobKey::Diagnostics(id)) {
+            spawn_diagnostics(state, pool, job_tx, uri, id);
+        }
+    }
+}
+
 pub(crate) fn compute_diagnostics(
     snap: &AnalysisSnapshot,
     source: SourceFile,
@@ -130,6 +158,9 @@ pub(crate) fn compute_diagnostics(
                 .as_ref()
                 .map_or_else(lsp_types::Range::default, |location| location.range);
             let severity = match d.severity {
+                // A hole is the expected state of code being written: the
+                // build refuses it, the editor informs (RFC 0036, H1).
+                0 if d.code == "T102" => DiagnosticSeverity::INFORMATION,
                 0 => DiagnosticSeverity::ERROR,
                 1 => DiagnosticSeverity::WARNING,
                 2 => DiagnosticSeverity::INFORMATION,
@@ -173,6 +204,7 @@ pub(crate) fn compute_diagnostics(
                 })
                 .collect();
             let data = ide::DiagnosticData {
+                revision: snap.revision.as_u64(),
                 primary_label: d.primary_label.as_deref().map(str::to_owned),
                 notes: d.notes.clone(),
                 hints: d.hints.iter().map(|hint| hint.message.clone()).collect(),

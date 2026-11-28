@@ -37,8 +37,12 @@ pub enum HirStmtKind {
     Return {
         values: IndexRange,
     },
-    Break,
-    Continue,
+    Break {
+        label: Option<SmolStr>,
+    },
+    Continue {
+        label: Option<SmolStr>,
+    },
     Free(HirExprId),
     Expr(HirExprId),
     If {
@@ -47,6 +51,7 @@ pub enum HirStmtKind {
         else_block: Option<HirBlockId>,
     },
     For {
+        label: Option<SmolStr>,
         /// Frozen finite domain. None is an ordinary runtime loop.
         comptime_bounds: Option<(crate::ctfe::ConstInt, crate::ctfe::ConstInt)>,
         /// Selected, typed residual bodies in iteration order. None shares the
@@ -56,6 +61,7 @@ pub enum HirStmtKind {
         body: HirBlockId,
     },
     While {
+        label: Option<SmolStr>,
         condition: HirCondition,
         body: HirBlockId,
     },
@@ -145,6 +151,10 @@ pub enum HirPlaceSuffix {
         expr: HirExprId,
         ty: TypeId,
     },
+    /// Through the reference held by the place so far; `ty` is the pointee.
+    /// No surface syntax produces it: closure lowering writes a captured
+    /// `mut ref` local through its environment field.
+    Deref { span: Span, ty: TypeId },
 }
 
 impl HirBlock {
@@ -210,7 +220,7 @@ impl HirStmt {
                     pool.expr(v).validate_invariants(pool, symbols)?;
                 }
             }
-            HirStmtKind::Break | HirStmtKind::Continue => {}
+            HirStmtKind::Break { .. } | HirStmtKind::Continue { .. } => {}
             HirStmtKind::Free(expr) => {
                 pool.expr(*expr).validate_invariants(pool, symbols)?;
             }
@@ -233,6 +243,7 @@ impl HirStmt {
                 body,
                 comptime_bounds,
                 comptime_bodies,
+                ..
             } => {
                 match clause {
                     HirForClause::In {
@@ -278,7 +289,9 @@ impl HirStmt {
                     pool.block(*body).validate_invariants(pool, symbols)?;
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition, body, ..
+            } => {
                 condition.validate_invariants(pool, symbols)?;
                 pool.block(*body).validate_invariants(pool, symbols)?;
             }

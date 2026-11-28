@@ -1,0 +1,19 @@
+module rvalueBorrows
+
+// `ref value` and `mut ref value` on a value with no place borrow a
+// temporary local that the scope destroys, as Rust does for `&Point { .. }`.
+
+import std.alloc.string as strings
+struct Dog { age: int }
+func Dog.years(self: ref Dog): int { return self.age }
+func age(d: ref Dog): int { return d.age }
+func bump(d: mut ref Dog): int { d.age += 1; return d.age }
+func make(n: int): Dog { return Dog { age: n } }
+func size(s: ref strings.String): int { return s.len() as int }
+func main(): int {
+    if age(ref Dog { age: 3 }) != 3 { return 1 }
+    if age(ref make(4)) != 4 { return 2 }
+    if bump(mut ref Dog { age: 5 }) != 6 { return 3 }
+    if size(ref strings.String.from("abc")) != 3 { return 4 }
+    return 0
+}

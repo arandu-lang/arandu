@@ -261,6 +261,14 @@ pub(super) fn hash_resolved_names(hasher: &mut Hasher, resolved: &arandu_resolve
     for symbol in mutable {
         hash_symbol_id(hasher, symbol);
     }
+    let mut holes: Vec<_> = resolved.hole_scopes.iter().collect();
+    holes.sort_unstable_by_key(|(key, _)| (key.start, key.end));
+    hasher.update(&u64_le(holes.len() as u64));
+    for (key, scope) in holes {
+        hasher.update(&u64_le(u64::from(key.start)));
+        hasher.update(&u64_le(u64::from(key.end)));
+        hasher.update(&u64_le(u64::from(scope.0)));
+    }
 }
 
 /// Stable, allocation-free discriminant for [`SymbolKind`].
@@ -284,6 +292,7 @@ fn symbol_kind_discriminant(kind: SymbolKind) -> u8 {
         SymbolKind::NamespaceMember => 15,
         SymbolKind::AssociatedFunc => 16,
         SymbolKind::ConstParam => 17,
+        SymbolKind::StaticMut => 18,
     }
 }
 
@@ -344,6 +353,34 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::StdThread => 51,
         LangItem::StdFs => 52,
         LangItem::Usize => 53,
+        LangItem::Closure => 54,
+        LangItem::SendClosure => 55,
+        LangItem::ClosureJob => 56,
+        LangItem::Hole => 57,
+        LangItem::OnceClosure => 58,
+        LangItem::SendOnceClosure => 59,
+        LangItem::Range => 60,
+        LangItem::RangeInclusive => 61,
+        LangItem::I32 => 62,
+        LangItem::I64 => 63,
+        LangItem::Ord => 64,
+        LangItem::Ordering => 65,
+        LangItem::Clone => 66,
+        LangItem::Eq => 67,
+        LangItem::Display => 68,
+        LangItem::OrderingLess => 69,
+        LangItem::OrderingEqual => 70,
+        LangItem::OrderingGreater => 71,
+        LangItem::PartialEq => 72,
+        LangItem::Hash => 73,
+        LangItem::Hasher => 74,
+        LangItem::Debug => 75,
+        LangItem::Formatter => 76,
+        LangItem::FmtError => 77,
+        LangItem::PhantomData => 78,
+        LangItem::NonNull => 79,
+        LangItem::Index => 80,
+        LangItem::IndexMut => 81,
     }
 }
 
@@ -404,6 +441,7 @@ pub(super) fn hash_symbol_table_until(
     include_spans: bool,
     body_from: Option<u32>,
 ) {
+    hasher.update(&[u8::from(table.trusted_stdlib)]);
     hasher.update(&u64_le(table.unresolved_module_aliases.len() as u64));
     for alias in &table.unresolved_module_aliases {
         hash_str(hasher, alias);
@@ -438,6 +476,14 @@ pub(super) fn hash_symbol_table_until(
     hasher.update(b"ExportedFunctions/v1");
     hasher.update(&u64_le(exported.len() as u64));
     for symbol in exported {
+        hash_symbol_id(hasher, symbol);
+    }
+
+    let mut cold: Vec<_> = table.cold_functions.iter().copied().collect();
+    cold.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    hasher.update(b"ColdFunctions/v1");
+    hasher.update(&u64_le(cold.len() as u64));
+    for symbol in cold {
         hash_symbol_id(hasher, symbol);
     }
 
@@ -541,6 +587,9 @@ pub(super) fn hash_symbol_table_until(
             table.builtins.ptr_type,
             table.builtins.u32_type,
             table.builtins.u64_type,
+            table.builtins.usize_type,
+            table.builtins.i32_type,
+            table.builtins.i64_type,
             table.builtin_alloc,
             table.builtin_free,
         ] {

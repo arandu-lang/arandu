@@ -79,7 +79,9 @@ pub(super) fn rewrite_stmt_calls<'bump>(
                 rewrite_block_calls(hir, eb, specialized, tc, bump);
             }
         }
-        HirStmtKind::While { condition, body } => {
+        HirStmtKind::While {
+            condition, body, ..
+        } => {
             rewrite_condition_calls(hir, &condition, specialized, tc, bump);
             rewrite_block_calls(hir, body, specialized, tc, bump);
         }
@@ -137,7 +139,7 @@ pub(super) fn rewrite_stmt_calls<'bump>(
         | HirStmtKind::Scope(b) => {
             rewrite_block_calls(hir, b, specialized, tc, bump);
         }
-        HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Error => {}
+        HirStmtKind::Break { .. } | HirStmtKind::Continue { .. } | HirStmtKind::Error => {}
     }
 }
 
@@ -239,21 +241,15 @@ pub(super) fn rewrite_expr_calls<'bump>(
             rewrite_expr_calls(hir, *base, specialized, tc, bump);
             rewrite_expr_calls(hir, *index, specialized, tc, bump);
         }
-        HirExprKind::Call {
-            callee,
-            args,
-            trailing_block,
-        } => {
+        HirExprKind::Call { callee, args } => {
             rewrite_expr_calls(hir, *callee, specialized, tc, bump);
             let args_snap: Vec<_> = hir.pool.expr_list(*args).to_vec();
             for a in args_snap {
                 rewrite_expr_calls(hir, a, specialized, tc, bump);
             }
-            if let Some(b) = trailing_block {
-                rewrite_block_calls(hir, *b, specialized, tc, bump);
-            }
             // Rewrite Call(Generic(...), …) or Call(Field/Path template, …) → Path(spec).
             try_rewrite_generic_call(hir, expr_id, *callee, *args, specialized, tc, bump);
+            rewrite_function_value_callback(hir, expr_id, tc);
         }
         HirExprKind::StructLiteral { fields, .. } => {
             let vals: Vec<_> = hir
@@ -269,7 +265,7 @@ pub(super) fn rewrite_expr_calls<'bump>(
         HirExprKind::ArrayRepeat { value } => {
             rewrite_expr_calls(hir, *value, specialized, tc, bump);
         }
-        HirExprKind::Array { items } => {
+        HirExprKind::Array { items } | HirExprKind::Tuple { items } => {
             let es: Vec<_> = hir.pool.expr_list(*items).to_vec();
             for e in es {
                 rewrite_expr_calls(hir, e, specialized, tc, bump);
@@ -312,6 +308,7 @@ pub(super) fn rewrite_expr_calls<'bump>(
         },
         HirExprKind::AsyncBlock { block }
         | HirExprKind::UnsafeBlock { block }
+        | HirExprKind::Scope { block }
         | HirExprKind::ValueBlock { block } => {
             rewrite_block_calls(hir, *block, specialized, tc, bump);
         }
@@ -323,6 +320,52 @@ pub(super) fn rewrite_expr_calls<'bump>(
             }
         }
         _ => {}
+    }
+}
+
+/// A callback instantiated with a function value (`F` = `(A) -> R`) has no
+/// `call` method: `F.call(f, args)` calls through the pointer `f` refers to,
+/// as a Rust `fn` pointer implements `FnMut` (RFC 0032, L2).
+fn rewrite_function_value_callback(hir: &mut HirProgram, expr_id: HirExprId, tc: &TypeCheckResult) {
+    let HirExprKind::Call { callee, args, .. } = hir.pool.expr(expr_id).kind.clone() else {
+        return;
+    };
+    let HirExprKind::Field { base, field } = &hir.pool.expr(callee).kind else {
+        return;
+    };
+    if field.as_str() != "call" {
+        return;
+    }
+    let base = *base;
+    let interner = &tc.type_info.type_interner;
+    let ArType::RefMut(function) = interner.resolve(hir.pool.expr(base).ty) else {
+        return;
+    };
+    if !matches!(interner.resolve(function), ArType::Func(..)) {
+        return;
+    }
+    let span = hir.pool.expr(callee).span;
+    *hir.pool.expr_mut(callee) = HirExpr {
+        kind: HirExprKind::Unary {
+            op: arandu_middle::ops::UnaryOp::Deref,
+            expr: base,
+        },
+        ty: function,
+        span,
+    };
+    // The receiver argument was the environment; a function value has none.
+    let rest = hir
+        .pool
+        .expr_list(args)
+        .get(1..)
+        .unwrap_or_default()
+        .to_vec();
+    let args = hir.pool.alloc_expr_list(&rest);
+    if let HirExprKind::Call {
+        args: call_args, ..
+    } = &mut hir.pool.expr_mut(expr_id).kind
+    {
+        *call_args = args;
     }
 }
 
@@ -344,11 +387,7 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                 HirExprKind::Path { symbol } => *symbol,
                 HirExprKind::TypePath { member_symbol, .. } => *member_symbol,
                 HirExprKind::Field { base, field } | HirExprKind::SafeField { base, field } => {
-                    let base_ty = tc.type_info.type_interner.resolve(hir.pool.expr(*base).ty);
-                    let mut actual = match base_ty {
-                        ArType::Nullable(inner) => tc.type_info.type_interner.resolve(inner),
-                        other => other,
-                    };
+                    let mut actual = tc.type_info.type_interner.resolve(hir.pool.expr(*base).ty);
                     // Peel & / &mut / ptr (shared self receivers).
                     for _ in 0..4 {
                         actual = match actual {
@@ -364,6 +403,7 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                                 | ArType::Option(_)
                                 | ArType::Primitive(_)
                                 | ArType::Slice(_)
+                                | ArType::MutSlice(_)
                         ) {
                             break;
                         }
@@ -385,13 +425,21 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
                             tc.symbols.builtins.float_type
                         }
-                        ArType::Slice(_) => tc.symbols.builtins.slice_type,
+                        ArType::Slice(_) | ArType::MutSlice(_) => tc.symbols.builtins.slice_type,
                         _ => None,
                     };
-                    let Some(type_id) = type_id else {
-                        return;
+                    let pointer = || {
+                        tc.symbols.pointer_method(
+                            &tc.type_info.type_interner.resolve(hir.pool.expr(*base).ty),
+                            &tc.type_info.type_interner,
+                            field.as_str(),
+                        )
                     };
-                    let Some(sym) = tc.symbols.lookup_associated_member(type_id, field.as_str())
+                    let Some(sym) = type_id
+                        .and_then(|owner| {
+                            tc.symbols.lookup_associated_member(owner, field.as_str())
+                        })
+                        .or_else(pointer)
                     else {
                         return;
                     };

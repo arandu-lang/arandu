@@ -22,6 +22,8 @@ mod capability_windows;
 mod dir;
 mod fd;
 mod read;
+#[cfg(any(windows, test))]
+pub(crate) mod stack_wide;
 
 /// Max buffer, matching `std.alloc.string.maxBufferCapacity()` (i32::MAX).
 const MAX_BUFFER_SIZE: usize = i32::MAX as usize;

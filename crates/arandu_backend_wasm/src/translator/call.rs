@@ -60,7 +60,14 @@ impl<'a> FuncTranslator<'a> {
                 }
                 if let Some(kind) =
                     IntrinsicKind::from_declared_name(&sym_def.name, sym_def.lang_item)
-                    && self.emit_intrinsic_call(kind, sym_def.name.ends_with("64"), lhs, args)
+                    && self.emit_intrinsic_call(
+                        kind,
+                        sym_def.name == "fma"
+                            || sym_def.name == "sqrt"
+                            || sym_def.name.ends_with("64"),
+                        lhs,
+                        args,
+                    )
                 {
                     return;
                 }
@@ -95,32 +102,61 @@ impl<'a> FuncTranslator<'a> {
                     self.emit_operand(arg, arg_ty);
                 }
                 self.code.push(Instruction::Call(func_idx));
-                // Store return value if needed.
-                if let Some(temp) = lhs {
-                    let local = self.temp_local.get(&temp).copied().unwrap_or(0);
-                    let shape = types::shape(
-                        self.func.temps[temp.as_usize()].ty,
-                        self.interner,
-                        self.layout_engine.data_layout,
-                    );
-                    match shape {
-                        Shape::Scalar => {
-                            self.code.push(Instruction::LocalSet(local));
-                            if let Some(slot) = self.current_returned_home {
-                                self.adopt_returned_home(slot, local);
-                            }
-                        }
-                        Shape::Fat => {
-                            self.code.push(Instruction::LocalSet(local + 1));
-                            self.code.push(Instruction::LocalSet(local));
-                        }
-                        Shape::Empty => {}
+                self.store_call_result(lhs);
+                return;
+            }
+        }
+        if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = callee {
+            let func_ty = self.func.temps[temp.as_usize()].ty;
+            if let (ArType::Func(params, _), Some(&type_index)) = (
+                self.interner.resolve(func_ty),
+                self.indirect_type_indices.get(&func_ty),
+            ) {
+                let params = self.interner.type_args(params);
+                for (arg, &arg_ty) in args.iter().zip(&params) {
+                    if types::shape(arg_ty, self.interner, self.layout_engine.data_layout)
+                        == Shape::Empty
+                    {
+                        continue;
                     }
+                    self.emit_operand(arg, arg_ty);
                 }
+                // The value is the target's index in the function table.
+                self.emit_operand(callee, func_ty);
+                self.code.push(Instruction::CallIndirect {
+                    type_index,
+                    table_index: 0,
+                });
+                self.store_call_result(lhs);
                 return;
             }
         }
         self.code.push(Instruction::Unreachable);
+    }
+
+    fn store_call_result(&mut self, lhs: Option<TempId>) {
+        let Some(temp) = lhs else {
+            return;
+        };
+        let local = self.temp_local.get(&temp).copied().unwrap_or(0);
+        let shape = types::shape(
+            self.func.temps[temp.as_usize()].ty,
+            self.interner,
+            self.layout_engine.data_layout,
+        );
+        match shape {
+            Shape::Scalar => {
+                self.code.push(Instruction::LocalSet(local));
+                if let Some(slot) = self.current_returned_home {
+                    self.adopt_returned_home(slot, local);
+                }
+            }
+            Shape::Fat => {
+                self.code.push(Instruction::LocalSet(local + 1));
+                self.code.push(Instruction::LocalSet(local));
+            }
+            Shape::Empty => {}
+        }
     }
 
     /// Emit an intrinsic function call inline.
@@ -133,8 +169,219 @@ impl<'a> FuncTranslator<'a> {
     ) -> bool {
         match kind {
             IntrinsicKind::Atomic(..)
-            | IntrinsicKind::AtomicFence
-            | IntrinsicKind::AtomicCompilerFence => self.emit_atomic_intrinsic(kind, lhs, args),
+            | IntrinsicKind::AtomicFence(..)
+            | IntrinsicKind::AtomicCompilerFence(..) => self.emit_atomic_intrinsic(kind, lhs, args),
+            IntrinsicKind::RotateLeft | IntrinsicKind::RotateRight | IntrinsicKind::SwapBytes => {
+                let Some(argument) = args.first() else {
+                    return true;
+                };
+                let value_ty = self.interner.intern(ArType::Primitive(if wide {
+                    Primitive::U64
+                } else {
+                    Primitive::U32
+                }));
+                self.emit_operand(argument, value_ty);
+                if kind == IntrinsicKind::SwapBytes {
+                    // wasm has no byte swap: exchange adjacent bytes (and, for
+                    // 64-bit, adjacent half-words), then rotate the halves.
+                    let scratch = if wide { self.scratch_i64 } else { self.scratch };
+                    let stages: &[(u32, u64)] = if wide {
+                        &[(8, 0x00ff_00ff_00ff_00ff), (16, 0x0000_ffff_0000_ffff)]
+                    } else {
+                        &[(8, 0x00ff_00ff)]
+                    };
+                    for &(shift, mask) in stages {
+                        self.code.push(Instruction::LocalSet(scratch));
+                        self.code.push(Instruction::LocalGet(scratch));
+                        if wide {
+                            let mask = i64::from_ne_bytes(mask.to_ne_bytes());
+                            self.code.push(Instruction::I64Const(i64::from(shift)));
+                            self.code.push(Instruction::I64ShrU);
+                            self.code.push(Instruction::I64Const(mask));
+                            self.code.push(Instruction::I64And);
+                            self.code.push(Instruction::LocalGet(scratch));
+                            self.code.push(Instruction::I64Const(mask));
+                            self.code.push(Instruction::I64And);
+                            self.code.push(Instruction::I64Const(i64::from(shift)));
+                            self.code.push(Instruction::I64Shl);
+                            self.code.push(Instruction::I64Or);
+                        } else {
+                            let bytes = mask.to_le_bytes();
+                            let mask = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                            let shift = i32::try_from(shift).unwrap_or(0);
+                            self.code.push(Instruction::I32Const(shift));
+                            self.code.push(Instruction::I32ShrU);
+                            self.code.push(Instruction::I32Const(mask));
+                            self.code.push(Instruction::I32And);
+                            self.code.push(Instruction::LocalGet(scratch));
+                            self.code.push(Instruction::I32Const(mask));
+                            self.code.push(Instruction::I32And);
+                            self.code.push(Instruction::I32Const(shift));
+                            self.code.push(Instruction::I32Shl);
+                            self.code.push(Instruction::I32Or);
+                        }
+                    }
+                    if wide {
+                        self.code.push(Instruction::I64Const(32));
+                        self.code.push(Instruction::I64Rotl);
+                    } else {
+                        self.code.push(Instruction::I32Const(16));
+                        self.code.push(Instruction::I32Rotl);
+                    }
+                } else {
+                    // wasm rotations take the amount modulo the width.
+                    let amount_ty = self.interner.intern(ArType::Primitive(Primitive::U32));
+                    if let Some(amount) = args.get(1) {
+                        self.emit_operand(amount, amount_ty);
+                    } else {
+                        self.code.push(Instruction::I32Const(0));
+                    }
+                    let left = kind == IntrinsicKind::RotateLeft;
+                    if wide {
+                        self.code.push(Instruction::I64ExtendI32U);
+                        self.code.push(if left {
+                            Instruction::I64Rotl
+                        } else {
+                            Instruction::I64Rotr
+                        });
+                    } else {
+                        self.code.push(if left {
+                            Instruction::I32Rotl
+                        } else {
+                            Instruction::I32Rotr
+                        });
+                    }
+                }
+                if let Some(destination) = lhs {
+                    let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                    self.code.push(Instruction::LocalSet(local));
+                } else {
+                    self.code.push(Instruction::Drop);
+                }
+                true
+            }
+            IntrinsicKind::Fma => {
+                if args.len() == 3 {
+                    let float_ty = self.interner.intern(ArType::Primitive(if wide {
+                        Primitive::F64
+                    } else {
+                        Primitive::F32
+                    }));
+                    self.emit_operand(&args[0], float_ty);
+                    self.emit_operand(&args[1], float_ty);
+                    self.code.push(if wide {
+                        Instruction::F64Mul
+                    } else {
+                        Instruction::F32Mul
+                    });
+                    self.emit_operand(&args[2], float_ty);
+                    self.code.push(if wide {
+                        Instruction::F64Add
+                    } else {
+                        Instruction::F32Add
+                    });
+                    if let Some(destination) = lhs {
+                        let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                        self.code.push(Instruction::LocalSet(local));
+                    } else {
+                        self.code.push(Instruction::Drop);
+                    }
+                }
+                true
+            }
+            IntrinsicKind::Sqrt => {
+                if let Some(argument) = args.first() {
+                    let float_ty = self.interner.intern(ArType::Primitive(if wide {
+                        Primitive::F64
+                    } else {
+                        Primitive::F32
+                    }));
+                    self.emit_operand(argument, float_ty);
+                    self.code.push(if wide {
+                        Instruction::F64Sqrt
+                    } else {
+                        Instruction::F32Sqrt
+                    });
+                    if let Some(destination) = lhs {
+                        let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                        self.code.push(Instruction::LocalSet(local));
+                    } else {
+                        self.code.push(Instruction::Drop);
+                    }
+                }
+                true
+            }
+            IntrinsicKind::SpinLoopHint => {
+                // Wasm MVP has no pause instruction; emit a safe no-op.
+                true
+            }
+            IntrinsicKind::FloatToBits(width) => {
+                if let Some(argument) = args.first() {
+                    let (arg_ty, inst) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => (
+                            self.interner.intern(ArType::Primitive(Primitive::F64)),
+                            Instruction::I64ReinterpretF64,
+                        ),
+                        arandu_middle::intrinsics::FloatWidth::F32 => (
+                            self.interner.intern(ArType::Primitive(Primitive::F32)),
+                            Instruction::I32ReinterpretF32,
+                        ),
+                    };
+                    self.emit_operand(argument, arg_ty);
+                    self.code.push(inst);
+                    if let Some(destination) = lhs {
+                        let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                        self.code.push(Instruction::LocalSet(local));
+                    } else {
+                        self.code.push(Instruction::Drop);
+                    }
+                }
+                true
+            }
+            IntrinsicKind::FloatFromBits(width) => {
+                if let Some(argument) = args.first() {
+                    let (arg_ty, inst) = match width {
+                        arandu_middle::intrinsics::FloatWidth::F64 => (
+                            self.interner.intern(ArType::Primitive(Primitive::U64)),
+                            Instruction::F64ReinterpretI64,
+                        ),
+                        arandu_middle::intrinsics::FloatWidth::F32 => (
+                            self.interner.intern(ArType::Primitive(Primitive::U32)),
+                            Instruction::F32ReinterpretI32,
+                        ),
+                    };
+                    self.emit_operand(argument, arg_ty);
+                    self.code.push(inst);
+                    if let Some(destination) = lhs {
+                        let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                        self.code.push(Instruction::LocalSet(local));
+                    } else {
+                        self.code.push(Instruction::Drop);
+                    }
+                }
+                true
+            }
+            IntrinsicKind::Likely | IntrinsicKind::Unlikely => {
+                if let (Some(argument), Some(destination)) = (args.first(), lhs) {
+                    let bool_ty = self.interner.intern(ArType::Primitive(Primitive::Bool));
+                    self.emit_operand(argument, bool_ty);
+                    let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                    self.code.push(Instruction::LocalSet(local));
+                }
+                true
+            }
+            IntrinsicKind::OverflowArithmetic(op, arith_int) => {
+                if args.len() == 2 {
+                    self.emit_overflow_arithmetic_intrinsic(op, arith_int, lhs, args);
+                }
+                true
+            }
+            IntrinsicKind::SaturatingArithmetic(op, arith_int) => {
+                if args.len() == 2 {
+                    self.emit_saturating_arithmetic_intrinsic(op, arith_int, lhs, args);
+                }
+                true
+            }
             IntrinsicKind::CountOnes
             | IntrinsicKind::LeadingZeros
             | IntrinsicKind::TrailingZeros
@@ -219,7 +466,7 @@ impl<'a> FuncTranslator<'a> {
                 }
                 true
             }
-            IntrinsicKind::Abort => {
+            IntrinsicKind::Abort | IntrinsicKind::AbortWithMessage => {
                 self.code.push(Instruction::Unreachable);
                 true
             }
@@ -514,7 +761,304 @@ impl<'a> FuncTranslator<'a> {
                 }
                 true
             }
-            IntrinsicKind::DropInPlace => false,
+            // Built as a value when AMIR is lowered; no call remains.
+            IntrinsicKind::DropInPlace | IntrinsicKind::Forget | IntrinsicKind::TypeInfo => false,
         }
+    }
+
+    fn emit_overflow_arithmetic_pair(
+        &mut self,
+        op: arandu_middle::intrinsics::OverflowOp,
+        arith_int: arandu_middle::intrinsics::ArithmeticInt,
+        args: &[AmirOperand],
+    ) {
+        use arandu_middle::intrinsics::OverflowOp;
+        let input_ty = self
+            .interner
+            .intern(ArType::Primitive(arith_int.primitive()));
+        let signed = arith_int.is_signed();
+        if !arith_int.is_64_bit() {
+            self.emit_operand(&args[0], input_ty);
+            self.code.push(if signed {
+                Instruction::I64ExtendI32S
+            } else {
+                Instruction::I64ExtendI32U
+            });
+            self.emit_operand(&args[1], input_ty);
+            self.code.push(if signed {
+                Instruction::I64ExtendI32S
+            } else {
+                Instruction::I64ExtendI32U
+            });
+            self.code.push(match op {
+                OverflowOp::Add => Instruction::I64Add,
+                OverflowOp::Sub => Instruction::I64Sub,
+                OverflowOp::Mul => Instruction::I64Mul,
+            });
+            self.code.push(Instruction::LocalSet(self.scratch_i64));
+            self.code.push(Instruction::LocalGet(self.scratch_i64));
+            self.code.push(Instruction::I32WrapI64);
+            self.code.push(Instruction::LocalSet(self.scratch_c));
+            self.code.push(Instruction::LocalGet(self.scratch_c));
+            self.code.push(if signed {
+                Instruction::I64ExtendI32S
+            } else {
+                Instruction::I64ExtendI32U
+            });
+            self.code.push(Instruction::LocalGet(self.scratch_i64));
+            self.code.push(Instruction::I64Ne);
+            self.code.push(Instruction::LocalSet(self.scratch_d));
+            return;
+        }
+        self.emit_operand(&args[0], input_ty);
+        self.code.push(Instruction::LocalSet(self.scratch_i64));
+        self.emit_operand(&args[1], input_ty);
+        self.code.push(Instruction::LocalSet(self.scratch_i64b));
+        match (op, signed) {
+            (OverflowOp::Add, false) => {
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Add);
+                self.code.push(Instruction::LocalSet(self.scratch_i64b));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::I64LtU);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::LocalSet(self.scratch_i64));
+            }
+            (OverflowOp::Sub, false) => {
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64LtU);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Sub);
+                self.code.push(Instruction::LocalSet(self.scratch_i64));
+            }
+            (OverflowOp::Mul, false) => {
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Eqz);
+                self.code.push(Instruction::If(BlockType::Result(
+                    wasm_encoder::ValType::I32,
+                )));
+                self.code.push(Instruction::I32Const(0));
+                self.code.push(Instruction::Else);
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Mul);
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64DivU);
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::I64Ne);
+                self.code.push(Instruction::End);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Mul);
+                self.code.push(Instruction::LocalSet(self.scratch_i64));
+            }
+            (OverflowOp::Add, true) => {
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Xor);
+                self.code.push(Instruction::I64Const(0));
+                self.code.push(Instruction::I64GeS);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Add);
+                self.code.push(Instruction::LocalSet(self.scratch_i64b));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::I64Xor);
+                self.code.push(Instruction::I64Const(0));
+                self.code.push(Instruction::I64LtS);
+                self.code.push(Instruction::LocalGet(self.scratch_d));
+                self.code.push(Instruction::I32And);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::LocalSet(self.scratch_i64));
+            }
+            (OverflowOp::Sub, true) => {
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Xor);
+                self.code.push(Instruction::I64Const(0));
+                self.code.push(Instruction::I64LtS);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Sub);
+                self.code.push(Instruction::LocalSet(self.scratch_i64b));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::I64Xor);
+                self.code.push(Instruction::I64Const(0));
+                self.code.push(Instruction::I64LtS);
+                self.code.push(Instruction::LocalGet(self.scratch_d));
+                self.code.push(Instruction::I32And);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::LocalSet(self.scratch_i64));
+            }
+            (OverflowOp::Mul, true) => {
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::I64Eqz);
+                self.code.push(Instruction::If(BlockType::Result(
+                    wasm_encoder::ValType::I32,
+                )));
+                self.code.push(Instruction::I32Const(0));
+                self.code.push(Instruction::Else);
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::I64Const(-1));
+                self.code.push(Instruction::I64Eq);
+                self.code.push(Instruction::If(BlockType::Result(
+                    wasm_encoder::ValType::I32,
+                )));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Const(i64::MIN));
+                self.code.push(Instruction::I64Eq);
+                self.code.push(Instruction::Else);
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Const(-1));
+                self.code.push(Instruction::I64Eq);
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::I64Const(i64::MIN));
+                self.code.push(Instruction::I64Eq);
+                self.code.push(Instruction::I32And);
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Mul);
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::I64DivS);
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Ne);
+                self.code.push(Instruction::I32Or);
+                self.code.push(Instruction::End);
+                self.code.push(Instruction::End);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch_i64));
+                self.code.push(Instruction::LocalGet(self.scratch_i64b));
+                self.code.push(Instruction::I64Mul);
+                self.code.push(Instruction::LocalSet(self.scratch_i64));
+            }
+        }
+    }
+
+    fn emit_overflow_arithmetic_intrinsic(
+        &mut self,
+        op: arandu_middle::intrinsics::OverflowOp,
+        arith_int: arandu_middle::intrinsics::ArithmeticInt,
+        lhs: Option<TempId>,
+        args: &[AmirOperand],
+    ) {
+        self.emit_overflow_arithmetic_pair(op, arith_int, args);
+        let Some(destination) = lhs else {
+            return;
+        };
+        let tuple_ty = self.func.temps[destination.as_usize()].ty;
+        let layout = self.layout_of_id(tuple_ty);
+        self.alloc_cell(layout.size as i32);
+        self.code.push(Instruction::LocalGet(self.scratch));
+        self.code.push(Instruction::LocalSet(self.scratch_b));
+
+        let val_ty = self
+            .interner
+            .intern(ArType::Primitive(arith_int.primitive()));
+        let bool_ty = self.interner.intern(ArType::Primitive(Primitive::Bool));
+        let off0 = layout.field_offsets.first().copied().unwrap_or(0);
+        let off1 = layout.field_offsets.get(1).copied().unwrap_or(0);
+
+        self.push_cell_addr();
+        self.code
+            .push(Instruction::LocalGet(if arith_int.is_64_bit() {
+                self.scratch_i64
+            } else {
+                self.scratch_c
+            }));
+        self.emit_store_value_at(val_ty, off0);
+
+        self.push_cell_addr();
+        self.code.push(Instruction::LocalGet(self.scratch_d));
+        self.emit_store_value_at(bool_ty, off1);
+
+        let dest_local = self.temp_local.get(&destination).copied().unwrap_or(0);
+        self.push_cell_addr();
+        self.code.push(Instruction::LocalSet(dest_local));
+    }
+
+    fn emit_saturating_arithmetic_intrinsic(
+        &mut self,
+        op: arandu_middle::intrinsics::SaturatingOp,
+        arith_int: arandu_middle::intrinsics::ArithmeticInt,
+        lhs: Option<TempId>,
+        args: &[AmirOperand],
+    ) {
+        use arandu_middle::intrinsics::{OverflowOp, SaturatingOp};
+        let overflow_op = match op {
+            SaturatingOp::Add => OverflowOp::Add,
+            SaturatingOp::Sub => OverflowOp::Sub,
+        };
+        self.emit_overflow_arithmetic_pair(overflow_op, arith_int, args);
+        let Some(destination) = lhs else {
+            return;
+        };
+        let dest_local = self.temp_local.get(&destination).copied().unwrap_or(0);
+        let is_64 = arith_int.is_64_bit();
+        let res_local = if is_64 {
+            self.scratch_i64
+        } else {
+            self.scratch_c
+        };
+        self.code.push(Instruction::LocalGet(self.scratch_d));
+        self.code.push(Instruction::If(BlockType::Result(if is_64 {
+            wasm_encoder::ValType::I64
+        } else {
+            wasm_encoder::ValType::I32
+        })));
+        match (arith_int.is_signed(), is_64) {
+            (true, true) => {
+                self.code.push(Instruction::LocalGet(res_local));
+                self.code.push(Instruction::I64Const(0));
+                self.code.push(Instruction::I64LtS);
+                self.code.push(Instruction::If(BlockType::Result(
+                    wasm_encoder::ValType::I64,
+                )));
+                self.code.push(Instruction::I64Const(i64::MAX));
+                self.code.push(Instruction::Else);
+                self.code.push(Instruction::I64Const(i64::MIN));
+                self.code.push(Instruction::End);
+            }
+            (true, false) => {
+                self.code.push(Instruction::LocalGet(res_local));
+                self.code.push(Instruction::I32Const(0));
+                self.code.push(Instruction::I32LtS);
+                self.code.push(Instruction::If(BlockType::Result(
+                    wasm_encoder::ValType::I32,
+                )));
+                self.code.push(Instruction::I32Const(i32::MAX));
+                self.code.push(Instruction::Else);
+                self.code.push(Instruction::I32Const(i32::MIN));
+                self.code.push(Instruction::End);
+            }
+            (false, true) => {
+                self.code.push(Instruction::I64Const(match op {
+                    SaturatingOp::Add => -1_i64,
+                    SaturatingOp::Sub => 0,
+                }));
+            }
+            (false, false) => {
+                self.code.push(Instruction::I32Const(match op {
+                    SaturatingOp::Add => -1_i32,
+                    SaturatingOp::Sub => 0,
+                }));
+            }
+        }
+        self.code.push(Instruction::Else);
+        self.code.push(Instruction::LocalGet(res_local));
+        self.code.push(Instruction::End);
+        self.code.push(Instruction::LocalSet(dest_local));
     }
 }

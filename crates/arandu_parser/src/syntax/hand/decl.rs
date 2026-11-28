@@ -409,7 +409,37 @@ pub fn try_hand_lower_import(
                 alias,
             });
         }
-        let path = parse_dotted_ident_path(&ctx, &mut cur)?;
+        let mut path = smallvec::SmallVec::new();
+        let first = cur.peek().filter(|t| {
+            matches!(
+                t.kind,
+                TokenKind::IdentValue | TokenKind::IdentType | TokenKind::KwSelf
+            )
+        })?;
+        path.push(SmolStr::new(ctx.text(first)?));
+        cur.bump();
+        while cur.peek_kind() == Some(TokenKind::Dot) {
+            cur.bump();
+            if cur.peek_kind() == Some(TokenKind::LBrace) {
+                let items = parse_import_brace_list(&mut ctx, &mut cur)?;
+                if !cur.at_end() {
+                    return None;
+                }
+                return Some(ImportDecl::ModuleGroup {
+                    span,
+                    prefix: path,
+                    items,
+                });
+            }
+            let seg = cur.peek().filter(|t| {
+                matches!(
+                    t.kind,
+                    TokenKind::IdentValue | TokenKind::IdentType | TokenKind::KwSelf
+                )
+            })?;
+            path.push(SmolStr::new(ctx.text(seg)?));
+            cur.bump();
+        }
         let alias = if cur.eat(TokenKind::KwAs) {
             let alias_tok = cur
                 .peek()
@@ -490,14 +520,26 @@ fn try_hand_lower_const(
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;
     let visibility = parse_visibility(&mut cur);
-    cur.expect(TokenKind::KwConst)?;
+    let is_static_mut = if cur.peek_kind() == Some(TokenKind::IdentValue)
+        && cur.peek().and_then(|t| ctx.text(t)) == Some("static")
+    {
+        cur.bump();
+        cur.expect(TokenKind::KwMut)?;
+        true
+    } else {
+        cur.expect(TokenKind::KwConst)?;
+        false
+    };
     let name_tok = cur.peek()?;
     if !matches!(name_tok.kind, TokenKind::IdentValue | TokenKind::IdentType) {
         return None;
     }
     let name = SmolStr::new(ctx.text(name_tok)?);
     cur.bump();
-    let ty = if cur.peek_kind().is_some_and(|k| k != TokenKind::Equal) {
+    let ty = if cur.peek_kind() == Some(TokenKind::Colon) {
+        cur.bump();
+        Some(parse_type(&mut ctx, &mut cur)?)
+    } else if cur.peek_kind().is_some_and(|k| k != TokenKind::Equal) {
         Some(parse_type(&mut ctx, &mut cur)?)
     } else {
         None
@@ -514,6 +556,7 @@ fn try_hand_lower_const(
         name,
         ty,
         value,
+        is_static_mut,
     })
 }
 

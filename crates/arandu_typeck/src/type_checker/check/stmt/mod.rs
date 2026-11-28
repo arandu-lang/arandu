@@ -31,16 +31,25 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
         Stmt::Set {
             span: _,
             places,
-            op: _,
+            op,
             value,
         } => {
-            check_set_stmt(checker, places, *value);
+            check_set_stmt(checker, places, op.clone(), *value);
         }
         Stmt::Return { span, values } => {
             check_return_stmt(checker, *span, values);
         }
         Stmt::Expr { expr, .. } => {
-            super::super::synth::synth_expr(checker, *expr);
+            if matches!(
+                pool.expr(*expr),
+                arandu_parser::ast_pool::ExprKind::If { .. }
+                    | arandu_parser::ast_pool::ExprKind::Match { .. }
+            ) {
+                let void_id = checker.intern(crate::type_checker::types::ArType::Void);
+                super::super::synth::synth_expr_expected(checker, *expr, Some(void_id));
+            } else {
+                super::super::synth::synth_expr(checker, *expr);
+            }
         }
         Stmt::If {
             span,
@@ -63,13 +72,15 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
         }
         Stmt::While {
             span: _,
+            label,
             condition,
             body,
         } => {
-            check_while_stmt(checker, pool, condition, body);
+            check_while_stmt(checker, pool, condition, body, label.clone());
         }
         Stmt::For {
             span,
+            label,
             is_comptime,
             clause,
             body,
@@ -91,13 +102,14 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
                     span: body.span,
                     statements: arandu_parser::ast_pool::IndexRange::empty(),
                 };
-                check_for_stmt(checker, pool, clause, &empty);
+                check_for_stmt(checker, pool, clause, &empty, label.clone());
             } else {
-                check_for_stmt(checker, pool, clause, body);
+                check_for_stmt(checker, pool, clause, body, label.clone());
             }
         }
         Stmt::Match { span: _, expr } => {
-            super::super::synth::synth_expr(checker, *expr);
+            let void_id = checker.intern(crate::type_checker::types::ArType::Void);
+            super::super::synth::synth_expr_expected(checker, *expr, Some(void_id));
         }
         Stmt::Free { span, expr } => {
             check_free_stmt(checker, *span, *expr);
@@ -105,7 +117,7 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
         Stmt::Defer { span: _, body } | Stmt::ErrDefer { span: _, body } => {
             check_defer_stmt(checker, pool, body);
         }
-        Stmt::Break { span } | Stmt::Continue { span } => {
+        Stmt::Break { span, .. } | Stmt::Continue { span, .. } => {
             check_loop_control_stmt(checker, stmt, *span);
         }
         Stmt::Unsafe { span: _, block } => {

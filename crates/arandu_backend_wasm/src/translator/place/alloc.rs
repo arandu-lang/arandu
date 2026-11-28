@@ -74,7 +74,8 @@ impl<'a> FuncTranslator<'a> {
                 self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                     offset: niche_offset,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 }));
             }
         } else if let Some(TagEncoding::PointerTag {
@@ -96,7 +97,8 @@ impl<'a> FuncTranslator<'a> {
                 self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                     offset: pointer_offset,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 }));
             } else {
                 self.push_cell_addr();
@@ -105,7 +107,8 @@ impl<'a> FuncTranslator<'a> {
                 self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                     offset: pointer_offset,
                     align: 2,
-                    memory_index: 0,
+                    target: wasm_encoder::MemArgTarget::Memory(0),
+                    ordering: None,
                 }));
             }
         } else {
@@ -115,7 +118,8 @@ impl<'a> FuncTranslator<'a> {
             self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                 offset: 0,
                 align: 2,
-                memory_index: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
             }));
         }
 

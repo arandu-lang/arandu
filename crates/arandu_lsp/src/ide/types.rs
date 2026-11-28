@@ -27,6 +27,8 @@ pub struct DiagnosticFixData {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticData {
+    /// Salsa revision at which the structured replacements were computed.
+    pub revision: u64,
     pub primary_label: Option<String>,
     pub notes: Vec<String>,
     pub hints: Vec<String>,

@@ -99,7 +99,7 @@ fn symbol_kind_to_hl(kind: SymbolKind) -> HlKind {
     match kind {
         SymbolKind::Func | SymbolKind::ExternFunc | SymbolKind::AssociatedFunc => HlKind::Function,
         SymbolKind::Param => HlKind::Parameter,
-        SymbolKind::Local | SymbolKind::ImportValue => HlKind::Variable,
+        SymbolKind::Local | SymbolKind::ImportValue | SymbolKind::StaticMut => HlKind::Variable,
         SymbolKind::Const | SymbolKind::ConstParam => HlKind::Constant,
         SymbolKind::Struct => HlKind::Struct,
         SymbolKind::Enum | SymbolKind::EnumVariant => HlKind::Enum,

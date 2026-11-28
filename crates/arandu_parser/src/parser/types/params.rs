@@ -141,6 +141,11 @@ impl<'a> Parser<'a> {
                 parser.parse_type()?
             };
             let is_variadic = parser.eat_name("ELLIPSIS");
+            let default = if !is_receiver && !is_variadic && parser.eat_name("EQUAL") {
+                Some(parser.parse_expr(0)?)
+            } else {
+                None
+            };
             Ok(Param {
                 span: parser.span_from_mark(start),
                 attrs: attrs.into(),
@@ -149,6 +154,7 @@ impl<'a> Parser<'a> {
                 ty,
                 is_variadic,
                 is_receiver,
+                default,
             })
         })?;
         Ok(params)

@@ -45,9 +45,13 @@ impl LowerCtx<'_> {
 
             self.builder.current_block = Some(bb_right);
             let start_owned = self.owned_string_temps.clone();
-            let right_op = self.lower_expr(right, None, symbols)?;
-            // Temporaries of the right operand exist only on this edge; free
-            // them here rather than at the join, where they are undefined.
+            // The right operand is its own temporary scope, as in Rust: what
+            // it creates exists only on this edge, so it is freed here rather
+            // than at the join, where it is undefined.
+            self.begin_local_scope();
+            let right_op = self.lower_expr(right, None, symbols);
+            self.end_local_scope();
+            let right_op = right_op?;
             self.free_new_owned_string_temps(&start_owned, None);
             if self.builder.current_block.is_some() {
                 let right_block = self.require_block()?;
@@ -65,13 +69,22 @@ impl LowerCtx<'_> {
         let l_op = self.typed_integer_constant(left, l_op);
         let r_op = self.typed_integer_constant(right, r_op);
         let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
-        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
-            && matches!(
-                self.resolve_ty(self.hir.pool.expr(left).ty),
-                ArType::Option(_) | ArType::Result(_, _)
-            )
+        let left_ty_id = self.hir.pool.expr(left).ty;
+        let right_ty_id = self.hir.pool.expr(right).ty;
+        if matches!(
+            op,
+            BinaryOp::Lt | BinaryOp::LtEqual | BinaryOp::Gt | BinaryOp::GtEqual
+        ) && self.is_str_or_ref(left_ty_id)
         {
-            let equal = self.lower_value_equality(l_op, r_op, self.hir.pool.expr(left).ty)?;
+            return self.lower_str_order(op, l_op, r_op, left_ty_id, right_ty_id, expr_ty, dest);
+        }
+        let is_enum_eq = match self.resolve_ty(left_ty_id) {
+            ArType::Option(_) | ArType::Result(_, _) => true,
+            ArType::Named(sym, _) => !self.tc.type_info.struct_fields.contains_key(&sym),
+            _ => false,
+        };
+        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) && is_enum_eq {
+            let equal = self.lower_value_equality(l_op, r_op, left_ty_id)?;
             let value = if op == BinaryOp::NotEqual {
                 AmirRvalue::Unary {
                     op: UnaryOp::Not,
@@ -83,6 +96,67 @@ impl LowerCtx<'_> {
             self.emit_assign_temp(dest, value);
             return Ok(AmirOperand::Copy(dest));
         }
+        if matches!(op, BinaryOp::Add | BinaryOp::Sub)
+            && let ArType::Ptr(pointee_id) = self.resolve_ty(self.hir.pool.expr(left).ty)
+        {
+            if matches!(op, BinaryOp::Sub)
+                && matches!(
+                    self.resolve_ty(self.hir.pool.expr(right).ty),
+                    ArType::Ptr(_)
+                )
+            {
+                let isize_ty = self
+                    .tc
+                    .type_info
+                    .type_interner
+                    .intern(ArType::Primitive(Primitive::ISize));
+                let l_int = self.new_temp_id(isize_ty);
+                self.emit_assign_temp(l_int, AmirRvalue::Use(l_op));
+                let r_int = self.new_temp_id(isize_ty);
+                self.emit_assign_temp(r_int, AmirRvalue::Use(r_op));
+                let diff = self.new_temp_id(isize_ty);
+                self.emit_assign_temp(
+                    diff,
+                    AmirRvalue::Binary {
+                        op: BinaryOp::Sub,
+                        left: AmirOperand::Copy(l_int),
+                        right: AmirOperand::Copy(r_int),
+                    },
+                );
+                let pointee_ty = self.resolve_ty(pointee_id);
+                let stride = arandu_middle::layout::LayoutEngine::from_data_layout(
+                    self.tc.type_info.target_layout,
+                )
+                .layout_of_type(
+                    &pointee_ty,
+                    &self.tc.type_info.type_interner,
+                    &*self.tc.type_info,
+                )
+                .map(|l| l.size)
+                .unwrap_or(1)
+                .max(1);
+                if stride > 1 {
+                    let stride_lit = self.intern_literal_int(stride.to_string());
+                    let stride_temp = self.new_temp_id(isize_ty);
+                    self.emit_assign_temp(
+                        stride_temp,
+                        AmirRvalue::Use(AmirOperand::Constant(stride_lit)),
+                    );
+                    self.emit_assign_temp(
+                        dest,
+                        AmirRvalue::Binary {
+                            op: BinaryOp::Div,
+                            left: AmirOperand::Copy(diff),
+                            right: AmirOperand::Copy(stride_temp),
+                        },
+                    );
+                } else {
+                    self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(diff)));
+                }
+                return Ok(AmirOperand::Copy(dest));
+            }
+            return self.lower_ptr_arith_offset(op, l_op, r_op, pointee_id, expr_ty, Some(dest));
+        }
         self.emit_assign_temp(
             dest,
             AmirRvalue::Binary {
@@ -91,6 +165,282 @@ impl LowerCtx<'_> {
                 right: r_op,
             },
         );
+        Ok(AmirOperand::Copy(dest))
+    }
+
+    fn is_str_or_ref(&self, mut ty_id: crate::types::TypeId) -> bool {
+        for _ in 0..4 {
+            match self.resolve_ty(ty_id) {
+                ArType::Ref(inner) | ArType::RefMut(inner) => ty_id = inner,
+                ArType::Primitive(Primitive::Str) => return true,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    fn deref_str_operand(
+        &mut self,
+        mut op: AmirOperand,
+        mut ty_id: crate::types::TypeId,
+    ) -> AmirOperand {
+        for _ in 0..4 {
+            match self.resolve_ty(ty_id) {
+                ArType::Ref(inner) | ArType::RefMut(inner) => {
+                    let temp = self.new_temp_id(inner);
+                    self.emit_assign_temp(
+                        temp,
+                        AmirRvalue::Unary {
+                            op: UnaryOp::Deref,
+                            operand: op,
+                        },
+                    );
+                    op = AmirOperand::Copy(temp);
+                    ty_id = inner;
+                }
+                _ => break,
+            }
+        }
+        op
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_str_order(
+        &mut self,
+        op: BinaryOp,
+        l_op: AmirOperand,
+        r_op: AmirOperand,
+        left_ty_id: crate::types::TypeId,
+        right_ty_id: crate::types::TypeId,
+        _expr_ty: crate::types::TypeId,
+        dest: TempId,
+    ) -> Result<AmirOperand, Diagnostic> {
+        let l_val = self.deref_str_operand(l_op, left_ty_id);
+        let r_val = self.deref_str_operand(r_op, right_ty_id);
+        let u8_id = self
+            .tc
+            .type_info
+            .type_interner
+            .intern(ArType::Primitive(Primitive::U8));
+        let bytes_ty = self.tc.type_info.type_interner.intern(ArType::Slice(u8_id));
+        let usize_ty = self
+            .tc
+            .type_info
+            .type_interner
+            .intern(ArType::Primitive(Primitive::USize));
+
+        let lb = self.new_temp_id(bytes_ty);
+        self.emit_assign_temp(lb, AmirRvalue::StrBytes { source: l_val });
+        let rb = self.new_temp_id(bytes_ty);
+        self.emit_assign_temp(rb, AmirRvalue::StrBytes { source: r_val });
+        let l_len = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(l_len, AmirRvalue::Len(AmirOperand::Copy(lb)));
+        let r_len = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(r_len, AmirRvalue::Len(AmirOperand::Copy(rb)));
+
+        let is_l_shorter = self.new_temp(ArType::Primitive(Primitive::Bool));
+        self.emit_assign_temp(
+            is_l_shorter,
+            AmirRvalue::Binary {
+                op: BinaryOp::Lt,
+                left: AmirOperand::Copy(l_len),
+                right: AmirOperand::Copy(r_len),
+            },
+        );
+        let min_local = self.new_compiler_local_id(usize_ty, self.current_span);
+        let bb_min_l = self.new_block();
+        let bb_min_r = self.new_block();
+        let bb_cond = self.new_block();
+        self.set_bool_branch(AmirOperand::Copy(is_l_shorter), bb_min_l, bb_min_r);
+        self.seal_block(bb_min_l);
+        self.seal_block(bb_min_r);
+
+        self.builder.current_block = Some(bb_min_l);
+        self.write_variable(bb_min_l, min_local, AmirOperand::Copy(l_len));
+        self.emit_goto(bb_cond);
+
+        self.builder.current_block = Some(bb_min_r);
+        self.write_variable(bb_min_r, min_local, AmirOperand::Copy(r_len));
+        self.emit_goto(bb_cond);
+
+        let pre_entry_min = bb_cond;
+        self.builder.current_block = Some(pre_entry_min);
+        let i_local = self.new_compiler_local_id(usize_ty, self.current_span);
+        let zero = AmirOperand::Constant(self.intern_literal_int("0"));
+        self.write_variable(pre_entry_min, i_local, zero);
+
+        let bb_loop_hdr = self.new_block();
+        self.emit_goto(bb_loop_hdr);
+
+        let bb_body = self.new_block();
+        let bb_len_cmp = self.new_block();
+        let bb_byte_diff = self.new_block();
+        let bb_step = self.new_block();
+        let bb_join = self.new_block();
+
+        self.builder.current_block = Some(bb_loop_hdr);
+        let i_cur = self.read_variable(bb_loop_hdr, i_local);
+        let min_len = self.read_variable(pre_entry_min, min_local);
+        let in_loop = self.new_temp(ArType::Primitive(Primitive::Bool));
+        self.emit_assign_temp(
+            in_loop,
+            AmirRvalue::Binary {
+                op: BinaryOp::Lt,
+                left: i_cur,
+                right: min_len,
+            },
+        );
+        self.set_bool_branch(AmirOperand::Copy(in_loop), bb_body, bb_len_cmp);
+        self.seal_block(bb_body);
+        self.seal_block(bb_len_cmp);
+
+        self.builder.current_block = Some(bb_body);
+        let lb_byte = self.new_temp_id(u8_id);
+        self.emit_assign_temp(
+            lb_byte,
+            AmirRvalue::IndexAccess {
+                base: AmirOperand::Copy(lb),
+                index: i_cur,
+                in_bounds: false,
+            },
+        );
+        let rb_byte = self.new_temp_id(u8_id);
+        self.emit_assign_temp(
+            rb_byte,
+            AmirRvalue::IndexAccess {
+                base: AmirOperand::Copy(rb),
+                index: i_cur,
+                in_bounds: false,
+            },
+        );
+        let bytes_eq = self.new_temp(ArType::Primitive(Primitive::Bool));
+        self.emit_assign_temp(
+            bytes_eq,
+            AmirRvalue::Binary {
+                op: BinaryOp::Equal,
+                left: AmirOperand::Copy(lb_byte),
+                right: AmirOperand::Copy(rb_byte),
+            },
+        );
+        self.set_bool_branch(AmirOperand::Copy(bytes_eq), bb_step, bb_byte_diff);
+        self.seal_block(bb_step);
+        self.seal_block(bb_byte_diff);
+
+        self.builder.current_block = Some(bb_step);
+        let one = AmirOperand::Constant(self.intern_literal_int("1"));
+        let next_i = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(
+            next_i,
+            AmirRvalue::Binary {
+                op: BinaryOp::Add,
+                left: i_cur,
+                right: one,
+            },
+        );
+        self.write_variable(bb_step, i_local, AmirOperand::Copy(next_i));
+        self.emit_goto(bb_loop_hdr);
+        self.seal_block(bb_loop_hdr);
+        self.seal_block(pre_entry_min);
+
+        let res_local = self.new_compiler_local(ArType::Primitive(Primitive::Bool));
+        self.builder.current_block = Some(bb_byte_diff);
+        let strict_op = match op {
+            BinaryOp::Lt | BinaryOp::LtEqual => BinaryOp::Lt,
+            BinaryOp::Gt | BinaryOp::GtEqual => BinaryOp::Gt,
+            _ => op,
+        };
+        let byte_res = self.new_temp(ArType::Primitive(Primitive::Bool));
+        self.emit_assign_temp(
+            byte_res,
+            AmirRvalue::Binary {
+                op: strict_op,
+                left: AmirOperand::Copy(lb_byte),
+                right: AmirOperand::Copy(rb_byte),
+            },
+        );
+        self.write_variable(bb_byte_diff, res_local, AmirOperand::Copy(byte_res));
+        self.emit_goto(bb_join);
+
+        self.builder.current_block = Some(bb_len_cmp);
+        let len_res = self.new_temp(ArType::Primitive(Primitive::Bool));
+        self.emit_assign_temp(
+            len_res,
+            AmirRvalue::Binary {
+                op,
+                left: AmirOperand::Copy(l_len),
+                right: AmirOperand::Copy(r_len),
+            },
+        );
+        self.write_variable(bb_len_cmp, res_local, AmirOperand::Copy(len_res));
+        self.emit_goto(bb_join);
+
+        self.seal_block(bb_join);
+        self.builder.current_block = Some(bb_join);
+        let final_res = self.read_variable(bb_join, res_local);
+        self.emit_assign_temp(dest, AmirRvalue::Use(final_res));
+        Ok(AmirOperand::Copy(dest))
+    }
+
+    pub(crate) fn lower_ptr_arith_offset(
+        &mut self,
+        op: BinaryOp,
+        ptr_op: AmirOperand,
+        offset_op: AmirOperand,
+        pointee_id: crate::types::TypeId,
+        ptr_ty_id: crate::types::TypeId,
+        target: Option<TempId>,
+    ) -> Result<AmirOperand, Diagnostic> {
+        let usize_ty = self
+            .tc
+            .type_info
+            .type_interner
+            .intern(ArType::Primitive(Primitive::USize));
+        let ptr_int = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(ptr_int, AmirRvalue::Use(ptr_op));
+        let off_int = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(off_int, AmirRvalue::Use(offset_op));
+        let pointee_ty = self.resolve_ty(pointee_id);
+        let stride =
+            arandu_middle::layout::LayoutEngine::from_data_layout(self.tc.type_info.target_layout)
+                .layout_of_type(
+                    &pointee_ty,
+                    &self.tc.type_info.type_interner,
+                    &*self.tc.type_info,
+                )
+                .map(|l| l.size)
+                .unwrap_or(1)
+                .max(1);
+        let scaled_off = if stride > 1 {
+            let stride_lit = self.intern_literal_int(stride.to_string());
+            let stride_temp = self.new_temp_id(usize_ty);
+            self.emit_assign_temp(
+                stride_temp,
+                AmirRvalue::Use(AmirOperand::Constant(stride_lit)),
+            );
+            let scaled = self.new_temp_id(usize_ty);
+            self.emit_assign_temp(
+                scaled,
+                AmirRvalue::Binary {
+                    op: BinaryOp::Mul,
+                    left: AmirOperand::Copy(off_int),
+                    right: AmirOperand::Copy(stride_temp),
+                },
+            );
+            AmirOperand::Copy(scaled)
+        } else {
+            AmirOperand::Copy(off_int)
+        };
+        let sum_int = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(
+            sum_int,
+            AmirRvalue::Binary {
+                op,
+                left: AmirOperand::Copy(ptr_int),
+                right: scaled_off,
+            },
+        );
+        let dest = target.unwrap_or_else(|| self.new_temp_id(ptr_ty_id));
+        self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(sum_int)));
         Ok(AmirOperand::Copy(dest))
     }
 
@@ -139,7 +489,47 @@ impl LowerCtx<'_> {
         // F2.0: `&`/`&mut` lower to place borrows; `*` on a ref loads through the pointer.
         match op {
             UnaryOp::Ref | UnaryOp::RefMut => {
-                let place = self.lower_expr_to_place(sub_expr, symbols)?;
+                // `ref f` of a function item (C's `&f`) is its code pointer:
+                // the item has no storage to borrow. A local or field that
+                // holds a function value is a place and is borrowed below,
+                // so `mut ref held` lets the callee read and write `held`.
+                let sub = self.hir.pool.expr(sub_expr);
+                let function_item = matches!(sub.kind, HirExprKind::Path { symbol }
+                if matches!(
+                    symbols.try_get(symbol).map(|symbol| symbol.kind),
+                    Some(
+                            arandu_middle::SymbolKind::Func
+                                | arandu_middle::SymbolKind::ExternFunc
+                                | arandu_middle::SymbolKind::AssociatedFunc
+                        )
+                ));
+                if function_item && matches!(self.resolve_ty(sub.ty), ArType::Func(_, _)) {
+                    let value = self.lower_expr(sub_expr, None, symbols)?;
+                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+                    self.emit_assign_temp(dest, AmirRvalue::Use(value));
+                    return Ok(AmirOperand::Copy(dest));
+                }
+                // Borrowing a value with no place (`ref Point { .. }`,
+                // `ref f()`) borrows a temporary local, as Rust does for
+                // `&Point { .. }`; the scope destroys it.
+                let place = match self.lower_expr_to_place(sub_expr, symbols) {
+                    Ok(place) => place,
+                    Err(_) => {
+                        let sub = self.hir.pool.expr(sub_expr);
+                        let (sub_ty, sub_span) = (sub.ty, sub.span);
+                        let value = self.lower_expr(sub_expr, None, symbols)?;
+                        let temporary = self.new_compiler_local_id(sub_ty, sub_span);
+                        self.locals[temporary.as_usize()].is_memory = true;
+                        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = value {
+                            self.owned_string_temps.remove(&t);
+                        }
+                        self.write_variable_source(temporary, value)?;
+                        crate::amir::AmirPlace {
+                            local: temporary,
+                            projections: smallvec::SmallVec::new(),
+                        }
+                    }
+                };
                 // F2.0: address-taken *stack* scalars need a stack home (`is_memory`).
                 // BC.4a: a place that goes through `Deref` already has a materialised
                 // pointer in the local's SSA value — do NOT force a stack slot for it
@@ -148,13 +538,11 @@ impl LowerCtx<'_> {
                     .projections
                     .iter()
                     .any(|p| matches!(p, crate::amir::AmirProjection::Deref));
-                if place.projections.is_empty() && !through_ptr {
+                if !through_ptr {
                     let idx = place.local.as_usize();
                     if idx < self.locals.len() {
                         self.locals[idx].is_memory = true;
                     }
-                }
-                if !through_ptr {
                     self.borrowed_locals.insert(place.local);
                 }
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
@@ -167,6 +555,36 @@ impl LowerCtx<'_> {
                 Ok(AmirOperand::Copy(dest))
             }
             UnaryOp::Deref => {
+                // Moving a non-Copy value out of a trait-indexed place (`*(c.index(i))`)
+                // is rejected with O015, matching built-in container indexing.
+                let sub_node = self.hir.pool.expr(sub_expr);
+                let is_trait_index_call = if let HirExprKind::Call { callee, .. } = &sub_node.kind {
+                    match &self.hir.pool.expr(*callee).kind {
+                        HirExprKind::Field { field, .. } | HirExprKind::SafeField { field, .. } => {
+                            field == "index" || field == "indexMut"
+                        }
+                        HirExprKind::Path { symbol } => symbols.try_get(*symbol).is_some_and(|s| {
+                            let name = s.name.as_str();
+                            name.ends_with(".index")
+                                || name.ends_with(".indexMut")
+                                || name.contains(".index$")
+                                || name.contains(".indexMut$")
+                        }),
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
+                if is_trait_index_call && !self.tc.type_info.is_copy(expr_ty) {
+                    return Err(Diagnostic::error(
+                        crate::DiagCode::O015MoveOutOfIndex,
+                        "cannot move a non-Copy value out of an indexed place",
+                        self.diag_span(self.current_span),
+                    )
+                    .with_note(
+                        "borrow the element (`ref base[i]`) or remove it with `pop`/`swap`",
+                    ));
+                }
                 // `*p` where p is `&T` / `&mut T` / local holding a ref: load pointee.
                 // If sub is a place of the referent (`*&x` after fold would be x), use Load.
                 // Otherwise treat the operand as a pointer value and load through it via
@@ -180,8 +598,15 @@ impl LowerCtx<'_> {
                     // Gold path: `*p` with p: &T → emit Load after reinterpreting.
                     // Use Unary Deref for pointer-valued operands so backends can load.
                     let sub_op = self.read_variable_source(place.local)?;
-                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
-                    if place.projections.is_empty() {
+                    // A pointee with a destructor is read as a place so the move
+                    // checker sees a consumption through the reference (O016).
+                    if place.projections.is_empty()
+                        && !arandu_mir::drop_elaborate::type_needs_drop(
+                            expr_ty,
+                            &*self.tc.type_info,
+                        )
+                    {
+                        let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
                         self.emit_assign_temp(
                             dest,
                             AmirRvalue::Unary {
@@ -189,10 +614,15 @@ impl LowerCtx<'_> {
                                 operand: sub_op,
                             },
                         );
+                        Ok(AmirOperand::Copy(dest))
                     } else {
-                        self.emit_assign_temp(dest, AmirRvalue::Load(place));
+                        self.mark_local_materialized(place.local);
+                        // The projected place holds the reference itself
+                        // (`*holder.field`); the pointee is one Deref further.
+                        let mut pointee = place;
+                        pointee.projections.push(crate::amir::AmirProjection::Deref);
+                        Ok(self.load_into_target(target, pointee, expr_ty))
                     }
-                    Ok(AmirOperand::Copy(dest))
                 } else {
                     let sub_op = self.lower_expr(sub_expr, None, symbols)?;
                     let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
@@ -291,6 +721,62 @@ impl LowerCtx<'_> {
             return self.read_variable_source(local);
         }
 
+        // Passing a move-only `mut []T` view to a shared `[]T` parameter (e.g.
+        // `ms.len()`, `ms.get(i)`) reborrows `ms` instead of moving it.
+        if matches!(arg_ty, ArType::MutSlice(_))
+            && let Some(slice_formal @ ArType::Slice(elem)) = formal_ty
+        {
+            let place = match self.lower_expr_to_place(arg, symbols) {
+                Ok(place) => place,
+                Err(_) => {
+                    let val = self.lower_expr(arg, None, symbols)?;
+                    let tmp = self.new_compiler_local_id(arg_expr.ty, arg_expr.span);
+                    self.locals[tmp.as_usize()].is_memory = true;
+                    self.write_variable_source(tmp, val)?;
+                    crate::amir::AmirPlace {
+                        local: tmp,
+                        projections: smallvec::SmallVec::new(),
+                    }
+                }
+            };
+            let through_ptr = place
+                .projections
+                .iter()
+                .any(|p| matches!(p, crate::amir::AmirProjection::Deref));
+            if !through_ptr {
+                let idx = place.local.as_usize();
+                if idx < self.locals.len() {
+                    self.locals[idx].is_memory = true;
+                }
+            }
+            self.borrowed_locals.insert(place.local);
+            let owner = self.new_temp(ArType::Ref(arg_expr.ty));
+            self.emit_assign_temp(owner, AmirRvalue::Borrow(place));
+            let deref = self.new_temp_id(arg_expr.ty);
+            self.temps[deref.as_usize()].is_copy = true;
+            self.emit_assign_temp(
+                deref,
+                AmirRvalue::Unary {
+                    op: crate::ops::UnaryOp::Deref,
+                    operand: AmirOperand::Copy(owner),
+                },
+            );
+            let data = self.new_temp(ArType::Ptr(*elem));
+            self.emit_assign_temp(data, AmirRvalue::SliceData(AmirOperand::Copy(deref)));
+            let len = self.new_temp(ArType::Primitive(crate::types::Primitive::USize));
+            self.emit_assign_temp(len, AmirRvalue::Len(AmirOperand::Copy(deref)));
+            let view = self.new_temp(slice_formal.clone());
+            self.emit_assign_temp(
+                view,
+                AmirRvalue::SliceView {
+                    owner: AmirOperand::Copy(owner),
+                    data: AmirOperand::Copy(data),
+                    len: AmirOperand::Copy(len),
+                },
+            );
+            return Ok(AmirOperand::Copy(view));
+        }
+
         // W3.3 auto-ref: formal is ref, value is not — materialize Borrow of place (or temporary local for rvalue).
         if formal_is_ref && !arg_is_ref {
             let place = match self.lower_expr_to_place(arg, symbols) {
@@ -311,7 +797,11 @@ impl LowerCtx<'_> {
                     }
                 }
             };
-            if place.projections.is_empty() {
+            let through_ptr = place
+                .projections
+                .iter()
+                .any(|p| matches!(p, crate::amir::AmirProjection::Deref));
+            if !through_ptr {
                 let idx = place.local.as_usize();
                 if idx < self.locals.len() {
                     self.locals[idx].is_memory = true;
@@ -339,31 +829,7 @@ impl LowerCtx<'_> {
         let projected_place = matches!(&arg_expr.kind, HirExprKind::Field { .. });
         let op = if !mode.is_borrow() && !arg_is_ref && projected_place {
             match self.lower_expr_to_place(arg, symbols) {
-                Ok(place) => {
-                    let root_has_destructor =
-                        self.locals
-                            .get(place.local.as_usize())
-                            .is_some_and(|local| {
-                                self.tc
-                                    .type_info
-                                    .destructor_instances
-                                    .contains_key(&local.ty)
-                            });
-                    if !place.projections.is_empty()
-                        && root_has_destructor
-                        && !self.tc.type_info.is_copy(arg_expr.ty)
-                    {
-                        return Err(Diagnostic::error(
-                            crate::DiagCode::U001FeatureNotSupported,
-                            "cannot move a field out of a value with an explicit destructor",
-                            arg_expr.span,
-                        )
-                        .with_note(
-                            "the destructor requires the complete value; move the whole value or borrow the field",
-                        ));
-                    }
-                    self.load_place(&place, arg_expr.ty)?
-                }
+                Ok(place) => self.load_place(&place, arg_expr.ty)?,
                 // A projection on a temporary is a value expression rather than a
                 // place rooted in a local. Keep ordinary lowering for that case.
                 Err(_) => self.lower_expr(arg, None, symbols)?,

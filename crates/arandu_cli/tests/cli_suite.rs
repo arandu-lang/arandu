@@ -126,6 +126,9 @@ mod cli_syn2_syn4;
 #[path = "cli_suite/cli_test_adversarial.rs"]
 mod cli_test_adversarial;
 
+#[path = "cli_suite/cli_typed_holes.rs"]
+mod cli_typed_holes;
+
 #[path = "cli_suite/cli_test_list.rs"]
 mod cli_test_list;
 

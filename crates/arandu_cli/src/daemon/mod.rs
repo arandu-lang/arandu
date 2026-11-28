@@ -6,10 +6,11 @@
 //! share, a protocol error or a build it does not run sends the client to the
 //! ordinary batch build, whose result is the same.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+#[cfg_attr(windows, path = "endpoint_windows.rs")]
 mod endpoint;
 mod protocol;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod server;
 
 use crate::args::CliInvocation;
@@ -32,14 +33,14 @@ const BUILD_ENVIRONMENT: &[&str] = &[
     "MACOSX_DEPLOYMENT_TARGET",
 ];
 
-/// Whether this invocation may go through the daemon: `arandu build` on Unix,
-/// without process-wide `-Z` switches or `--watch`, unless `--no-daemon`,
+/// Whether this invocation may go through the daemon: `arandu build` on Unix
+/// or Windows, without process-wide `-Z` switches or `--watch`, unless `--no-daemon`,
 /// `ARANDU_DAEMON=0` or a CI environment (`CI` set) ask for batch. With
 /// `ARANDU_DAEMON=1` or `require` CI uses it too.
 pub fn eligible(invocation: &CliInvocation) -> bool {
     let requested = std::env::var("ARANDU_DAEMON").ok();
     let default = std::env::var_os("CI").is_none_or(|value| value.is_empty());
-    cfg!(unix)
+    cfg!(any(unix, windows))
         && invocation
             .args
             .get(1)
@@ -87,7 +88,36 @@ pub fn identity() -> std::io::Result<String> {
             hash.update(&value.to_le_bytes());
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        let file = std::fs::File::open(&executable)?;
+        // SAFETY: zero is a valid `BY_HANDLE_FILE_INFORMATION`, which the
+        // call fills for the open file.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the handle is open for the lifetime of `file`.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        for value in [
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+            info.nFileSizeHigh,
+            info.nFileSizeLow,
+            info.ftCreationTime.dwHighDateTime,
+            info.ftCreationTime.dwLowDateTime,
+            info.ftLastWriteTime.dwHighDateTime,
+            info.ftLastWriteTime.dwLowDateTime,
+        ] {
+            hash.update(&value.to_le_bytes());
+        }
+        let _ = metadata;
+    }
+    #[cfg(not(any(unix, windows)))]
     hash.update(&metadata.len().to_le_bytes());
     let mut variables = std::env::vars_os()
         .filter(|(name, _)| {
@@ -111,7 +141,7 @@ pub fn identity() -> std::io::Result<String> {
 /// it. `None` asks for the batch build.
 /// With `verbose`, a build the daemon served says so on stderr.
 pub fn try_build(raw_args: &[String], color: bool, verbose: bool) -> Option<CliResult> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let result = client::build(raw_args, color);
         if verbose {
@@ -126,7 +156,7 @@ pub fn try_build(raw_args: &[String], color: bool, verbose: bool) -> Option<CliR
         }
         result
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (raw_args, color, verbose);
         None
@@ -135,15 +165,15 @@ pub fn try_build(raw_args: &[String], color: bool, verbose: bool) -> Option<CliR
 
 /// `arandu __daemon <root> <socket>`: serves builds of `root` until idle.
 pub fn serve(args: &[String]) -> CliResult {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         server::serve(args)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = args;
         Err(crate::cli_error::CliFailure::usage(
-            "the build daemon runs on Unix only",
+            "the build daemon runs on Unix and Windows only",
         ))
     }
 }
@@ -151,25 +181,24 @@ pub fn serve(args: &[String]) -> CliResult {
 /// `arandu __daemon-stop [path]`: asks the daemon of the project at `path`
 /// to finish. Succeeds when none runs.
 pub fn stop(args: &[String]) -> CliResult {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         client::stop(args)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = args;
         Ok(crate::cli_error::CliSuccess::Done)
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod client {
     use std::io::Write;
-    use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
-    use super::endpoint;
+    use super::endpoint::{self, Connection};
     use super::protocol::{Request, Response, read_frame, write_frame};
     use crate::cli_error::{CliResult, CliSuccess};
     use crate::output::{RenderStyle, Stream};
@@ -213,7 +242,7 @@ mod client {
                     // The old daemon removes its socket once it stops
                     // listening; connecting earlier would reach it again.
                     let deadline = Instant::now() + SPAWN_WAIT;
-                    while socket.exists() && Instant::now() < deadline {
+                    while endpoint::listening(&socket) && Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(10));
                     }
                 }
@@ -229,7 +258,7 @@ mod client {
         Unsupported,
     }
 
-    fn exchange(mut stream: UnixStream, request: &Request) -> Option<Exchange> {
+    fn exchange(mut stream: Connection, request: &Request) -> Option<Exchange> {
         if !endpoint::peer_is_owner(&stream) {
             return None;
         }
@@ -257,34 +286,21 @@ mod client {
     /// Connects to the daemon of `root`, starting it when none listens. A
     /// stale socket left by a dead daemon is replaced by the new one, which
     /// takes the project's daemon lock before it binds.
-    fn connect_or_spawn(root: &Path, socket: &Path) -> Option<UnixStream> {
-        if let Ok(stream) = UnixStream::connect(socket) {
+    fn connect_or_spawn(root: &Path, socket: &Path) -> Option<Connection> {
+        if let Ok(stream) = endpoint::connect(socket) {
             return Some(stream);
         }
         let executable = std::env::current_exe().ok()?;
-        let mut command = std::process::Command::new(executable);
-        command
-            .arg("__daemon")
-            .arg(root)
-            .arg(socket)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        // Out of the terminal's process group: Ctrl-C on a build does not end
-        // the daemon other builds share.
-        std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        let mut child = command.spawn().ok()?;
+        let mut child = endpoint::spawn_daemon(&executable, root, socket).ok()?;
         let deadline = Instant::now() + SPAWN_WAIT;
         while Instant::now() < deadline {
-            if let Ok(stream) = UnixStream::connect(socket) {
-                // Reap the daemon if it exits later; it is not our child to
-                // wait for in the meantime.
-                std::thread::spawn(move || child.wait());
+            if let Ok(stream) = endpoint::connect(socket) {
+                child.detach();
                 return Some(stream);
             }
-            if let Ok(Some(_)) = child.try_wait() {
+            if child.has_exited() {
                 // Another daemon took the lock first; it is about to listen.
-                if let Ok(stream) = UnixStream::connect(socket) {
+                if let Ok(stream) = endpoint::connect(socket) {
                     return Some(stream);
                 }
             }
@@ -293,6 +309,25 @@ mod client {
         None
     }
 
+    #[cfg(windows)]
+    fn terminal_width() -> Option<usize> {
+        use windows_sys::Win32::System::Console::{
+            CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo, GetStdHandle, STD_ERROR_HANDLE,
+        };
+        // SAFETY: zero is a valid `CONSOLE_SCREEN_BUFFER_INFO`, which the call
+        // fills when stderr is a console.
+        let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+        // SAFETY: `GetStdHandle` has no preconditions and the call only
+        // writes `info`; a handle that is not a console makes it fail.
+        let filled =
+            unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE), &raw mut info) };
+        let width = i32::from(info.srWindow.Right) - i32::from(info.srWindow.Left) + 1;
+        (filled != 0 && width > 0)
+            .then(|| usize::try_from(width).ok())
+            .flatten()
+    }
+
+    #[cfg(unix)]
     fn terminal_width() -> Option<usize> {
         use std::os::fd::AsRawFd;
         let mut size = libc::winsize {
@@ -321,7 +356,7 @@ mod client {
             return Ok(CliSuccess::Done);
         };
         if let Ok(socket) = endpoint::socket_path(&root)
-            && let Ok(mut stream) = UnixStream::connect(socket)
+            && let Ok(mut stream) = endpoint::connect(&socket)
             && endpoint::peer_is_owner(&stream)
         {
             let _ = write_frame(&mut stream, &Request::Shutdown { identity });

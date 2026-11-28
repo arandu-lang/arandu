@@ -27,11 +27,18 @@ impl<M: Module> AranduModule<M> {
         unit_func_symbols: Option<&[SymbolId]>,
         block_coverage: Option<&BlockCoverageSession>,
     ) -> Result<FxHashMap<String, FuncId>, Diagnostic> {
-        if let Some(issue) =
+        let validation_errors = if let Some(unit_syms) = unit_func_symbols {
+            unit_syms
+                .iter()
+                .filter_map(|&sym| program.funcs.iter().find(|f| f.symbol == sym))
+                .flat_map(|f| {
+                    arandu_middle::validate_amir_func(f, symbols, type_info.type_interner())
+                })
+                .collect::<Vec<_>>()
+        } else {
             arandu_middle::validate_amir_program(program, symbols, type_info.type_interner())
-                .into_iter()
-                .next()
-        {
+        };
+        if let Some(issue) = validation_errors.into_iter().next() {
             return Err(issue);
         }
         let is_unit_func = |sym: SymbolId| unit_func_symbols.is_none_or(|set| set.contains(&sym));
@@ -77,6 +84,10 @@ impl<M: Module> AranduModule<M> {
                     codegen_ice(format!("failed to declare AMIR coverage callback: {err:?}"))
                 })?;
             func_ids.insert("arandu_smith_record_block_hit".to_owned(), id);
+        }
+
+        if unit_func_symbols.is_none_or(|set| set.contains(&crate::cgu::STATICS_UNIT)) {
+            self.define_statics(program, type_info, ptr_type)?;
         }
 
         // 1. Declare all functions first to support cross-calls
@@ -192,15 +203,25 @@ impl<M: Module> AranduModule<M> {
             let c_name = sym.name.split('.').next_back().unwrap_or(&sym.name);
             // PAN / Invariant 5: do not import libc `abort`. Unix inlines a CPU
             // trap; Windows calls `ar_rt_trap` from the translator.
-            if arandu_middle::IntrinsicKind::from_declared_name(c_name, sym.lang_item)
-                == Some(arandu_middle::IntrinsicKind::Abort)
-            {
+            if matches!(
+                arandu_middle::IntrinsicKind::from_declared_name(c_name, sym.lang_item),
+                Some(
+                    arandu_middle::IntrinsicKind::Abort
+                        | arandu_middle::IntrinsicKind::AbortWithMessage
+                )
+            ) {
                 continue;
             }
+            let fixed_param_types: &[ArType] =
+                if type_info.is_variadic_function(symbol_id) && !param_types.is_empty() {
+                    &param_types[..param_types.len() - 1]
+                } else {
+                    param_types.as_slice()
+                };
             if !eager_runtime {
                 if !runtime_imports.alias(&sym.name, c_name) {
                     let sig = build_signature_with_classifier(
-                        param_types,
+                        fixed_param_types,
                         return_type,
                         default_call_conv,
                         ptr_type,
@@ -217,7 +238,7 @@ impl<M: Module> AranduModule<M> {
                 existing_id
             } else {
                 let sig = build_signature_with_classifier(
-                    param_types,
+                    fixed_param_types,
                     return_type,
                     default_call_conv,
                     ptr_type,
@@ -380,14 +401,20 @@ impl<M: Module> AranduModule<M> {
             if let Some(debug) = &mut self.debug
                 && let Some(code) = context.compiled_code()
             {
+                let base_srcloc = context.func.params.base_srcloc();
                 let ranges = code
                     .buffer
                     .get_srclocs_sorted()
                     .iter()
                     .filter_map(|range| {
+                        let loc = if range.loc.is_rel() {
+                            range.loc.relocate(base_srcloc)
+                        } else {
+                            range.loc.as_abs()
+                        };
                         debug
                             .source_locations
-                            .get(range.loc.bits() as usize)
+                            .get(loc.bits() as usize)
                             .copied()
                             .map(|span| DebugCodeRange {
                                 start: range.start,
@@ -545,7 +572,7 @@ fn define_padded_function<M: Module>(
             )
             .map_err(|error| Box::new(error.into()))?;
         (
-            compiled.buffer.alignment,
+            compiled.buffer.min_alignment,
             compiled.buffer.data().to_vec(),
             compiled.buffer.relocs().to_vec(),
         )
@@ -560,4 +587,111 @@ fn define_padded_function<M: Module>(
         .define_function_bytes(func_id, u64::from(alignment), &bytes, &relocs)
         .map_err(Box::new)?;
     Ok(code)
+}
+
+impl<M: Module> AranduModule<M> {
+    /// Writable `static mut` storage with its initial image, in the target's
+    /// byte order and the layout the translator addresses.
+    fn define_statics(
+        &mut self,
+        program: &AmirProgram,
+        type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
+        ptr_type: cranelift_codegen::ir::Type,
+    ) -> Result<(), Diagnostic> {
+        let little = self.module.isa().endianness() == cranelift_codegen::ir::Endianness::Little;
+        for item in &program.statics {
+            let image = arandu_middle::ctfe::const_value_bytes(
+                &item.init,
+                item.ty,
+                type_info.type_interner(),
+                type_info,
+                arandu_middle::layout::DataLayout::ptr_width(u64::from(ptr_type.bytes())),
+                little,
+            )
+            .ok_or_else(|| {
+                codegen_ice(format!(
+                    "`static mut` storage '{}' has no data image",
+                    item.name
+                ))
+            })?;
+            let id = self
+                .module
+                .declare_data(&item.name, Linkage::Export, true, false)
+                .map_err(|error| {
+                    codegen_ice(format!(
+                        "failed to declare `static mut` storage '{}': {error}",
+                        item.name
+                    ))
+                })?;
+            // The objects its pointers reach (string bytes, slice elements)
+            // are read-only data of their own.
+            let mut object_ids = Vec::with_capacity(image.objects.len());
+            for index in 0..image.objects.len() {
+                let name = format!("{}__{index}", item.name);
+                object_ids.push(
+                    self.module
+                        .declare_data(&name, Linkage::Local, false, false)
+                        .map_err(|error| {
+                            codegen_ice(format!("failed to declare static data '{name}': {error}"))
+                        })?,
+                );
+            }
+            for (object, &object_id) in image.objects.iter().zip(&object_ids) {
+                let data = static_data_description(
+                    &mut self.module,
+                    object.bytes.clone(),
+                    object.alignment,
+                    &object.relocations,
+                    &object_ids,
+                )?;
+                self.module.define_data(object_id, &data).map_err(|error| {
+                    codegen_ice(format!(
+                        "failed to define static data of '{}': {error}",
+                        item.name
+                    ))
+                })?;
+            }
+            let data = static_data_description(
+                &mut self.module,
+                image.bytes,
+                image.alignment,
+                &image.relocations,
+                &object_ids,
+            )?;
+            self.module.define_data(id, &data).map_err(|error| {
+                codegen_ice(format!(
+                    "failed to define `static mut` storage '{}': {error}",
+                    item.name
+                ))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// A data object of `bytes` whose relocations hold the addresses of
+/// `objects`.
+fn static_data_description<M: Module>(
+    module: &mut M,
+    mut bytes: Vec<u8>,
+    alignment: u64,
+    relocations: &[arandu_middle::ctfe::StaticRelocation],
+    objects: &[cranelift_module::DataId],
+) -> Result<cranelift_module::DataDescription, Diagnostic> {
+    let mut data = cranelift_module::DataDescription::new();
+    if bytes.is_empty() {
+        bytes.push(0);
+    }
+    data.define(bytes.into_boxed_slice());
+    data.set_align(alignment.max(1));
+    for relocation in relocations {
+        let target = objects
+            .get(relocation.target)
+            .ok_or_else(|| codegen_ice("static data relocation has no target object"))?;
+        let value = module.declare_data_in_data(*target, &mut data);
+        let offset = u32::try_from(relocation.offset)
+            .map_err(|_| codegen_ice("static data relocation offset exceeds u32"))?;
+        data.write_data_addr(offset, value, 0);
+    }
+    Ok(data)
 }

@@ -14,14 +14,14 @@
 //! ## Example
 //!
 //! ```arandu
-//! import std.core.str as strings
+//! import std.core.str
 //!
 //! let s = "hello, world"
-//! strings.isEmpty(s)              // false
-//! strings.len(s)                  // 12
-//! strings.charCount(s)            // 12
-//! strings.startsWith(s, "hello")  // true
-//! strings.contains(s, "world")    // true
+//! s.isEmpty()              // false
+//! s.len()                  // 12
+//! s.charCount()            // 12
+//! s.startsWith("hello")    // true
+//! s.contains("world")      // true
 //! ```
 //!
 //! ## Platform
@@ -38,6 +38,7 @@
 module std.core.str
 
 import std.core.intrinsics as intrinsics
+import std.core.simd as simd
 import std.core.slice as slice
 
 /// Returns a shared view of the UTF-8 bytes without allocating or copying.
@@ -266,4 +267,161 @@ public func str.contains(self: str, needle: str): bool {
 /// Returns the first byte index of `needle` in `self`, or `Option.None` if not found.
 public func str.find(self: str, needle: str): Option<usize> {
     return find(self, needle)
+}
+
+/// Returns `true` if `s` contains only ASCII bytes (values in `0..=127`).
+public func isAscii(s: str): bool {
+    let bytes = intrinsics.strBytes(s)
+    let len = slice.len<u8>(bytes)
+    let mut i: usize = 0
+    while len - i >= (16 as usize) {
+        let chunk = unsafe {
+            simd.simdU8x16LoadUnaligned(intrinsics.sliceSubslice<u8>(bytes, i, 16 as usize))
+        }
+        if chunk.highBitmask() != (0 as u32) {
+            return false
+        }
+        i = i + (16 as usize)
+    }
+    while i < len {
+        if bytes[i] > (127 as u8) {
+            return false
+        }
+        i = i + (1 as usize)
+    }
+    return true
+}
+
+/// Returns `true` if `bytes` is valid UTF-8 according to RFC 3629.
+public func isValidUtf8(bytes: []u8): bool {
+    let total = slice.len<u8>(bytes)
+    let mut i: usize = 0
+    while i < total {
+        while total - i >= (16 as usize) {
+            let chunk = unsafe {
+                simd.simdU8x16LoadUnaligned(intrinsics.sliceSubslice<u8>(bytes, i, 16 as usize))
+            }
+            if chunk.highBitmask() != (0 as u32) {
+                break
+            }
+            i = i + (16 as usize)
+        }
+        if i >= total {
+            return true
+        }
+        let rem = total - i
+        let b0 = bytes[i]
+        if b0 <= (0x7F as u8) {
+            i = i + (1 as usize)
+        } else if b0 >= (0xC2 as u8) && b0 <= (0xDF as u8) {
+            if rem <= (1 as usize) { return false }
+            let b1 = bytes[i + (1 as usize)]
+            if (b1 & (0xC0 as u8)) != (0x80 as u8) { return false }
+            i = i + (2 as usize)
+        } else if b0 >= (0xE0 as u8) && b0 <= (0xEF as u8) {
+            if rem <= (2 as usize) { return false }
+            let b1 = bytes[i + (1 as usize)]
+            let b2 = bytes[i + (2 as usize)]
+            if (b2 & (0xC0 as u8)) != (0x80 as u8) { return false }
+            if b0 == (0xE0 as u8) {
+                if !(b1 >= (0xA0 as u8) && b1 <= (0xBF as u8)) { return false }
+            } else if b0 == (0xED as u8) {
+                if !(b1 >= (0x80 as u8) && b1 <= (0x9F as u8)) { return false }
+            } else {
+                if (b1 & (0xC0 as u8)) != (0x80 as u8) { return false }
+            }
+            i = i + (3 as usize)
+        } else if b0 >= (0xF0 as u8) && b0 <= (0xF4 as u8) {
+            if rem <= (3 as usize) { return false }
+            let b1 = bytes[i + (1 as usize)]
+            let b2 = bytes[i + (2 as usize)]
+            let b3 = bytes[i + (3 as usize)]
+            if (b2 & (0xC0 as u8)) != (0x80 as u8) || (b3 & (0xC0 as u8)) != (0x80 as u8) {
+                return false
+            }
+            if b0 == (0xF0 as u8) {
+                if !(b1 >= (0x90 as u8) && b1 <= (0xBF as u8)) { return false }
+            } else if b0 == (0xF4 as u8) {
+                if !(b1 >= (0x80 as u8) && b1 <= (0x8F as u8)) { return false }
+            } else {
+                if (b1 & (0xC0 as u8)) != (0x80 as u8) { return false }
+            }
+            i = i + (4 as usize)
+        } else {
+            return false
+        }
+    }
+    return true
+}
+
+/// Returns `true` if two strings are identical in length and bytes.
+public func eq(a: str, b: str): bool {
+    let bytes_a = intrinsics.strBytes(a)
+    let bytes_b = intrinsics.strBytes(b)
+    let len_a = slice.len<u8>(bytes_a)
+    let len_b = slice.len<u8>(bytes_b)
+    if len_a != len_b {
+        return false
+    }
+    let mut i: usize = 0
+    while len_a - i >= (16 as usize) {
+        let va = unsafe {
+            simd.simdU8x16LoadUnaligned(intrinsics.sliceSubslice<u8>(bytes_a, i, 16 as usize))
+        }
+        let vb = unsafe {
+            simd.simdU8x16LoadUnaligned(intrinsics.sliceSubslice<u8>(bytes_b, i, 16 as usize))
+        }
+        if !va.eq(vb).allTrue() {
+            return false
+        }
+        i = i + (16 as usize)
+    }
+    while i < len_a {
+        if bytes_a[i] != bytes_b[i] {
+            return false
+        }
+        i = i + (1 as usize)
+    }
+    return true
+}
+
+/// Returns `true` if `self` contains only ASCII bytes (`s.isAscii()`).
+public func str.isAscii(self: str): bool {
+    return isAscii(self)
+}
+
+/// Returns `true` if `self` is byte-for-byte identical to `other` (`s.eq(other)`).
+public func str.eq(self: str, other: str): bool {
+    return eq(self, other)
+}
+
+/// Lexicographically compares `a` and `b` byte by byte (`-1` if `<`, `0` if `==`, `1` if `>`).
+public func compare(a: str, b: str): int {
+    let ba = intrinsics.strBytes(a)
+    let bb = intrinsics.strBytes(b)
+    let la = slice.len<u8>(ba)
+    let lb = slice.len<u8>(bb)
+    let minLen = if la < lb { la } else { lb }
+    let mut i: usize = 0
+    while i < minLen {
+        if ba[i] < bb[i] {
+            return -1
+        }
+        if ba[i] > bb[i] {
+            return 1
+        }
+        i = i + (1 as usize)
+    }
+    if la < lb {
+        return -1
+    }
+    if la > lb {
+        return 1
+    }
+    return 0
+}
+
+/// Lexicographically compares `self` against `other` (`s.compare(other)`).
+public func str.compare(self: str, other: str): int {
+    return compare(self, other)
 }

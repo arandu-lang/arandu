@@ -264,7 +264,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             ));
             return self.assign_coerced(result, TypedValue::new("ptr".to_owned(), loaded), lhs_ty);
         }
-        if self.module.integer_width(lhs_ty).is_some()
+        let has_temp_slot = lhs.is_some_and(|temp| self.temp_slot(temp).is_some());
+        if has_temp_slot
+            || self.module.integer_width(lhs_ty).is_some()
             || self.module.is_float(lhs_ty)
             || matches!(lhs_ty, ArType::Primitive(Primitive::Bool))
         {

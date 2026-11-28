@@ -1,0 +1,56 @@
+//! Range values.
+//!
+//! ## Overview
+//!
+//! `a..b` and `a..=b` written where a value is expected are a `Range<T>` and
+//! a `RangeInclusive<T>`: plain structs holding the two bounds. A `for` loop
+//! and a slice index accept either the literal or a value of these types:
+//!
+//! ```arandu
+//! from std.core.range import { Range }
+//!
+//! func middle(xs: []int, r: Range<usize>): []int {
+//!     return xs[r]
+//! }
+//! ```
+//!
+//! A literal used directly by a loop or an index is never materialized.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
+module std.core.range
+
+from std.core.cmp import { Ord }
+
+/// The half-open interval `start..end`: `start` is included, `end` is not.
+public struct Range<T> {
+    public start: T
+    public end: T
+}
+
+/// The closed interval `start..=end`: both bounds are included.
+public struct RangeInclusive<T> {
+    public start: T
+    public end: T
+}
+
+/// Returns `true` if `value` is within `start..end` (`start <= value < end`).
+public func Range.contains<T: Ord>(self: ref Range<T>, value: T): bool {
+    return value >= self.start && value < self.end
+}
+
+/// Returns `true` if the range is empty (`start >= end`).
+public func Range.isEmpty<T: Ord>(self: ref Range<T>): bool {
+    return self.start >= self.end
+}
+
+/// Returns `true` if `value` is within `start..=end` (`start <= value <= end`).
+public func RangeInclusive.contains<T: Ord>(self: ref RangeInclusive<T>, value: T): bool {
+    return value >= self.start && value <= self.end
+}
+
+/// Returns `true` if the range is empty (`start > end`).
+public func RangeInclusive.isEmpty<T: Ord>(self: ref RangeInclusive<T>): bool {
+    return self.start > self.end
+}

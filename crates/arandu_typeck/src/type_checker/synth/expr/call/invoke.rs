@@ -24,18 +24,9 @@ pub(super) fn synth_invoked_call(
     span: Span,
     expected: Option<TypeId>,
 ) -> Option<TypeId> {
-    let ExprKind::Call {
-        callee,
-        args,
-        trailing_block,
-    } = kind
-    else {
+    let ExprKind::Call { callee, args } = kind else {
         return None;
     };
-    if let Some(block_id) = trailing_block {
-        let block = checker.pool.block(*block_id);
-        let _ = crate::type_checker::check::check_block(checker, checker.pool, block);
-    }
     let callee_id = *callee;
     let args_range = *args;
     // Canonical enum families have dedicated IR types. Select them by
@@ -121,19 +112,39 @@ pub(super) fn synth_invoked_call(
                     == Some(&arandu_middle::EffectFlags::NONE);
             let pure_simd = sym.lang_item
                 == Some(arandu_middle::symbol_table::LangItem::SimdIntrinsic)
-                && arandu_middle::intrinsics::SimdIntrinsic::from_name(&sym.name).is_some()
+                && arandu_middle::intrinsics::SimdIntrinsic::from_name(&sym.name)
+                    .is_some_and(arandu_middle::intrinsics::SimdIntrinsic::is_pure)
                 && checker.type_info.function_effects.get(&callee_sym)
                     == Some(&arandu_middle::EffectFlags::NONE);
-            if !pure_bits && !pure_simd {
+            let pure_math_or_hint = declared_intrinsic.is_some_and(|kind| {
+                matches!(
+                    kind,
+                    arandu_middle::IntrinsicKind::Fma
+                        | arandu_middle::IntrinsicKind::Sqrt
+                        | arandu_middle::IntrinsicKind::SpinLoopHint
+                        | arandu_middle::IntrinsicKind::Likely
+                        | arandu_middle::IntrinsicKind::Unlikely
+                        | arandu_middle::intrinsics::IntrinsicKind::OverflowArithmetic(..)
+                        | arandu_middle::intrinsics::IntrinsicKind::SaturatingArithmetic(..)
+                )
+            }) && checker.type_info.function_effects.get(&callee_sym)
+                == Some(&arandu_middle::EffectFlags::NONE);
+            if !pure_bits && !pure_simd && !pure_math_or_hint {
                 checker.current_observed_effects = checker
                     .current_observed_effects
                     .union(arandu_middle::EffectFlags::FOREIGN);
             }
             // Intrinsics that only inspect already-valid fat-pointer descriptors
             // or produce compile-time constants are safe without `unsafe {}`.
-            let is_safe_intrinsic = declared_intrinsic
-                .is_some_and(|k| k.is_safe() && (!k.is_pure_bit_operation() || pure_bits))
-                || pure_simd;
+            let is_safe_intrinsic = declared_intrinsic.is_some_and(|k| {
+                k.is_safe()
+                    && (!k.is_pure_bit_operation() || pure_bits)
+                    && (!matches!(
+                        k,
+                        arandu_middle::intrinsics::IntrinsicKind::OverflowArithmetic(..)
+                            | arandu_middle::intrinsics::IntrinsicKind::SaturatingArithmetic(..)
+                    ) || pure_math_or_hint)
+            }) || pure_simd;
             if !is_safe_intrinsic && !checker.ctx.is_in_unsafe() {
                 checker.diagnostics.push(
                     crate::Diagnostic::error(
@@ -200,6 +211,9 @@ pub(super) fn synth_invoked_call(
         {
             check_target_thread_capabilities(checker, callee_sym, span);
             let arg_ids = checker.pool.expr_list(args_range).to_vec();
+            if let &[job] = arg_ids.as_slice() {
+                super::owning::adjust_thread_job(checker, job);
+            }
             if arg_ids.len() == 1
                 && matches!(checker.pool.expr(arg_ids[0]), ExprKind::Lambda { .. })
             {
@@ -213,6 +227,31 @@ pub(super) fn synth_invoked_call(
         synth_namespace_field_call(checker, expr, span, callee_id, args_range, expected)
     {
         return result;
+    }
+    // `GREETING.len()`: a `static` or `const` named like a type is a value,
+    // and the call is a method call on it.
+    if let ExprKind::TypePath { type_name, member } = checker.pool.expr(callee_id)
+        && let Some(symbol) = checker.resolved.expr_symbol(callee_id)
+        && checker.symbols.try_get(symbol).is_some_and(|entry| {
+            matches!(
+                entry.kind,
+                arandu_middle::SymbolKind::ConstParam
+                    | arandu_middle::SymbolKind::Const
+                    | arandu_middle::SymbolKind::StaticMut
+            )
+        })
+    {
+        let receiver = crate::type_checker::synth::Receiver::Value {
+            symbol,
+            span: type_name.span,
+        };
+        let member = member.clone();
+        let field_span = checker.pool.expr_span(callee_id);
+        if let Some(result) = synth_method_call(
+            checker, receiver, callee_id, &member, field_span, args_range, span,
+        ) {
+            return Some(result);
+        }
     }
     if let std::ops::ControlFlow::Break(result) =
         synth_generic_callee_call(checker, expr, span, callee_id, args_range, expected)
@@ -280,6 +319,13 @@ fn synth_namespace_field_call(
             if let Some(sym_id) = member_sym
                 && checker.symbols.get(sym_id).lang_item
                     == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
+                && let &[job] = arg_ids.as_slice()
+            {
+                super::owning::adjust_thread_job(checker, job);
+            }
+            if let Some(sym_id) = member_sym
+                && checker.symbols.get(sym_id).lang_item
+                    == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
                 && arg_ids.len() == 1
                 && matches!(checker.pool.expr(arg_ids[0]), ExprKind::Lambda { .. })
             {
@@ -303,11 +349,14 @@ fn synth_namespace_field_call(
                 ) && let Some(gp) = checker.type_info.generic_params.get(&sym_id).cloned()
                     && !gp.is_empty()
                 {
-                    let arg_tys: Vec<TypeId> = arg_ids
-                        .iter()
-                        .copied()
-                        .map(|aid| synth_expr(checker, aid))
-                        .collect();
+                    let arg_tys = super::closure::synth_args_with_callbacks(
+                        checker,
+                        &gp,
+                        &params,
+                        &arg_ids,
+                        &[],
+                    );
+                    super::closure::check_callback_args(checker, &params, &arg_ids, &arg_tys);
                     if let Some((ip, ir)) = infer_and_instantiate_func(
                         checker,
                         (Some(sym_id), &gp),
@@ -321,24 +370,74 @@ fn synth_namespace_field_call(
                         ret = ir;
                     }
                 }
-                if params.len() != arg_ids.len() {
-                    checker.diagnostics.push(
-                        crate::Diagnostic::error(
+                let is_variadic = member_sym
+                    .is_some_and(|sym| checker.type_info.variadic_functions.contains(&sym));
+
+                if is_variadic {
+                    let min_params = params.len().saturating_sub(1);
+                    if arg_ids.len() < min_params {
+                        let diag = crate::Diagnostic::error(
                             crate::DiagCode::T012WrongArgCount,
                             format!(
-                                "expected {} arguments, found {}",
-                                params.len(),
+                                "expected at least {} arguments, found {}",
+                                min_params,
                                 arg_ids.len()
                             ),
                             span,
                         )
                         .with_label(field_span, "call target is here")
-                        .with_label(span, format!("{} arguments provided", arg_ids.len())),
-                    );
+                        .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                        checker.diagnostics.push(diag);
+                    }
+                } else {
+                    let min_params = if let Some(sym) = member_sym {
+                        let mut required = params.len();
+                        while required > 0
+                            && checker
+                                .type_info
+                                .func_param_defaults
+                                .contains_key(&(sym, required - 1))
+                        {
+                            required -= 1;
+                        }
+                        required
+                    } else {
+                        params.len()
+                    };
+                    if arg_ids.len() < min_params || arg_ids.len() > params.len() {
+                        let expected_msg = if min_params == params.len() {
+                            format!(
+                                "expected {} arguments, found {}",
+                                params.len(),
+                                arg_ids.len()
+                            )
+                        } else {
+                            format!(
+                                "expected {} to {} arguments, found {}",
+                                min_params,
+                                params.len(),
+                                arg_ids.len()
+                            )
+                        };
+                        let diag = crate::Diagnostic::error(
+                            crate::DiagCode::T012WrongArgCount,
+                            expected_msg,
+                            span,
+                        )
+                        .with_label(field_span, "call target is here")
+                        .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                        let diag =
+                            super::note_trailing_block(checker, diag, &arg_ids, params.len());
+                        checker.diagnostics.push(diag);
+                    }
                 }
                 for (i, arg_id) in arg_ids.iter().copied().enumerate() {
-                    let param_id = params.get(i).copied();
-                    let arg_ty_id = synth_expr_expected(checker, arg_id, param_id);
+                    let param_id = if is_variadic && i >= params.len().saturating_sub(1) {
+                        params.last().copied()
+                    } else {
+                        params.get(i).copied()
+                    };
+                    let arg_ty_id = super::closure::synth_call_arg(checker, arg_id, param_id);
                     if let Some(param_id) = param_id {
                         check_call_arg(
                             checker,
@@ -361,7 +460,13 @@ fn synth_namespace_field_call(
         }
 
         if let Some(ret_id) = synth_method_call(
-            checker, base_id, callee_id, &field_str, field_span, args_range, span,
+            checker,
+            crate::type_checker::synth::Receiver::Expr(base_id),
+            callee_id,
+            &field_str,
+            field_span,
+            args_range,
+            span,
         ) {
             return std::ops::ControlFlow::Break(Some(ret_id));
         }
@@ -401,10 +506,7 @@ fn synth_generic_callee_call(
                     && !params.is_empty()
                 {
                     let params = checker.type_info.type_interner.type_args(params);
-                    let actual_base_ty_id = match checker.resolve(base_ty_id) {
-                        ArType::Nullable(inner) => inner,
-                        _ => base_ty_id,
-                    };
+                    let actual_base_ty_id = base_ty_id;
                     let receiver_ty_id = params[0];
                     // Same auto-ref/auto-deref as synth_method_call: formal
                     // `shared`/`mut self` is `&T`/`&mut T`, receiver value is `T`.
@@ -462,6 +564,12 @@ fn synth_generic_callee_call(
                         )
                         .with_label(field_span, "call target is here")
                         .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                        let diag = super::note_trailing_block(
+                            checker,
+                            diag,
+                            &arg_ids,
+                            explicit_params.len(),
+                        );
                         checker.diagnostics.push(diag);
                     }
                     for (i, arg_id) in arg_ids.iter().copied().enumerate() {

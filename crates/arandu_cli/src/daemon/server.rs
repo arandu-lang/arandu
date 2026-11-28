@@ -9,16 +9,13 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::endpoint;
+use super::endpoint::{self, Connection};
 use super::protocol::{Outcome, Request, Response, read_frame, write_frame};
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::commands::build::{BuildRequest, BuildSession};
@@ -52,6 +49,21 @@ fn rss_ceiling() -> u64 {
 }
 
 fn resident_bytes() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        // SAFETY: zero is a valid `PROCESS_MEMORY_COUNTERS`, which the call
+        // fills for the current process' pseudo-handle.
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        // SAFETY: `counters` is writable and `size` is its size.
+        let filled =
+            unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, size) };
+        (filled != 0).then_some(counters.WorkingSetSize as u64)
+    }
     #[cfg(target_os = "linux")]
     {
         let statm = fs::read_to_string("/proc/self/statm").ok()?;
@@ -60,7 +72,7 @@ fn resident_bytes() -> Option<u64> {
         let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         Some(pages * u64::try_from(page).ok()?)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         // The peak, never below the current size: recycling stays safe.
         let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
@@ -77,9 +89,9 @@ fn resident_bytes() -> Option<u64> {
 struct Shared {
     identity: String,
     stopping: AtomicBool,
-    /// Written once when the daemon stops, so the accept loop that waits on
+    /// Woken once when the daemon stops, so the accept loop that waits on
     /// its other end wakes without polling.
-    wake: UnixStream,
+    wake: endpoint::Wake,
     connections: AtomicUsize,
     last_activity: Mutex<Instant>,
     /// The build the builder runs now, and the signal that tells it a newer
@@ -91,7 +103,7 @@ struct Shared {
 impl Shared {
     fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        let _ = (&self.wake).write(&[0]);
+        self.wake.wake();
     }
 
     fn touch(&self) {
@@ -129,7 +141,7 @@ pub fn serve(args: &[String]) -> CliResult {
         return Err(CliFailure::usage("usage: arandu __daemon <root> <socket>"));
     };
     let (root, socket) = (PathBuf::from(root), PathBuf::from(socket));
-    let lock_path = endpoint::lock_path(&root);
+    let lock_path = root.join(".arandu").join("daemon.lock");
     let failure = |operation, error: std::io::Error| {
         CliFailure::operational(operation, Some(root.clone()), error.to_string())
     };
@@ -153,23 +165,20 @@ pub fn serve(args: &[String]) -> CliResult {
         std::thread::sleep(Duration::from_millis(10));
     }
     let identity = super::identity().map_err(|error| failure("identify toolchain", error))?;
-    if endpoint::socket_path(&root).ok().as_deref() != Some(socket.as_path()) {
+    let socket_matches = endpoint::socket_path(&root).ok().as_deref() == Some(socket.as_path())
+        || fs::canonicalize(&root)
+            .ok()
+            .and_then(|canon| endpoint::socket_path(&canon).ok())
+            .as_deref()
+            == Some(socket.as_path());
+    if !socket_matches {
         return Err(CliFailure::usage(
             "the daemon socket does not belong to this project",
         ));
     }
-    // The lock proves no daemon listens on a leftover socket.
-    let _ = fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket).map_err(|error| failure("bind daemon", error))?;
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
-        .map_err(|error| failure("restrict daemon socket", error))?;
-    let bound = socket_inode(&socket);
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| failure("configure daemon socket", error))?;
-    let (wake, woken) = UnixStream::pair().map_err(|error| failure("create daemon wake", error))?;
-    wake.set_nonblocking(true)
-        .map_err(|error| failure("configure daemon wake", error))?;
+    let mut listener =
+        endpoint::Listener::bind(&socket).map_err(|error| failure("bind daemon", error))?;
+    let (wake, woken) = endpoint::waker().map_err(|error| failure("create daemon wake", error))?;
 
     let shared = Arc::new(Shared {
         identity,
@@ -191,7 +200,7 @@ pub fn serve(args: &[String]) -> CliResult {
             break;
         }
         match listener.accept() {
-            Ok((stream, _)) => {
+            Ok(stream) => {
                 shared.touch();
                 if shared.connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
                     shared.connections.fetch_sub(1, Ordering::AcqRel);
@@ -212,20 +221,13 @@ pub fn serve(args: &[String]) -> CliResult {
                 }
                 // A connection that ends restarts the idle time, so waking
                 // after the full timeout while one is open only checks again.
-                wait_readable(
-                    &listener,
-                    &woken,
-                    idle.saturating_sub(idle_for).max(HEARTBEAT),
-                );
+                listener.wait(&woken, idle.saturating_sub(idle_for).max(HEARTBEAT));
             }
             Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
     }
     // Stop listening first so new clients start a fresh daemon or build in
     // batch, then let the builds in flight answer.
-    if socket_inode(&socket) == bound {
-        let _ = fs::remove_file(&socket);
-    }
     drop(listener);
     shared.stop();
     while shared.connections.load(Ordering::Acquire) > 0 {
@@ -237,32 +239,11 @@ pub fn serve(args: &[String]) -> CliResult {
     Ok(CliSuccess::Done)
 }
 
-/// Blocks until a client connects, the daemon is stopped or `timeout` passes.
-fn wait_readable(listener: &UnixListener, woken: &UnixStream, timeout: Duration) {
-    use std::os::fd::AsRawFd;
-    let mut fds = [listener.as_raw_fd(), woken.as_raw_fd()].map(|fd| libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    });
-    let timeout = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: `fds` is a valid array of `pollfd` of the length passed.
-    unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
-}
-
-fn socket_inode(path: &Path) -> Option<u64> {
-    use std::os::unix::fs::MetadataExt;
-    fs::symlink_metadata(path)
-        .ok()
-        .map(|metadata| metadata.ino())
-}
-
 fn serve_connection(
-    mut stream: UnixStream,
+    mut stream: Connection,
     shared: &Shared,
     jobs: &mpsc::Sender<Job>,
 ) -> std::io::Result<()> {
-    stream.set_nonblocking(false)?;
     if !endpoint::peer_is_owner(&stream) {
         return Ok(());
     }

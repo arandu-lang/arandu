@@ -26,9 +26,10 @@ pub(super) fn check_while_stmt(
     pool: &AstPool,
     condition: &arandu_parser::Condition,
     body: &arandu_parser::Block,
+    label: Option<smol_str::SmolStr>,
 ) {
     check_condition(checker, condition);
-    checker.ctx.enter_loop();
+    checker.ctx.enter_loop_with_label(label);
     check_block(checker, pool, body);
     checker.ctx.exit_loop();
 }
@@ -38,6 +39,7 @@ pub(super) fn check_for_stmt(
     pool: &AstPool,
     clause: &arandu_parser::ForClause,
     body: &arandu_parser::Block,
+    label: Option<smol_str::SmolStr>,
 ) {
     match clause {
         arandu_parser::ForClause::In {
@@ -47,7 +49,9 @@ pub(super) fn check_for_stmt(
         } => {
             let iterable_ty_id = super::super::super::synth::synth_expr(checker, *iterable);
             let iterable_ty = checker.resolve(iterable_ty_id);
+            let range = crate::type_checker::synth::expr_range::range_parts(checker, &iterable_ty);
             let elem_ty = match &iterable_ty {
+                _ if range.is_some() => checker.resolve(range.map_or(iterable_ty_id, |r| r.0)),
                 ArType::Array(_, inner)
                 | ArType::ConstArray(_, inner)
                 | ArType::Slice(inner)
@@ -66,12 +70,35 @@ pub(super) fn check_for_stmt(
                     ArType::Error
                 }
             };
-            if let Some(binding) = bindings.first() {
+            // `for x in xs` binds each element; `for i, x in xs` also binds
+            // its position, a `usize` counted from zero (Go's `range`).
+            if let Some(extra) = bindings.get(2) {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T012WrongArgCount,
+                        format!(
+                            "a `for` loop binds an element, or a position and an element; found {} names",
+                            bindings.len()
+                        ),
+                        extra.span,
+                    )
+                    .with_hint("write `for x in xs` or `for i, x in xs`"),
+                );
+            }
+            let elem_ty_id = checker.intern(elem_ty);
+            let position_ty_id = checker.intern(ArType::Primitive(Primitive::USize));
+            let types: &[arandu_middle::types::type_interner::TypeId] = if bindings.len() >= 2 {
+                &[position_ty_id, elem_ty_id]
+            } else {
+                &[elem_ty_id]
+            };
+            let error_id = checker.intern(ArType::Error);
+            for (index, binding) in bindings.iter().enumerate() {
                 let binding_key = crate::NodeKey::from(binding.span);
                 if let Some(symbol_id) = checker.resolved.definitions.get(&binding_key).copied() {
-                    let elem_ty_id = checker.intern(elem_ty);
-                    checker.ctx.bind(symbol_id, elem_ty_id);
-                    checker.record_decl_type(symbol_id, elem_ty_id);
+                    let ty = types.get(index).copied().unwrap_or(error_id);
+                    checker.ctx.bind(symbol_id, ty);
+                    checker.record_decl_type(symbol_id, ty);
                 }
             }
         }
@@ -108,7 +135,7 @@ pub(super) fn check_for_stmt(
             }
         }
     }
-    checker.ctx.enter_loop();
+    checker.ctx.enter_loop_with_label(label);
     check_block(checker, pool, body);
     checker.ctx.exit_loop();
 }
@@ -241,6 +268,21 @@ pub(super) fn check_loop_control_stmt(
         checker.diagnostics.push(crate::Diagnostic::error(
             crate::DiagCode::N011BreakContinueOutsideLoop,
             msg,
+            span,
+        ));
+        return;
+    }
+
+    let target_label = match stmt {
+        Stmt::Break { label, .. } | Stmt::Continue { label, .. } => label.as_deref(),
+        _ => None,
+    };
+    if let Some(lbl) = target_label
+        && !checker.ctx.has_loop_label(lbl)
+    {
+        checker.diagnostics.push(crate::Diagnostic::error(
+            crate::DiagCode::N011BreakContinueOutsideLoop,
+            format!("use of undeclared label '{lbl}'"),
             span,
         ));
     }

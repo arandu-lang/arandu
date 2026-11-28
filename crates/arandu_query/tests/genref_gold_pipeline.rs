@@ -22,11 +22,12 @@ fn lower(source: &str) -> String {
     )
 }
 
-/// A promoted handle stored in memory typed as a reference would be read back
-/// as a raw pointer (AGG.1: every backend returned the handle bits instead of
-/// the value), so the pipeline rejects the escape instead of compiling it.
+/// RFC 0043 Dual-Locus: a borrow stored in memory typed as a reference promotes
+/// the borrowed local's Storage Locus (`lambda_store`) to `TaskArena` while
+/// keeping its Reference Locus (`lambda_ref`) as a native pointer (`DirectPtr`),
+/// emitting an inspectable `O004` Note unless `@NoFallback` rejects it.
 #[test]
-fn o004_rejects_a_promotable_borrow_stored_in_memory() {
+fn o004_promotes_borrow_stored_in_memory_via_dual_locus_and_rejects_under_no_fallback() {
     for source in [
         // Stored through a reference parameter.
         r#"
@@ -63,8 +64,8 @@ func main(): int {
             .find(|diagnostic| diagnostic.code == "O004")
             .expect("O004 IDE diagnostic");
         assert_eq!(
-            diagnostic.severity, 0,
-            "O004 must be an error: {diagnostic:?}"
+            diagnostic.severity, 2,
+            "O004 must be an inspectable note under Dual-Locus promotion: {diagnostic:?}"
         );
         assert!(diagnostic
             .notes
@@ -74,17 +75,41 @@ func main(): int {
             diagnostic
                 .notes
                 .iter()
-                .any(|note| note.contains("cannot be safely re-read")),
+                .any(|note| note.contains("TaskArena") && note.contains("RFC 0043")),
             "{diagnostic:?}"
         );
+        let amir = lower(source);
         assert!(
-            !diagnostic
-                .notes
-                .iter()
-                .any(|note| note.contains("@NoFallback")),
-            "the rejection is about representation, not a fallback scope: {diagnostic:?}"
+            amir.contains("arena_alloc("),
+            "expected Dual-Locus TaskArena allocation in AMIR:\n{amir}"
         );
     }
+
+    // With @NoFallback, Dual-Locus promotion is rejected as an Error (severity 0).
+    let no_fallback_source = r#"
+struct Holder { value: &int }
+
+@NoFallback
+func main(): int {
+    let start = 5
+    let holder = Holder { value: &start }
+    return *holder.value
+}
+"#;
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "genref_o004_nofallback.aru".into(),
+        no_fallback_source.into(),
+    );
+    let diagnostics = file_ide_diagnostics(&db, file);
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "O004")
+        .expect("O004 IDE diagnostic under @NoFallback");
+    assert_eq!(
+        diagnostic.severity, 0,
+        "O004 must be an error under @NoFallback: {diagnostic:?}"
+    );
 }
 
 #[test]
@@ -105,7 +130,7 @@ func main(): int {
 }
 
 #[test]
-fn aggregate_store_escape_characterizes_the_missing_surface_to_amir_path() {
+fn aggregate_store_escape_lowers_to_dual_locus_task_arena_amir() {
     let source = r#"
 struct Holder {
     value: &int
@@ -134,24 +159,22 @@ func main(): int {
         lower_amir::accumulated::<arandu_middle::db::DiagnosticsAccumulator>(&db, file);
 
     assert!(
-        lowered.amir.funcs.is_empty(),
-        "G0 characterization changed: aggregate escape unexpectedly reached AMIR"
+        !lowered.amir.funcs.is_empty(),
+        "Dual-Locus aggregate escape must reach AMIR"
+    );
+    let amir = lowered.amir.pretty_print(
+        lowered.type_check.symbols.as_ref(),
+        &lowered.type_check.type_info.type_interner,
     );
     assert!(
-        !diagnostics.is_empty(),
-        "lowering discarded the program without an accumulated diagnostic"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.0.code == DiagCode::O004GenerationalFallback),
-        "expected the aggregate escape to remain inspectable as O004"
+        amir.contains("arena_alloc("),
+        "expected Dual-Locus TaskArena allocation in AMIR:\n{amir}"
     );
     assert!(
         diagnostics.iter().any(|diagnostic| {
             diagnostic.0.code == DiagCode::O004GenerationalFallback
-                && diagnostic.0.severity == arandu_middle::Severity::Error
+                && diagnostic.0.severity == arandu_middle::Severity::Note
         }),
-        "projected escape must hard-fail instead of creating a stale snapshot"
+        "projected escape must emit an inspectable O004 Note"
     );
 }

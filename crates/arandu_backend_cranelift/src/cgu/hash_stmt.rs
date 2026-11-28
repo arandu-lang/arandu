@@ -187,6 +187,10 @@ impl HashContext<'_> {
                 self.hash.tag(6);
                 self.place(place);
             }
+            AmirStmt::ArenaRewind(operand) => {
+                self.hash.tag(8);
+                self.operand(operand);
+            }
             AmirStmt::Nop => self.hash.tag(7),
         }
     }
@@ -240,6 +244,10 @@ impl HashContext<'_> {
                 self.operands(args);
             }
             AmirTerminator::Unreachable => self.hash.tag(5),
+            AmirTerminator::Trap(kind) => {
+                self.hash.tag(6);
+                self.hash.str(kind.message());
+            }
         }
     }
 

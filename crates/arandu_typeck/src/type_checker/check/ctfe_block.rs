@@ -59,16 +59,21 @@ impl RootKind {
     }
 }
 
-/// Type the block body of a `move ||` thread closure as its own return root.
+/// Type the block body of a closure as its own return root. A callback passes
+/// the result its bound expects; a `move ||` job infers it.
 ///
-/// A `return` inside the closure leaves the synthesized `run`, so it must not
+/// A `return` inside the closure leaves the synthesized method, so it must not
 /// be checked against the enclosing function's signature, and the job result
 /// is the join of every exit, not only the final expression. Effects observed
 /// in the body stay visible to the enclosing function: spawning the job
 /// performs them.
-pub(crate) fn check_thread_closure_block(checker: &mut TypeChecker<'_>, block: &Block) -> TypeId {
+pub(crate) fn check_closure_block(
+    checker: &mut TypeChecker<'_>,
+    block: &Block,
+    expected: Option<TypeId>,
+) -> TypeId {
     let outer_effects = checker.current_observed_effects;
-    let result = check_return_root(checker, block, None, RootKind::ThreadClosure);
+    let result = check_return_root(checker, block, expected, RootKind::ThreadClosure);
     checker.current_observed_effects = outer_effects.union(result.observed_effects);
     result.return_type
 }

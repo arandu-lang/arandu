@@ -281,6 +281,12 @@ impl TypeChecker<'_> {
         if target_ty.is_literal() || target_ty.is_error() {
             return ConstrainResult::Ok;
         }
+        // An unbound variable takes the literal's width once one side is
+        // fixed (S1); both default together otherwise.
+        if let ArType::Infer(infer_var) = target_ty {
+            self.link_literal_to_var(infer_var, root);
+            return ConstrainResult::Ok;
+        }
 
         let promoted = !self.literal_table.vars[root.0 as usize].symbols.is_empty();
         let kind = self.literal_table.vars[root.0 as usize].kind;
@@ -469,6 +475,7 @@ impl TypeChecker<'_> {
     /// Defaults unconstrained integer literals to fixed-width `int` (i32),
     /// and float literals to `float`.
     pub fn finalize_literal_vars(&mut self) {
+        self.sync_inference_literals();
         let count = self.literal_table.vars.len();
         for idx in 0..count {
             if self.literal_table.vars[idx].parent.0 != idx as u32 {
@@ -494,6 +501,7 @@ impl TypeChecker<'_> {
             );
         }
         self.literal_table.clear();
+        self.write_back_inference();
     }
 }
 

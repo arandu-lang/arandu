@@ -10,9 +10,16 @@ impl<'a> Parser<'a> {
         visibility: Visibility,
     ) -> Result<ConstDecl, ParseError> {
         let start = self.mark();
-        self.expect_name("KW_CONST")?;
+        let is_static_mut = if self.current().lexeme(self.source) == "static" {
+            self.advance();
+            self.expect_name("KW_MUT")?;
+            true
+        } else {
+            self.expect_name("KW_CONST")?;
+            false
+        };
         let name = self.expect_name_like()?;
-        let ty = if self.can_start_type() {
+        let ty = if self.eat_name("COLON") || self.can_start_type() {
             Some(self.parse_type()?)
         } else {
             None
@@ -27,6 +34,7 @@ impl<'a> Parser<'a> {
             name,
             ty,
             value,
+            is_static_mut,
         })
     }
 
@@ -54,11 +62,24 @@ impl<'a> Parser<'a> {
 
     pub(in crate::parser) fn parse_struct_decl(
         &mut self,
-        attrs: Vec<Attribute>,
+        mut attrs: Vec<Attribute>,
         visibility: Visibility,
     ) -> Result<StructDecl, ParseError> {
         let start = self.mark();
-        self.expect_name("KW_STRUCT")?;
+        if self.current().kind == arandu_lexer::TokenKind::IdentValue
+            && self.current().lexeme(self.source) == "union"
+        {
+            let kw_span = self.current().span(self.file_id);
+            self.advance();
+            attrs.push(Attribute {
+                span: kw_span,
+                name_span: kw_span,
+                name: smol_str::SmolStr::new("Union"),
+                args: Vec::new(),
+            });
+        } else {
+            self.expect_name("KW_STRUCT")?;
+        }
         let name = self.expect_ident_type()?;
         let generic_params = self.parse_generic_params()?;
         let where_clause = self.parse_where_clause("LBRACE")?;

@@ -39,6 +39,20 @@ pub trait AmirTypeContext: StructLayoutProvider {
     /// contract cannot be published.
     fn borrow_paths(&self, ty: TypeId) -> Result<Vec<(BorrowPath, BorrowKind)>, BorrowShapeError>;
 
+    /// Every path in `ty` that may carry a borrow, plus whether an origin
+    /// proof is required (`true` for `ref`/`mut ref`/`[]T`/`mut []T`,
+    /// `false` for `str`, which may be static or borrowed).
+    fn may_borrow_paths(
+        &self,
+        ty: TypeId,
+    ) -> Result<Vec<(BorrowPath, BorrowKind, bool)>, BorrowShapeError> {
+        Ok(self
+            .borrow_paths(ty)?
+            .into_iter()
+            .map(|(path, kind)| (path, kind, true))
+            .collect())
+    }
+
     fn enum_variant_tag(&self, variant: SymbolId) -> Option<usize>;
 
     /// Return-borrow contracts already published for signatures, keyed by function.
@@ -49,6 +63,15 @@ pub trait AmirTypeContext: StructLayoutProvider {
 
     /// Whether `function` is the `@Destructor` instance of some type.
     fn is_destructor_instance(&self, function: SymbolId) -> bool;
+
+    /// Whether `symbol` is the compiler-generated environment of a
+    /// non-escaping closure. The type checker proves it never escapes the
+    /// call that receives it, so holding its borrows in a frame local is not
+    /// a frame escape.
+    fn is_closure_env(&self, symbol: SymbolId) -> bool {
+        let _ = symbol;
+        false
+    }
 
     fn resolve_type_id(&self, id: TypeId) -> ArType {
         self.type_interner().resolve(id)
@@ -76,6 +99,16 @@ pub trait CodegenTypeContext: AmirTypeContext {
 
     /// Field table of `owner`, preferring the concrete header for `args`.
     fn fields_for(&self, owner: SymbolId, args: &[TypeId]) -> Option<&StructFields>;
+
+    /// Whether `symbol` is a variadic `extern "C"` function declaration.
+    fn is_variadic_function(&self, _symbol: SymbolId) -> bool {
+        false
+    }
+
+    /// Whether `symbol` is marked `@Cold`.
+    fn is_cold_function(&self, _symbol: SymbolId) -> bool {
+        false
+    }
 
     fn decl_type(&self, symbol: SymbolId) -> Option<ArType> {
         self.decl_type_id(symbol).map(|id| self.resolve_type_id(id))

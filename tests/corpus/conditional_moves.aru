@@ -1,0 +1,68 @@
+module conditionalMoves
+
+// A value moved on one path and not on another is destroyed on the paths
+// that still own it: a whole local, a field, a matched payload, with an
+// early return and inside a loop.
+
+import std.alloc.string as strings
+from std.core.option import { Option }
+
+struct Pair { a: strings.String, b: strings.String }
+
+func eat(s: strings.String) { }
+
+func whole(c: bool): int {
+    let s = strings.String.from("abcdefgh")
+    if c { eat(s) }
+    return 1
+}
+
+func field(c: bool): usize {
+    let p = Pair { a: strings.String.from("aaaa"), b: strings.String.from("bbbbbb") }
+    if c { eat(p.a) }
+    return p.b.len()
+}
+
+func branches(k: int): int {
+    let s = strings.String.from("branches")
+    if k == 0 {
+        eat(s)
+    } else if k == 1 {
+        return 7
+    } else {
+        let n = s.len() as int
+        if n > 100 { eat(s) }
+    }
+    return 2
+}
+
+func payload(value: Option<strings.String>, take: bool): int {
+    match value {
+        Option.Some(text) if take => { eat(text) }
+        Option.Some(_) => { return 3 }
+        Option.None => { return 4 }
+    }
+    return 5
+}
+
+func looped(n: int): int {
+    let mut i = 0
+    let mut total = 0
+    while i < n {
+        let s = strings.String.from("loop")
+        if i % 2 == 0 { eat(s) } else { total += 1 }
+        i += 1
+    }
+    return total
+}
+
+func main(): int {
+    if whole(false) + whole(true) != 2 { return 1 }
+    if field(false) + field(true) != 12 { return 2 }
+    if branches(0) + branches(1) + branches(2) != 11 { return 3 }
+    if payload(Option.Some(strings.String.from("x")), true) != 5 { return 4 }
+    if payload(Option.Some(strings.String.from("y")), false) != 3 { return 5 }
+    if payload(Option.None, true) != 4 { return 6 }
+    if looped(5) != 2 { return 7 }
+    return 0
+}

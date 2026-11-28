@@ -17,6 +17,7 @@ fn new_pool() -> arandu_parser::ast_pool::AstPool {
 
 fn make_resolver(pool: &arandu_parser::ast_pool::AstPool) -> Resolver<'_> {
     Resolver {
+        or_patterns: Vec::new(),
         reusable_definitions: rustc_hash::FxHashSet::default(),
         symbols: SymbolTable::new(0),
         resolved: ResolvedNames::default(),
@@ -89,6 +90,51 @@ fn define_duplicate_in_same_scope_returns_none() {
     assert!(dup.is_none());
     assert_eq!(r.diagnostics.len(), 1);
     assert_eq!(r.diagnostics[0].code, DiagCode::N003RedefinedName);
+}
+
+#[test]
+fn multiple_wildcard_let_bindings_in_same_scope_succeed() {
+    let source = r#"
+module t
+func f(): int {
+    let _ = 1
+    let _ = 2
+    return 0
+}
+"#;
+    let program = arandu_parser::parse(source).expect("parse");
+    let r = crate::resolve_for_test(0, &program);
+    assert!(
+        r.diagnostics.is_empty(),
+        "multiple `let _ = ...` must not emit diagnostics: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn prelude_err_ctor_does_not_block_builtin_err_type() {
+    let source = r#"
+module t
+func f(flag: bool): Result<int, Err> {
+    if flag {
+        return Ok(1)
+    }
+    return Err("boom")
+}
+func g() {
+    let local_val = 1
+    let x: local_val = 2
+}
+"#;
+    let program = arandu_parser::parse(source).expect("parse");
+    let r = crate::resolve_for_test(0, &program);
+    assert_eq!(
+        r.diagnostics.len(),
+        1,
+        "expected only one N005: {:?}",
+        r.diagnostics
+    );
+    assert_eq!(r.diagnostics[0].code, DiagCode::N005ValueUsedAsType);
 }
 
 /// Methods restate receiver type params (`func Vec.push<T, A>(…)` after
@@ -369,6 +415,7 @@ fn collect_top_level_const() {
         name: "MAX".into(),
         ty: None,
         value: dummy_expr(),
+        is_static_mut: false,
     });
     r.collect_top_level(ScopeId(0), &decl);
     let sym = r.symbols.lookup_value(ScopeId(0), "MAX");

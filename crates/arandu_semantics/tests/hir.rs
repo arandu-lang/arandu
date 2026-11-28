@@ -398,9 +398,10 @@ fn lowers_call_expression() {
 
 #[test]
 fn lowers_call_with_trailing_block() {
+    // `foo(1) { 2 }` is `foo(1, () => { 2 })`: the block is the last argument.
     let (hir, _symbols) = lower(
-        "func foo(a: int): int {
-            return a
+        "func foo(a: int, f: () -> int): int {
+            return a + f()
         }
         func main() {
             let result: int = foo(1) {
@@ -408,7 +409,6 @@ fn lowers_call_with_trailing_block() {
             }
         }",
     );
-    // find the `main` function decl
     let main_func = hir
         .decls
         .iter()
@@ -421,12 +421,8 @@ fn lowers_call_with_trailing_block() {
     let statements = hir.pool.stmt_list(body.statements);
     match &hir.pool.stmt(statements[0]).kind {
         HirStmtKind::VarDecl { value, .. } => match &hir.pool.expr(*value).kind {
-            HirExprKind::Call { trailing_block, .. } => {
-                assert!(trailing_block.is_some());
-                let bid = trailing_block.unwrap();
-                let blk = hir.pool.block(bid);
-                let block_stmts = hir.pool.stmt_list(blk.statements);
-                assert!(!block_stmts.is_empty());
+            HirExprKind::Call { args, .. } => {
+                assert_eq!(hir.pool.expr_list(*args).len(), 2);
             }
             other => panic!("expected Call, got {other:?}"),
         },
@@ -796,6 +792,44 @@ fn export_rejects_types_without_a_stable_c_representation() {
             "{signature}"
         );
     }
+}
+
+#[test]
+fn extern_c_rejects_types_without_a_stable_c_representation() {
+    for signature in [
+        "func f(value: char): u32",
+        "func f(value: [4]u32): u32",
+        "func f(value: Option<u32>): u32",
+        "func f(value: (u32) -> u32): u32",
+        "func f(value: u32): Result<u32, u32>",
+    ] {
+        let errors = lower_export_result(&format!("extern \"C\" {{\n    {signature}\n}}\n"))
+            .expect_err("must reject non-C signature");
+        assert_eq!(
+            errors[0].code,
+            arandu_semantics::DiagCode::T049InvalidFfiExport,
+            "{signature}"
+        );
+        assert!(errors[0].message.contains("to C"), "{}", errors[0].message);
+    }
+}
+
+#[test]
+fn extern_c_accepts_scalars_pointers_str_and_varargs() {
+    lower_export_result(
+        r#"
+struct Opaque { value: int }
+
+extern "C" {
+    func scalar(a: i32, b: f64, c: bool, d: usize): u64
+    func pointers(p: ptr[u8], o: mut ref Opaque, r: ref u32): void
+    func text(s: str, bytes: []u8): str
+    func printf(format: ptr[u8], args: i32...): i32
+    func erased(unit: void, value: ptr[int]): i32
+}
+"#,
+    )
+    .expect("scalars, pointers, str, slices and varargs cross the C boundary");
 }
 
 #[test]

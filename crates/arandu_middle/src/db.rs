@@ -62,6 +62,19 @@ pub struct TargetIdentity {
 }
 
 impl TargetIdentity {
+    /// Byte order of the target architecture. The host identity carries the
+    /// host's architecture name, so it answers for the host too.
+    #[must_use]
+    pub fn is_little_endian(&self) -> bool {
+        let arch = self.arch.as_str();
+        !(arch.ends_with("be")
+            || arch.ends_with("eb")
+            || arch == "s390x"
+            || arch.starts_with("sparc")
+            || (arch.starts_with("powerpc") && !arch.ends_with("le"))
+            || (arch.starts_with("mips") && !arch.ends_with("el")))
+    }
+
     /// Decode the platform fields of an explicitly supplied target triple.
     /// The driver also supplies its ABI layout; this never guesses that ABI.
     pub fn from_triple(triple: &str) -> Result<Self, &'static str> {

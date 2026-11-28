@@ -106,9 +106,11 @@ barrier `blackBox` é reservado ao item canônico `std.testing.blackBox`, não a
 qualquer função com esse nome. A tipagem rejeita assinaturas incompatíveis
 antes do AMIR. Os intrínsecos de memória são `unsafe`: exigem armazenamento
 vivo, naturalmente alinhado e acessado segundo o protocolo atômico durante compartilhamento.
-Os campos dos wrappers são privados; suas escritas continuam exigindo
-`mut ref self`. Não há promoção automática a mutabilidade interior compartilhada
-ou transporte `Send`/`Sync`.
+Os campos dos wrappers são privados. As operações atômicas de
+read-modify-write (RMW) recebem `ref`, seguindo a convenção Rust de `&self`: a
+mutabilidade interior fica confinada à instrução atômica e é modelada como
+efeito `FOREIGN`, sem escrita não atômica do campo pelo chamador: a atribuição
+através de `ref` continua proibida. Não há transporte `Send`/`Sync` automático.
 
 C usa builtins `__atomic_*` e uma asserção de suporte lock-free da largura no
 alvo. Cranelift usa instruções atômicas; Wasm usa opcodes atômicos, exigindo
@@ -195,11 +197,11 @@ interrompido por unpark, consumindo o mesmo token coalescente.
 
 Os seis tipos canônicos de `std.core.simd` usam ArType::Vector desde a fonte.
 Máscaras privadas, comparações e seleção possuem nós AMIR e lowering nos três
-backends. Loads recebem []T; stores seguros usam MutableSlice<Owner,T>, afim e
-ligada a mut ref Owner. Vec.asMutSlice mantém o proprietário exclusivamente
-emprestado; raw constructors e stores por descritor compartilhado exigem unsafe.
-Isso impede tratar a cópia de uma fatia imutável como permissão de escrita.
-Bounds e acessos escalares permitem endereços sem alinhamento vetorial. Backing
+backends. Loads recebem `[]T`; stores seguros recebem `mut []T`, vista afim
+ligada exclusivamente ao proprietário (`Vec.asMutSlice`); construtores brutos
+(`intrinsics.mutSliceFromRaw`) exigem `unsafe`. Isso impede tratar a cópia de
+uma fatia imutável (`[]T`) como permissão de escrita (`MutableSlice<Owner,T>` foi
+aposentado na `0.3.1`). Bounds e acessos escalares permitem endereços sem alinhamento vetorial. Backing
 do compilador tem alinhamento mínimo 16, com par de liberação correspondente.
 
 Identidades privilegiadas e a ABI arandu-intrinsic exigem autoridade de origem
@@ -328,7 +330,7 @@ arandu_core
  ├─ borrow       # Abstrações de empréstimo (Borrow, BorrowMut)
  ├─ fmt          # Formatação e diagnostics de baixo nível (Debug, Display, formatting engines)
  ├─ panic        # Handlers básicos de pânico e asserções estáticas
- ├─ intrinsics   # abort, abortGenerationalMismatch (traps; zero heap)
+ ├─ intrinsics   # abort, abortWithMessage, abortGenerationalMismatch (traps; zero heap)
  ├─ simd         # Seis vetores nativos, máscaras e acesso a vistas exclusivas (RFC 0038)
  ├─ atomic       # Lowering local C/Cranelift/Wasm; todos os acessos SeqCst
  └─ arch         # Especificações arquiteturais específicas (x86_64, AArch64, RISC-V)
@@ -476,8 +478,15 @@ count()       last()        nth(n)         iter(slice)
 ```text
 Dir.writeBytes(subpath, bytes): Result<usize, io.IoError>
 Dir.writeFile(subpath, content): Result<usize, io.IoError>
-writeBytes(path, bytes)        write(path, content)   // raiz ambiente
+writeBytes(path, bytes)        write(path, content)   // capability relativa ao cwd
 ```
+
+As funções de escrita no nível do módulo aceitam caminhos relativos normais sob
+o diretório atual; caminhos absolutos e componentes `.`/`..` são rejeitados.
+Para escrever sob outra raiz, abra-a com `Dir.open` e use `Dir.writeBytes` ou
+`Dir.writeFile`. macOS, BSD e Windows exigem um componente por chamada de
+capability; no Linux, caminhos relativos com múltiplos componentes são
+resolvidos pelo `openat2`.
 
 Os adaptadores de `core.iter` e os métodos de `core.slice` devolvem views e
 iteradores que preservam a dependência do owner; `get`, `first`, `last` e
@@ -676,7 +685,7 @@ recursos da RFC 0026 ainda são propostas, conforme a auditoria acima:
 
 - **Gerenciamento de Recursos e Eliminação de Double-Free (RFC 0026):**
   1. *Memória Pura (`Vec`, `String`, `HashMap`):* O gerenciamento de ciclo de vida é exclusivo do compilador via destruição automática (`drop` em OSSA). Métodos manuais `destroy()` são banidos da API pública normal;
-  2. *Recursos Externos de I/O (`File`, sockets, `DirListing`):* A convenção proposta é `close(): Result<void, IoError>` com `drop` best-effort. `File.close` e `DirListing.close` ainda retornam `void`; não se promete essa uniformidade como implementada;
+  2. *Recursos Externos de I/O:* `File.close`, `DirListing.close` e `Dir.close` retornam `Result<void, io.IoError>` com `drop` best-effort; sockets e handles de runtime ainda usam `void`, então a uniformidade completa não é prometida;
   3. *Idempotência:* A proposta exige que o `drop` após `close()` seja um no-op; essa garantia precisa de prova por tipo e não decorre apenas da convenção de nomes.
 
 - **Checklist de PR para Módulos da Stdlib:**
@@ -721,8 +730,8 @@ recursos da RFC 0026 ainda são propostas, conforme a auditoria acima:
 Ainda impedem a promoção de toda `SL_S-Core` para Gold: allocator genérico real,
 política uniforme de OOM nas coleções, drop de payloads não triviais e cobertura
 nativa específica dessas operações. Os targets publicados já possuem smoke
-de distribuição; isso não substitui essa cobertura. `String.pushStr` já é fallible e
-mantém o valor original em overflow/OOM.
+de distribuição; isso não substitui essa cobertura. `String.pushStr` devolve
+`Result<void, alloc.AllocError>` e mantém o valor original em overflow/OOM.
 O alias histórico `std.core.ptr` foi removido porque oferecia aritmética de
 ponteiro através de uma função aparentemente segura; uma compatibilidade futura
 só pode voltar junto de funções públicas `unsafe` no contrato da linguagem.

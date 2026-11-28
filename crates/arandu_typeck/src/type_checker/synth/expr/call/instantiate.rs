@@ -12,11 +12,19 @@ pub(crate) fn infer_and_instantiate_func(
     expected_ret: Option<TypeId>,
     call_span: arandu_lexer::Span,
 ) -> Option<(Vec<TypeId>, TypeId)> {
-    if formals.len() != arg_tys.len() {
+    if arg_tys.len() > formals.len() {
         return None;
     }
     let mut bindings: rustc_hash::FxHashMap<arandu_middle::SymbolId, TypeId> =
         rustc_hash::FxHashMap::default();
+    // A closure's signature is its callback bound instantiated, so it binds
+    // the bound's parameters before plain arguments can disagree with it.
+    for (&formal_id, &arg_id) in formals.iter().zip(arg_tys.iter()) {
+        if let Some(signature) = callback_signature(checker, formal_id, arg_id) {
+            let (bound, signature) = signature;
+            bind_type_params(checker, type_params, &bound, signature, &mut bindings);
+        }
+    }
     for (&formal_id, &arg_id) in formals.iter().zip(arg_tys.iter()) {
         let formal = checker.resolve(formal_id);
         bind_type_params(checker, type_params, &formal, arg_id, &mut bindings);
@@ -31,7 +39,22 @@ pub(crate) fn infer_and_instantiate_func(
 
     let mut concrete = Vec::with_capacity(type_params.len());
     for &p in type_params {
-        let tid = bindings.get(&p).copied()?;
+        let tid = match bindings.get(&p).copied() {
+            Some(tid) => tid,
+            // Nothing here fixes this type parameter (`Vec.new()`): a
+            // variable stands for it until the body binds it (S1). Callback
+            // parameters are fixed by their closures, and const parameters
+            // by their values, never by later uses.
+            None if !checker
+                .symbols
+                .try_get(p)
+                .is_some_and(|symbol| symbol.kind == arandu_middle::SymbolKind::ConstParam)
+                && !checker.type_info.callback_bounds.contains_key(&p) =>
+            {
+                checker.fresh_type_var(p, owner, call_span)
+            }
+            None => return None,
+        };
         if checker.resolve(tid).is_error() {
             return None;
         }
@@ -74,6 +97,45 @@ pub(crate) fn infer_and_instantiate_func(
     let ret_ty = checker.resolve(ret);
     let ret_inst = types::substitute_type(&ret_ty, &subst, &checker.type_info.type_interner);
     Some((new_params, checker.intern(ret_inst)))
+}
+
+/// The bound of a callback formal and the `call` signature of the closure
+/// passed for it.
+fn callback_signature(
+    checker: &mut TypeChecker<'_>,
+    formal: TypeId,
+    arg: TypeId,
+) -> Option<(ArType, TypeId)> {
+    let ArType::RefMut(implicit) = checker.resolve(formal) else {
+        return None;
+    };
+    let ArType::Named(implicit, _) = checker.resolve(implicit) else {
+        return None;
+    };
+    let bound = *checker.type_info.callback_bounds.get(&implicit)?;
+    let closure = match checker.resolve(arg) {
+        // A function value's own type is its signature.
+        ArType::Func(..) => return Some((checker.resolve(bound), arg)),
+        ArType::Named(closure, _) => closure,
+        _ => return None,
+    };
+    let recipe = checker
+        .type_info
+        .closures
+        .values()
+        .find(|recipe| recipe.struct_symbol == closure && recipe.is_callback())?;
+    let params = recipe
+        .params
+        .iter()
+        .map(|param| param.ty)
+        .collect::<Vec<_>>();
+    let signature = ArType::func(
+        &params,
+        recipe.return_type,
+        &checker.type_info.type_interner,
+    );
+    let signature = checker.intern(signature);
+    Some((checker.resolve(bound), signature))
 }
 
 fn deduce_unbound_from_constraints(
@@ -256,7 +318,6 @@ pub(crate) fn bind_type_params(
             );
         }
         ArType::Ptr(inner)
-        | ArType::Nullable(inner)
         | ArType::Slice(inner)
         | ArType::MutSlice(inner)
         | ArType::Option(inner)
@@ -265,13 +326,30 @@ pub(crate) fn bind_type_params(
         | ArType::Poll(inner) => {
             let act_inner = match interner.resolve(actual_id) {
                 ArType::Ptr(i)
-                | ArType::Nullable(i)
                 | ArType::Slice(i)
                 | ArType::MutSlice(i)
                 | ArType::Option(i)
                 | ArType::Array(_, i)
                 | ArType::Coroutine(i)
                 | ArType::Poll(i) => Some(i),
+                // A `Vec<T>` (or `ref Vec<T>`) passed where `[]T` is expected
+                // binds `T` via `VecView` coercion.
+                other if matches!(formal, ArType::Slice(_)) => {
+                    let unwrapped = match other {
+                        ArType::Ref(i) | ArType::RefMut(i) => interner.resolve(i),
+                        x => x,
+                    };
+                    if let ArType::Named(sym, args) = unwrapped
+                        && checker
+                            .symbols
+                            .lang_item_symbol(arandu_middle::symbol_table::LangItem::Vec)
+                            == Some(sym)
+                    {
+                        interner.type_args(args).first().copied()
+                    } else {
+                        None
+                    }
+                }
                 _ => None,
             };
             if let Some(ai) = act_inner {
@@ -297,6 +375,32 @@ pub(crate) fn bind_type_params(
                     actual_inner,
                     bindings,
                 );
+            }
+        }
+        ArType::Func(params, ret) => {
+            if let ArType::Func(actual_params, actual_ret) = interner.resolve(actual_id)
+                && params.len == actual_params.len
+            {
+                let formals = interner.type_args(*params);
+                let actuals = interner.type_args(actual_params);
+                for (&formal, &actual) in formals.iter().zip(&actuals) {
+                    let formal = interner.resolve(formal);
+                    bind_type_params(checker, type_params, &formal, actual, bindings);
+                }
+                let formal = interner.resolve(*ret);
+                bind_type_params(checker, type_params, &formal, actual_ret, bindings);
+            }
+        }
+        ArType::Tuple(elements) => {
+            if let ArType::Tuple(actual_elements) = interner.resolve(actual_id)
+                && elements.len == actual_elements.len
+            {
+                let formals = interner.type_args(*elements);
+                let actuals = interner.type_args(actual_elements);
+                for (&formal, &actual) in formals.iter().zip(&actuals) {
+                    let formal = interner.resolve(formal);
+                    bind_type_params(checker, type_params, &formal, actual, bindings);
+                }
             }
         }
         ArType::Result(ok, err) => {

@@ -3,6 +3,7 @@ mod infer;
 
 pub(crate) use callee::generic_callee_symbol;
 pub(in crate::passes::monomorphize) use callee::instantiation_key_for_call;
+pub(crate) use infer::function_value_type_args;
 
 use arandu_diagnostics::{DiagCode, Diagnostic};
 use arandu_lexer::Span;
@@ -216,7 +217,9 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
                     self.visit_block(*body, current);
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition, body, ..
+            } => {
                 self.visit_condition(condition, current);
                 self.visit_block(*body, current);
             }
@@ -238,7 +241,7 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
             | HirStmtKind::Scope(block) => {
                 self.visit_block(*block, current);
             }
-            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Error => {}
+            HirStmtKind::Break { .. } | HirStmtKind::Continue { .. } | HirStmtKind::Error => {}
         }
     }
 
@@ -290,17 +293,10 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
                 self.visit_expr(*base, current);
                 self.visit_expr(*index, current);
             }
-            HirExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
+            HirExprKind::Call { callee, args } => {
                 self.visit_expr(*callee, current);
                 for &arg in self.hir.pool.expr_list(*args) {
                     self.visit_expr(arg, current);
-                }
-                if let Some(block) = trailing_block {
-                    self.visit_block(*block, current);
                 }
                 // Methods/funcs whose type args come only from the receiver or
                 // argument types (no `Generic` node): still need mono keys.
@@ -337,6 +333,7 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
             },
             HirExprKind::AsyncBlock { block }
             | HirExprKind::UnsafeBlock { block }
+            | HirExprKind::Scope { block }
             | HirExprKind::ValueBlock { block } => {
                 self.visit_block(*block, current);
             }

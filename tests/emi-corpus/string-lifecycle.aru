@@ -1,11 +1,12 @@
 import std.alloc.string as strings
+import std.core.result as core_result
 import std.core.mem as mem
 import std.core.slice as slice
 import std.core.str as core_str
 
 func main(): int {
     let mut text = strings.String.new()
-    if !text.pushStr("Arandu") {
+    if !text.pushStr("Arandu").isOk() {
         return -1
     }
     if text.len() != 6 as usize {
@@ -56,7 +57,7 @@ func main(): int {
     }
 
     let old_capacity = text.capacity()
-    if text.tryReserve(2147483647 as usize) || text.capacity() != old_capacity {
+    if text.tryReserve(mem.maxAllocBytes()).isOk() || text.capacity() != old_capacity {
         return -7
     }
     text.clear()

@@ -1,0 +1,27 @@
+module arraySlices
+
+// An array is viewed as a slice where one is expected (argument, binding,
+// return), including an array value with no place, and an array receiver
+// has the slice methods.
+
+func sum(xs: []int): int {
+    let mut total = 0
+    for x in xs { total += x }
+    return total
+}
+
+func firstTwo(xs: []int): []int {
+    return xs[0..2]
+}
+
+func main(): int {
+    let arr = [1, 2, 3]
+    let view: []int = arr
+    if sum(arr) != 6 { return 1 }
+    if sum([4, 5]) != 9 { return 2 }
+    if sum(arr[0..2]) != 3 { return 3 }
+    if view.len() != (3 as usize) { return 4 }
+    if arr.len() != (3 as usize) { return 5 }
+    if sum(firstTwo(arr)) != 3 { return 6 }
+    return 0
+}

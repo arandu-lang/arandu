@@ -5,6 +5,7 @@ pub mod line_index;
 pub mod perf;
 pub mod source_registry;
 pub mod span;
+pub mod stack;
 pub mod tracing_bridge;
 
 // Re-export core items for ease of use
@@ -18,4 +19,5 @@ pub use perf::{
 };
 pub use source_registry::{SourceFile, SourceRegistry};
 pub use span::{AstId, Span};
+pub use stack::ensure_sufficient_stack;
 pub use tracing_bridge::{TracingConfig, finalize_self_profile, init_tracing};

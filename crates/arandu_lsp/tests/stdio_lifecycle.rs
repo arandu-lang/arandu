@@ -127,6 +127,13 @@ impl LspProcess {
         self.wait_for(|message| message.get("id").and_then(Value::as_i64) == Some(id))
     }
 
+    fn wait_until_ready(&self) {
+        self.wait_for(|message| {
+            message.get("method").and_then(Value::as_str) == Some("arandu/status")
+                && message.pointer("/params/state").and_then(Value::as_str) == Some("ready")
+        });
+    }
+
     fn wait_for_responses(&self, ids: impl IntoIterator<Item = i64>) -> BTreeMap<i64, Value> {
         let pending = ids.into_iter().collect::<BTreeSet<_>>();
         let mut responses = BTreeMap::new();
@@ -664,6 +671,7 @@ fn stdio_annotation_contract_uses_canonical_names_and_structured_migration() {
     let text = "// 😀\n@no_fallback\nfunc critical() {}\n";
     let mut lsp = LspProcess::spawn();
     lsp.initialize(fixture.path(), 1);
+    lsp.wait_until_ready();
     lsp.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didOpen",
@@ -2128,6 +2136,7 @@ fn stdio_diagnostics_preserve_context_and_structured_quick_fix() {
     let uri = file_uri(&document);
     let mut lsp = LspProcess::spawn();
     lsp.initialize(fixture.path(), 1);
+    lsp.wait_until_ready();
     lsp.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didOpen",
@@ -3614,6 +3623,7 @@ fn stdio_typed_holes_inform_fill_and_clear() {
     let uri = file_uri(&document);
     let mut lsp = LspProcess::spawn();
     lsp.initialize(fixture.path(), 1);
+    lsp.wait_until_ready();
     let text = "// área ✓\nfunc area(width: int): int {\n    let base = width\n    return todo(\"multiplicar\")\n}\n";
     lsp.send(&json!({
         "jsonrpc": "2.0",
@@ -3750,6 +3760,7 @@ fn stdio_t038_quick_fix_replaces_only_the_type_annotation() {
     let uri = file_uri(&document);
     let mut lsp = LspProcess::spawn();
     lsp.initialize(fixture.path(), 1);
+    lsp.wait_until_ready();
     lsp.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didOpen",

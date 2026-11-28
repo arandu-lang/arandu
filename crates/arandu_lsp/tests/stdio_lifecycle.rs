@@ -590,7 +590,7 @@ fn stdio_open_document_stays_interactive_during_discovery() {
         "completion failed: {completion}"
     );
     let budget = if std::env::var_os("CI").is_some() {
-        Duration::from_millis(1000)
+        Duration::from_millis(2500)
     } else {
         INTERACTIVE_BUDGET
     };

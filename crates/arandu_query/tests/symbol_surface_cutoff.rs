@@ -8,8 +8,11 @@ use salsa::Setter;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static NEXT_PACKAGE_ID: AtomicU64 = AtomicU64::new(0);
 
 struct TestPackage {
     db: DatabaseImpl,
@@ -19,8 +22,9 @@ struct TestPackage {
 
 impl TestPackage {
     fn new(initial_code: &str) -> Self {
+        let seq = NEXT_PACKAGE_ID.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "arandu-symsurface-{}-{}",
+            "arandu-symsurface-{}-{}-{seq}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

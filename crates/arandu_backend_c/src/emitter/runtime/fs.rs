@@ -828,13 +828,14 @@ static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, i
     intptr_t fd = ar_udp_duplicate_fd(id);
     if (fd == (intptr_t)-1) return -1;
     int port = 0;
-    uint8_t empty_buf = 0;
-    uint8_t *payload = buf ? buf : &empty_buf;
-    intptr_t recvd = ar_pal_udp_recv(fd, payload, (size_t)len, &port);
+    uint8_t scratch = 0;
+    intptr_t recvd = len == 0
+        ? ar_pal_udp_recv(fd, &scratch, 1, &port)
+        : ar_pal_udp_recv(fd, buf, (size_t)len, &port);
     ar_pal_udp_close(fd);
     if (recvd < 0) return -1;
     if (port_out) *port_out = port;
-    return (int32_t)recvd;
+    return len == 0 ? 0 : (int32_t)recvd;
 }}
 
 static void ar_net_udp_close(int32_t id) {{
